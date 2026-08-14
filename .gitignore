@@ -12,6 +12,7 @@ coverage.html
 
 # Air hot-reload artifacts
 /tmp/
+/tmp-api/
 /.air/
 
 # Container-mounted Go cache and telemetry

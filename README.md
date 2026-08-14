@@ -1,6 +1,38 @@
-# SOT Discord Bot
+# SOT Attendance Backend
 
-Small Go Discord bot with package boundaries ready for more commands and services.
+Go backend containing Discord attendance bot and member-authenticated web API.
+
+## Web API authentication
+
+Web API runs as separate `cmd/api` process on `WEB_API_ADDRESS` (`:8080` by default). Local Compose exposes it only on `127.0.0.1:8080`.
+
+Auth.js must call API from its server-side Discord callback. Browser must never send Discord access token directly.
+
+```http
+POST /api/v1/auth/discord
+Authorization: Bearer <discord-oauth-access-token>
+```
+
+API verifies token against Discord `/users/@me`, then looks up verified Discord ID in `members.user_id`. Existing member receives short-lived HS256 app JWT. Missing member receives `403 MEMBER_NOT_REGISTERED`. Username and display name are response metadata only, never identity keys.
+
+```json
+{
+  "access_token": "<app-jwt>",
+  "token_type": "Bearer",
+  "expires_at": "2026-08-14T10:15:00Z",
+  "member": {
+    "id": 1,
+    "discord_user_id": "123456789",
+    "username": "member",
+    "display_name": "Member",
+    "character_name": ""
+  }
+}
+```
+
+Generate `APP_JWT_SECRET` with a cryptographically secure generator, for example `openssl rand -base64 48`. Do not reuse `AUTH_SECRET` or Discord client secret. `APP_JWT_TTL` defaults to `15m` and cannot exceed `24h`.
+
+Health endpoint: `GET /healthz`.
 
 ## Discord setup
 
@@ -64,8 +96,11 @@ make check
 ## Layout
 
 ```text
+cmd/api/          web API process entrypoint
 cmd/bot/          process entrypoint
 internal/app/     Discord gateway lifecycle, handlers, dependency wiring
+internal/api/     HTTP routes, Discord identity verification, API configuration
+internal/auth/    signed application access tokens
 internal/presence/ FiveM matching, status counter, transition logging
 internal/attendance/ daily Asia/Jakarta scheduler
 internal/command/attendance/ attendance announcement presentation

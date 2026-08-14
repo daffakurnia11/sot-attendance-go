@@ -2,6 +2,7 @@ package member
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -31,9 +32,20 @@ type PlaytimeRecap struct {
 	Playtime      time.Duration
 }
 
+var ErrNotFound = errors.New("member not found")
+
+type Member struct {
+	ID            int64  `json:"id"`
+	UserID        string `json:"discord_user_id"`
+	Username      string `json:"username"`
+	DisplayName   string `json:"display_name"`
+	CharacterName string `json:"character_name"`
+}
+
 type executor interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attendanceEnd time.Time) ([]PlaytimeRecap, error) {
@@ -138,6 +150,29 @@ func (r *Repository) SaveAttendanceRecap(ctx context.Context, recaps []PlaytimeR
 type Repository struct{ database executor }
 
 func NewRepository(database executor) *Repository { return &Repository{database: database} }
+
+func (r *Repository) FindByUserID(ctx context.Context, userID string) (Member, error) {
+	const query = `
+		SELECT id, user_id, username, display_name, COALESCE(character_name, '')
+		FROM members
+		WHERE user_id = $1`
+
+	var found Member
+	err := r.database.QueryRow(ctx, query, userID).Scan(
+		&found.ID,
+		&found.UserID,
+		&found.Username,
+		&found.DisplayName,
+		&found.CharacterName,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Member{}, ErrNotFound
+	}
+	if err != nil {
+		return Member{}, fmt.Errorf("find member by user ID: %w", err)
+	}
+	return found, nil
+}
 
 func (r *Repository) RecordLog(ctx context.Context, log PlayerLog) error {
 	const query = `

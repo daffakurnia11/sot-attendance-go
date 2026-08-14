@@ -1,4 +1,27 @@
 services:
+  api:
+    build:
+      context: .
+      target: development
+    command: ["air", "-c", ".air.api.toml"]
+    env_file:
+      - .env
+    init: true
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - .:/app
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/home/bot/.cache/go-build
+
   bot:
     build:
       context: .

@@ -15,7 +15,21 @@ type recordingExecutor struct {
 	query string
 	args  []any
 	err   error
+	row   pgx.Row
 }
+
+func (e *recordingExecutor) QueryRow(_ context.Context, query string, args ...any) pgx.Row {
+	e.query = query
+	e.args = args
+	if e.row != nil {
+		return e.row
+	}
+	return errorRow{err: e.err}
+}
+
+type errorRow struct{ err error }
+
+func (r errorRow) Scan(...any) error { return r.err }
 
 func (e *recordingExecutor) Exec(_ context.Context, query string, args ...any) (pgconn.CommandTag, error) {
 	e.query = query
@@ -60,6 +74,24 @@ func TestRecordLogWrapsDatabaseError(t *testing.T) {
 	err := repository.RecordLog(context.Background(), PlayerLog{})
 	if err == nil || !strings.Contains(err.Error(), "record player log") {
 		t.Fatalf("RecordLog() error = %v", err)
+	}
+}
+
+func TestFindByUserIDMapsMissingMember(t *testing.T) {
+	repository := NewRepository(&recordingExecutor{err: pgx.ErrNoRows})
+
+	_, err := repository.FindByUserID(context.Background(), "123")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("FindByUserID() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestFindByUserIDWrapsDatabaseError(t *testing.T) {
+	repository := NewRepository(&recordingExecutor{err: errors.New("database unavailable")})
+
+	_, err := repository.FindByUserID(context.Background(), "123")
+	if err == nil || !strings.Contains(err.Error(), "find member by user ID") {
+		t.Fatalf("FindByUserID() error = %v", err)
 	}
 }
 

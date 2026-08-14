@@ -11,7 +11,7 @@ local-down:
 	docker compose down
 
 local-logs:
-	docker compose logs -f bot
+	docker compose logs -f bot api
 
 test:
 	go test ./...
