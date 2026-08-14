@@ -1,0 +1,18 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  bin = "./tmp/bot"
+  cmd = "go build -o ./tmp/bot ./cmd/bot"
+  delay = 500
+  exclude_dir = ["tmp", ".git"]
+  include_ext = ["go"]
+  kill_delay = "500ms"
+  send_interrupt = true
+  stop_on_error = true
+
+[log]
+  time = true
+
+[misc]
+  clean_on_exit = true
