@@ -15,6 +15,7 @@ import (
 type Counter struct {
 	guildID    string
 	serverName string
+	roleID     string
 	logger     *slog.Logger
 	playerLog  *playerLogger
 
@@ -22,7 +23,7 @@ type Counter struct {
 	lastCount int
 }
 
-func NewCounter(guildID, serverName, playerLogChannelID string, pollInterval time.Duration, blacklistedUserIDs []string, members *member.Repository, logger *slog.Logger) *Counter {
+func NewCounter(guildID, serverName, playerLogChannelID, roleID string, pollInterval time.Duration, blacklistedUserIDs []string, members *member.Repository, logger *slog.Logger) *Counter {
 	disconnectGrace := 2 * pollInterval
 	if disconnectGrace < 15*time.Second {
 		disconnectGrace = 15 * time.Second
@@ -30,8 +31,9 @@ func NewCounter(guildID, serverName, playerLogChannelID string, pollInterval tim
 	return &Counter{
 		guildID:    guildID,
 		serverName: serverName,
+		roleID:     roleID,
 		logger:     logger,
-		playerLog:  newPlayerLogger(playerLogChannelID, serverName, disconnectGrace, blacklistedUserIDs, members, logger),
+		playerLog:  newPlayerLogger(playerLogChannelID, serverName, roleID, disconnectGrace, blacklistedUserIDs, members, logger),
 		lastCount:  -1,
 	}
 }
@@ -43,7 +45,7 @@ func (c *Counter) Refresh(session *discordgo.Session) {
 		return
 	}
 
-	playing := matchingMemberIDs(guild, c.serverName)
+	playing := matchingMemberIDs(guild, c.serverName, c.roleID)
 	count := len(playing)
 	c.playerLog.refresh(session, guild, count, time.Now())
 
@@ -67,17 +69,21 @@ func (c *Counter) GuildID() string { return c.guildID }
 
 func (c *Counter) ServerName() string { return c.serverName }
 
-func matchingMemberIDs(guild *discordgo.Guild, serverName string) map[string]struct{} {
-	bots := make(map[string]bool, len(guild.Members))
+func matchingMemberIDs(guild *discordgo.Guild, serverName, roleID string) map[string]struct{} {
+	eligible := make(map[string]bool, len(guild.Members))
 	for _, member := range guild.Members {
 		if member != nil && member.User != nil {
-			bots[member.User.ID] = member.User.Bot
+			eligible[member.User.ID] = !member.User.Bot && memberHasRole(member, roleID)
 		}
 	}
 
 	playing := make(map[string]struct{})
 	for _, presence := range guild.Presences {
-		if presence == nil || presence.User == nil || presence.User.Bot || bots[presence.User.ID] {
+		if presence == nil || presence.User == nil || presence.User.Bot {
+			continue
+		}
+		isEligible, memberKnown := eligible[presence.User.ID]
+		if (roleID != "" && !isEligible) || (roleID == "" && memberKnown && !isEligible) {
 			continue
 		}
 		if presence.Status == discordgo.StatusOffline || presence.Status == discordgo.StatusInvisible {
@@ -88,6 +94,18 @@ func matchingMemberIDs(guild *discordgo.Guild, serverName string) map[string]str
 		}
 	}
 	return playing
+}
+
+func memberHasRole(member *discordgo.Member, roleID string) bool {
+	if roleID == "" {
+		return true
+	}
+	for _, memberRoleID := range member.Roles {
+		if memberRoleID == roleID {
+			return true
+		}
+	}
+	return false
 }
 
 func hasMatchingActivity(activities []*discordgo.Activity, serverName string) bool {

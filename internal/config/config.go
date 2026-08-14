@@ -10,8 +10,10 @@ import (
 )
 
 type Config struct {
+	AppEnv               string
 	Token                string
 	GuildID              string
+	DiscordRoleID        string
 	ServerName           string
 	PollInterval         time.Duration
 	CommandPrefix        string
@@ -40,10 +42,25 @@ func Load() (Config, error) {
 		os.Getenv("ATTENDANCE_END_TIME"),
 		os.Getenv("ATTENDANCE_PLAYTIME"),
 		os.Getenv("DATABASE_URL"),
+		os.Getenv("APP_ENV"),
+		os.Getenv("DISCORD_ROLE_ID"),
 	)
 }
 
-func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerLogChannelID, blacklistedUsers, playerChatChannelID, playerRecapChannelID, attendanceStartTime, attendanceEndTime, attendancePlaytime, databaseURL string) (Config, error) {
+func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerLogChannelID, blacklistedUsers, playerChatChannelID, playerRecapChannelID, attendanceStartTime, attendanceEndTime, attendancePlaytime, databaseURL, appEnv, discordRoleID string) (Config, error) {
+	appEnv = strings.ToLower(strings.TrimSpace(appEnv))
+	if appEnv != "local" && appEnv != "production" {
+		return Config{}, errors.New("APP_ENV must be local or production")
+	}
+	discordRoleID = strings.TrimSpace(discordRoleID)
+	if appEnv == "production" {
+		if err := validateDiscordID(discordRoleID); err != nil {
+			return Config{}, fmt.Errorf("DISCORD_ROLE_ID: %w", err)
+		}
+	} else {
+		discordRoleID = ""
+	}
+
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return Config{}, errors.New("DISCORD_BOT_TOKEN is required")
@@ -125,8 +142,10 @@ func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerL
 	}
 
 	return Config{
+		AppEnv:               appEnv,
 		Token:                token,
 		GuildID:              guildID,
+		DiscordRoleID:        discordRoleID,
 		ServerName:           serverName,
 		PollInterval:         time.Duration(pollMilliseconds) * time.Millisecond,
 		CommandPrefix:        commandPrefix,

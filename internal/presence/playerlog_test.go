@@ -12,7 +12,7 @@ import (
 func TestPlayerLoggerTransitions(t *testing.T) {
 	t.Parallel()
 
-	logger := newPlayerLogger("channel", "CR Roleplay", 15*time.Second, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	logger := newPlayerLogger("channel", "CR Roleplay", "", 15*time.Second, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	member := &discordgo.Member{Nick: "DeltaKilo", User: &discordgo.User{ID: "player", Username: "deltakilo11"}}
 	start := time.Date(2026, time.August, 11, 16, 40, 0, 0, time.UTC)
 	guild := &discordgo.Guild{Members: []*discordgo.Member{member}}
@@ -53,7 +53,7 @@ func TestPlayerLoggerTransitions(t *testing.T) {
 func TestPlayerLoggerSkipsInitiallyInactiveMember(t *testing.T) {
 	t.Parallel()
 
-	logger := newPlayerLogger("channel", "CR Roleplay", 15*time.Second, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	logger := newPlayerLogger("channel", "CR Roleplay", "", 15*time.Second, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	guild := &discordgo.Guild{
 		Members: []*discordgo.Member{{User: &discordgo.User{ID: "player", Username: "player"}}},
 		Presences: []*discordgo.Presence{presence("player", discordgo.StatusOnline,
@@ -68,7 +68,7 @@ func TestPlayerLoggerSkipsInitiallyInactiveMember(t *testing.T) {
 func TestPlayerLoggerIgnoresGapBetweenConnectingAndConnected(t *testing.T) {
 	t.Parallel()
 
-	logger := newPlayerLogger("channel", "CR Roleplay", 15*time.Second, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	logger := newPlayerLogger("channel", "CR Roleplay", "", 15*time.Second, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	member := &discordgo.Member{User: &discordgo.User{ID: "player", Username: "player"}}
 	start := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 	guild := &discordgo.Guild{
@@ -162,7 +162,7 @@ func TestActivityPhaseUsesDiscordActivitySignatures(t *testing.T) {
 func TestPlayerLoggerSkipsBlacklistedUsers(t *testing.T) {
 	t.Parallel()
 
-	logger := newPlayerLogger("channel", "CR Roleplay", 15*time.Second, []string{"blocked"}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	logger := newPlayerLogger("channel", "CR Roleplay", "", 15*time.Second, []string{"blocked"}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	guild := &discordgo.Guild{
 		Members: []*discordgo.Member{
 			{User: &discordgo.User{ID: "blocked", Username: "blocked"}},
@@ -181,8 +181,32 @@ func TestPlayerLoggerSkipsBlacklistedUsers(t *testing.T) {
 	if _, tracked := logger.sessions["blocked"]; tracked {
 		t.Error("blacklisted user must not enter transition state")
 	}
-	if got := len(matchingMemberIDs(guild, "CR Roleplay")); got != 2 {
+	if got := len(matchingMemberIDs(guild, "CR Roleplay", "")); got != 2 {
 		t.Errorf("status count = %d, want blacklisted user included", got)
+	}
+}
+
+func TestPlayerLoggerSkipsMembersWithoutRequiredRole(t *testing.T) {
+	t.Parallel()
+
+	logger := newPlayerLogger("channel", "CR Roleplay", "member-role", 15*time.Second, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	guild := &discordgo.Guild{
+		Members: []*discordgo.Member{
+			{User: &discordgo.User{ID: "eligible", Username: "eligible"}, Roles: []string{"member-role"}},
+			{User: &discordgo.User{ID: "excluded", Username: "excluded"}},
+		},
+		Presences: []*discordgo.Presence{
+			presence("eligible", discordgo.StatusOnline, &discordgo.Activity{Name: "CR Roleplay"}),
+			presence("excluded", discordgo.StatusOnline, &discordgo.Activity{Name: "CR Roleplay"}),
+		},
+	}
+
+	events := logger.transitions(guild, time.Now())
+	if len(events) != 1 || events[0].member.User.ID != "eligible" {
+		t.Fatalf("events = %#v, want eligible member only", events)
+	}
+	if _, tracked := logger.sessions["excluded"]; tracked {
+		t.Error("member without required role must not enter transition state")
 	}
 }
 

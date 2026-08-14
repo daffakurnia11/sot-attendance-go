@@ -11,6 +11,8 @@ func TestFromValues(t *testing.T) {
 
 	tests := []struct {
 		name                 string
+		appEnv               string
+		discordRoleID        string
 		token                string
 		guildID              string
 		serverName           string
@@ -28,6 +30,8 @@ func TestFromValues(t *testing.T) {
 	}{
 		{
 			name:                 "valid",
+			appEnv:               " local ",
+			discordRoleID:        "123456789",
 			token:                " token ",
 			guildID:              " 123456 ",
 			serverName:           " CR Roleplay ",
@@ -41,7 +45,8 @@ func TestFromValues(t *testing.T) {
 			attendanceEndTime:    "01:00",
 			attendancePlaytime:   "90m",
 			want: Config{
-				Token: "token", GuildID: "123456", ServerName: "CR Roleplay",
+				AppEnv: "local",
+				Token:  "token", GuildID: "123456", ServerName: "CR Roleplay",
 				PollInterval: 5 * time.Second, CommandPrefix: "$", PlayerLogChannelID: "789012",
 				BlacklistedUserIDs:  []string{"111", "222"},
 				PlayerChatChannelID: "345678", AttendanceStartTime: 21 * time.Hour, AttendanceEndTime: time.Hour,
@@ -49,6 +54,20 @@ func TestFromValues(t *testing.T) {
 				AttendancePlaytime:   90 * time.Minute, DatabaseURL: "postgres://test",
 			},
 		},
+		{
+			name: "valid production", appEnv: " PRODUCTION ", discordRoleID: " 555666 ",
+			token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456",
+			want: Config{
+				AppEnv: "production", DiscordRoleID: "555666", Token: "token", GuildID: "123", ServerName: "CR Roleplay",
+				PollInterval: time.Second, CommandPrefix: "!", PlayerLogChannelID: "456", PlayerChatChannelID: "789",
+				PlayerRecapChannelID: "987", AttendanceStartTime: 21 * time.Hour, AttendanceEndTime: time.Hour,
+				AttendancePlaytime: 90 * time.Minute, DatabaseURL: "postgres://test",
+			},
+		},
+		{name: "missing app env", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", wantErr: true},
+		{name: "invalid app env", appEnv: "staging", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", wantErr: true},
+		{name: "production missing role", appEnv: "production", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", wantErr: true},
+		{name: "production invalid role", appEnv: "production", discordRoleID: "role", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", wantErr: true},
 		{name: "missing token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", wantErr: true},
 		{name: "missing guild", token: "token", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", wantErr: true},
 		{name: "invalid guild", token: "token", guildID: "12abc", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", wantErr: true},
@@ -57,7 +76,7 @@ func TestFromValues(t *testing.T) {
 		{name: "zero poll interval", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "0", playerLogChannelID: "456", wantErr: true},
 		{name: "negative poll interval", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "-1", playerLogChannelID: "456", wantErr: true},
 		{name: "invalid poll interval", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1s", playerLogChannelID: "456", wantErr: true},
-		{name: "default command prefix", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", want: Config{Token: "token", GuildID: "123", ServerName: "CR Roleplay", PollInterval: time.Second, CommandPrefix: "!", PlayerLogChannelID: "456", PlayerChatChannelID: "789", PlayerRecapChannelID: "987", AttendanceStartTime: 21 * time.Hour, AttendanceEndTime: time.Hour, AttendancePlaytime: 90 * time.Minute, DatabaseURL: "postgres://test"}},
+		{name: "default command prefix", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", want: Config{AppEnv: "local", Token: "token", GuildID: "123", ServerName: "CR Roleplay", PollInterval: time.Second, CommandPrefix: "!", PlayerLogChannelID: "456", PlayerChatChannelID: "789", PlayerRecapChannelID: "987", AttendanceStartTime: 21 * time.Hour, AttendanceEndTime: time.Hour, AttendancePlaytime: 90 * time.Minute, DatabaseURL: "postgres://test"}},
 		{name: "invalid command prefix", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", commandPrefix: "! me", playerLogChannelID: "456", wantErr: true},
 		{name: "missing log channel", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", wantErr: true},
 		{name: "invalid log channel", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "abc", wantErr: true},
@@ -74,6 +93,9 @@ func TestFromValues(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			if tt.appEnv == "" && tt.name != "missing app env" {
+				tt.appEnv = "local"
+			}
 			if tt.playerChatChannelID == "" && !tt.wantErr {
 				tt.playerChatChannelID = "789"
 			}
@@ -89,7 +111,7 @@ func TestFromValues(t *testing.T) {
 			if tt.attendancePlaytime == "" && !tt.wantErr {
 				tt.attendancePlaytime = "90m"
 			}
-			got, err := FromValues(tt.token, tt.guildID, tt.serverName, tt.pollInterval, tt.commandPrefix, tt.playerLogChannelID, tt.blacklistedUsers, tt.playerChatChannelID, tt.playerRecapChannelID, tt.attendanceStartTime, tt.attendanceEndTime, tt.attendancePlaytime, "postgres://test")
+			got, err := FromValues(tt.token, tt.guildID, tt.serverName, tt.pollInterval, tt.commandPrefix, tt.playerLogChannelID, tt.blacklistedUsers, tt.playerChatChannelID, tt.playerRecapChannelID, tt.attendanceStartTime, tt.attendanceEndTime, tt.attendancePlaytime, "postgres://test", tt.appEnv, tt.discordRoleID)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("FromValues() error = %v, wantErr %v", err, tt.wantErr)
 			}

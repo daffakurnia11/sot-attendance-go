@@ -41,6 +41,7 @@ type playerEvent struct {
 type playerLogger struct {
 	channelID       string
 	serverName      string
+	roleID          string
 	logger          *slog.Logger
 	disconnectGrace time.Duration
 	blacklisted     map[string]struct{}
@@ -50,7 +51,7 @@ type playerLogger struct {
 	sessions map[string]playerSession
 }
 
-func newPlayerLogger(channelID, serverName string, disconnectGrace time.Duration, blacklistedUserIDs []string, members *member.Repository, logger *slog.Logger) *playerLogger {
+func newPlayerLogger(channelID, serverName, roleID string, disconnectGrace time.Duration, blacklistedUserIDs []string, members *member.Repository, logger *slog.Logger) *playerLogger {
 	blacklisted := make(map[string]struct{}, len(blacklistedUserIDs))
 	for _, userID := range blacklistedUserIDs {
 		blacklisted[userID] = struct{}{}
@@ -58,6 +59,7 @@ func newPlayerLogger(channelID, serverName string, disconnectGrace time.Duration
 	return &playerLogger{
 		channelID:       channelID,
 		serverName:      serverName,
+		roleID:          roleID,
 		logger:          logger,
 		disconnectGrace: disconnectGrace,
 		blacklisted:     blacklisted,
@@ -121,7 +123,7 @@ func (l *playerLogger) transitions(guild *discordgo.Guild, now time.Time) []play
 
 	members := make(map[string]*discordgo.Member, len(guild.Members))
 	for _, member := range guild.Members {
-		if member != nil && member.User != nil && !member.User.Bot {
+		if member != nil && member.User != nil && !member.User.Bot && memberHasRole(member, l.roleID) {
 			if _, blocked := l.blacklisted[member.User.ID]; blocked {
 				continue
 			}

@@ -25,11 +25,37 @@ func TestCountMatchingMembers(t *testing.T) {
 			presence("invisible", discordgo.StatusInvisible, &discordgo.Activity{Name: "CR Roleplay"}),
 			presence("other", discordgo.StatusDoNotDisturb, &discordgo.Activity{Name: "Other City"}),
 			presence("bot", discordgo.StatusOnline, &discordgo.Activity{Name: "CR Roleplay"}),
+			presence("uncached-member", discordgo.StatusOnline, &discordgo.Activity{Name: "CR Roleplay"}),
 		},
 	}
 
-	if got := len(matchingMemberIDs(guild, "CR Roleplay")); got != 2 {
-		t.Errorf("matchingMemberIDs() count = %d, want 2", got)
+	if got := len(matchingMemberIDs(guild, "CR Roleplay", "")); got != 3 {
+		t.Errorf("matchingMemberIDs() count = %d, want 3", got)
+	}
+}
+
+func TestCountMatchingMembersWithRequiredRole(t *testing.T) {
+	t.Parallel()
+
+	guild := &discordgo.Guild{
+		Members: []*discordgo.Member{
+			{User: &discordgo.User{ID: "eligible"}, Roles: []string{"member-role"}},
+			{User: &discordgo.User{ID: "other-role"}, Roles: []string{"other-role"}},
+			{User: &discordgo.User{ID: "no-role"}},
+		},
+		Presences: []*discordgo.Presence{
+			presence("eligible", discordgo.StatusOnline, &discordgo.Activity{Name: "CR Roleplay"}),
+			presence("other-role", discordgo.StatusOnline, &discordgo.Activity{Name: "CR Roleplay"}),
+			presence("no-role", discordgo.StatusOnline, &discordgo.Activity{Name: "CR Roleplay"}),
+		},
+	}
+
+	playing := matchingMemberIDs(guild, "CR Roleplay", "member-role")
+	if len(playing) != 1 {
+		t.Fatalf("matchingMemberIDs() = %#v, want eligible member only", playing)
+	}
+	if _, found := playing["eligible"]; !found {
+		t.Errorf("matchingMemberIDs() = %#v, want eligible member", playing)
 	}
 }
 

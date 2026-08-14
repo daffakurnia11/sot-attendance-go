@@ -88,7 +88,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 
 	bot := &Bot{
 		session:             session,
-		status:              presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.PlayerLogChannelID, cfg.PollInterval, cfg.BlacklistedUserIDs, members, logger),
+		status:              presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.PlayerLogChannelID, cfg.DiscordRoleID, cfg.PollInterval, cfg.BlacklistedUserIDs, members, logger),
 		router:              router.NewRouter(cfg.CommandPrefix),
 		logger:              logger,
 		pollInterval:        cfg.PollInterval,

@@ -27,6 +27,8 @@ make local-logs
 
 Bot status shows `N playing CR Roleplay`. Counter polls cached Discord presences every `DISCORD_POLL_INTERVAL` milliseconds. It includes visible online members whose Discord activity name, details, or state matches `FIVEM_SERVER_NAME`, ignoring case, spaces, and punctuation. Offline, invisible, and bot accounts are excluded. Discord REST member responses do not contain activities; Presence Intent feeds this cache.
 
+Set `APP_ENV=production` to restrict status counts and player transition logs to members holding `DISCORD_ROLE_ID`. `DISCORD_ROLE_ID` is required in production. Set `APP_ENV=local` to inspect all non-bot guild members during testing; role filtering is disabled even when a role ID is present.
+
 Player transitions are sent as embeds to `DISCORD_PLAYER_LOG_CHANNEL_ID`: `Connecting..` when activity name is `FiveM` and details contain `Connecting`, `Connected` when activity name matches `FIVEM_SERVER_NAME`, and `Disconnected` when neither signature exists or member becomes offline/invisible. Server text inside FiveM details/state does not count as connected. Repeated polls in same state do not duplicate logs. Embeds use Discord activity start timestamps, show `SOT Players: N` without a capacity suffix, and include Discord embed timestamp.
 
 A pending disconnect is delayed for at least 15 seconds (or two poll intervals when longer). If Discord replaces the `FiveM` activity with the server activity during that window, the pending disconnect is cancelled, preventing a false disconnect between `Connecting..` and `Connected`.
