@@ -21,9 +21,6 @@ type Config struct {
 	BlacklistedUserIDs   []string
 	PlayerChatChannelID  string
 	PlayerRecapChannelID string
-	AttendanceStartTime  time.Duration
-	AttendanceEndTime    time.Duration
-	AttendancePlaytime   time.Duration
 	DatabaseURL          string
 }
 
@@ -38,16 +35,13 @@ func Load() (Config, error) {
 		os.Getenv("BLACKLISTED_USERS"),
 		os.Getenv("DISCORD_PLAYER_CHAT_CHANNEL_ID"),
 		os.Getenv("DISCORD_PLAYER_RECAP_CHANNEL_ID"),
-		os.Getenv("ATTENDANCE_START_TIME"),
-		os.Getenv("ATTENDANCE_END_TIME"),
-		os.Getenv("ATTENDANCE_PLAYTIME"),
 		os.Getenv("DATABASE_URL"),
 		os.Getenv("APP_ENV"),
 		os.Getenv("DISCORD_ROLE_ID"),
 	)
 }
 
-func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerLogChannelID, blacklistedUsers, playerChatChannelID, playerRecapChannelID, attendanceStartTime, attendanceEndTime, attendancePlaytime, databaseURL, appEnv, discordRoleID string) (Config, error) {
+func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerLogChannelID, blacklistedUsers, playerChatChannelID, playerRecapChannelID, databaseURL, appEnv, discordRoleID string) (Config, error) {
 	appEnv = strings.ToLower(strings.TrimSpace(appEnv))
 	if appEnv != "local" && appEnv != "production" {
 		return Config{}, errors.New("APP_ENV must be local or production")
@@ -121,21 +115,6 @@ func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerL
 		return Config{}, fmt.Errorf("DISCORD_PLAYER_RECAP_CHANNEL_ID: %w", err)
 	}
 
-	startTime, err := parseClockTime(attendanceStartTime)
-	if err != nil {
-		return Config{}, fmt.Errorf("ATTENDANCE_START_TIME: %w", err)
-	}
-	endTime, err := parseClockTime(attendanceEndTime)
-	if err != nil {
-		return Config{}, fmt.Errorf("ATTENDANCE_END_TIME: %w", err)
-	}
-	if startTime == endTime {
-		return Config{}, errors.New("ATTENDANCE_START_TIME and ATTENDANCE_END_TIME must differ")
-	}
-	requiredPlaytime, err := time.ParseDuration(strings.TrimSpace(attendancePlaytime))
-	if err != nil || requiredPlaytime <= 0 {
-		return Config{}, errors.New("ATTENDANCE_PLAYTIME must be a positive Go duration such as 90m or 1h30m")
-	}
 	databaseURL = strings.TrimSpace(databaseURL)
 	if databaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
@@ -153,9 +132,6 @@ func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerL
 		BlacklistedUserIDs:   blacklistedUserIDs,
 		PlayerChatChannelID:  playerChatChannelID,
 		PlayerRecapChannelID: playerRecapChannelID,
-		AttendanceStartTime:  startTime,
-		AttendanceEndTime:    endTime,
-		AttendancePlaytime:   requiredPlaytime,
 		DatabaseURL:          databaseURL,
 	}, nil
 }
@@ -170,14 +146,6 @@ func validateDiscordID(id string) error {
 		}
 	}
 	return nil
-}
-
-func parseClockTime(value string) (time.Duration, error) {
-	parsed, err := time.Parse("15:04", strings.TrimSpace(value))
-	if err != nil {
-		return 0, errors.New("must use HH:MM 24-hour format")
-	}
-	return time.Duration(parsed.Hour())*time.Hour + time.Duration(parsed.Minute())*time.Minute, nil
 }
 
 func parseDiscordIDs(value string) ([]string, error) {

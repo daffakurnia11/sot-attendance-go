@@ -17,6 +17,7 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/database"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
 	"github.com/daffakurniawan/sot-discord-bot/internal/presence"
+	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -46,6 +47,11 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		pool.Close()
 		return nil, err
 	}
+	attendanceConfig, err := dbsettings.NewRepository(pool).LoadAttendance(ctx)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
 	members := member.NewRepository(pool)
 
 	session, err := discordgo.New("Bot " + cfg.Token)
@@ -66,21 +72,21 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		return nil, fmt.Errorf("load Asia/Jakarta timezone: %w", err)
 	}
 	endAction := func(ctx context.Context, session *discordgo.Session, now time.Time) error {
-		attendanceStart, attendanceEnd := commandrecap.AttendanceWindow(now, cfg.AttendanceStartTime, cfg.AttendanceEndTime, location)
+		attendanceStart, attendanceEnd := commandrecap.AttendanceWindow(now, attendanceConfig.StartTime, attendanceConfig.EndTime, location)
 		recaps, err := members.PlaytimeRecap(ctx, attendanceStart, attendanceEnd)
 		if err != nil {
 			return err
 		}
-		if err := members.SaveAttendanceRecap(ctx, recaps, attendanceStart, attendanceEnd, cfg.AttendancePlaytime); err != nil {
+		if err := members.SaveAttendanceRecap(ctx, recaps, attendanceStart, attendanceEnd, attendanceConfig.PlaytimeThreshold); err != nil {
 			return err
 		}
-		if _, err := session.ChannelMessageSendEmbed(cfg.PlayerRecapChannelID, commandrecap.Embed(recaps, attendanceStart, now, cfg.AttendancePlaytime)); err != nil {
+		if _, err := session.ChannelMessageSendEmbed(cfg.PlayerRecapChannelID, commandrecap.Embed(recaps, attendanceStart, now, attendanceConfig.PlaytimeThreshold)); err != nil {
 			return fmt.Errorf("send attendance recap: %w", err)
 		}
 		logger.Info("attendance recap sent", "channel_id", cfg.PlayerRecapChannelID, "players", len(recaps), "attendance_start", attendanceStart, "automatic", true)
 		return nil
 	}
-	attendance, err := attendancescheduler.NewScheduler(cfg.PlayerChatChannelID, cfg.ServerName, cfg.AttendanceStartTime, cfg.AttendanceEndTime, endAction, logger)
+	attendance, err := attendancescheduler.NewScheduler(cfg.PlayerChatChannelID, cfg.ServerName, attendanceConfig.StartTime, attendanceConfig.EndTime, endAction, logger)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -94,9 +100,9 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		pollInterval:        cfg.PollInterval,
 		attendance:          attendance,
 		members:             members,
-		attendanceStartTime: cfg.AttendanceStartTime,
-		attendanceEndTime:   cfg.AttendanceEndTime,
-		attendancePlaytime:  cfg.AttendancePlaytime,
+		attendanceStartTime: attendanceConfig.StartTime,
+		attendanceEndTime:   attendanceConfig.EndTime,
+		attendancePlaytime:  attendanceConfig.PlaytimeThreshold,
 		location:            location,
 		database:            pool,
 	}
