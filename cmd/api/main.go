@@ -9,6 +9,11 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	// Embeds the timezone database in the binary. The production image is
+	// alpine with no tzdata package, and unlike the build container there is no
+	// Go toolchain to fall back on, so LoadLocation("Asia/Jakarta") fails
+	// without this. cmd/bot already imports it for the same reason.
+	_ "time/tzdata"
 
 	"github.com/daffakurniawan/sot-discord-bot/internal/api"
 	attendancehistory "github.com/daffakurniawan/sot-discord-bot/internal/attendance"
