@@ -1,4 +1,4 @@
-.PHONY: local-db-up local-up local-down local-logs test check
+.PHONY: local-db-up local-up local-down local-logs lint vet test race build check
 
 local-db-up:
 	docker compose up -d postgres
@@ -13,10 +13,22 @@ local-down:
 local-logs:
 	docker compose logs -f bot api
 
+# gofmt -l prints the paths it would rewrite and exits 0 either way, so the
+# non-empty check is what turns unformatted code into a failure.
+lint:
+	@unformatted="$$(gofmt -l .)"; \
+		if [ -n "$$unformatted" ]; then echo "gofmt required for:"; echo "$$unformatted"; exit 1; fi
+
+vet:
+	go vet ./...
+
 test:
 	go test ./...
 
-check:
+race:
 	go test -race ./...
-	go vet ./...
+
+build:
 	go build ./...
+
+check: lint vet test race build

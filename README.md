@@ -97,6 +97,78 @@ make local-down
 make check
 ```
 
+Runs `lint` (gofmt), `vet`, `test`, `race`, and `build`. CI runs `lint`, `vet`, `test`, and `race` on every pull request.
+
+## Deployment
+
+`.github/workflows/ci.yml` builds both binaries on every push to `main` and publishes two packages, then deploys over SSH:
+
+- `ghcr.io/<owner>/<repo>/api` from the `production-api` Dockerfile target
+- `ghcr.io/<owner>/<repo>/bot` from the `production` target
+
+Both descend from the same `build` stage, so the second image is a cache hit on everything but its final `COPY`.
+
+### Droplet prerequisites
+
+Copy `compose.production.yaml` into the deploy directory and create `.env.production` alongside it from `.env.production.example`. The deploy job refuses to restart anything when that file is missing or when `DATABASE_URL`, `APP_JWT_SECRET`, or `DISCORD_BOT_TOKEN` is blank.
+
+`compose.production.yaml` is separate from `compose.yaml` on purpose: the latter is the local development stack with bind mounts and Air, and has nothing a released host should inherit.
+
+`bot` waits for a healthy `api` before starting. Both binaries apply the embedded migrations at startup, and those migrations are bare `CREATE ... IF NOT EXISTS` with no advisory lock, so starting them together can abort on `pg_type_typname_nsp_index`. The dependency serialises the two migrators.
+
+### Host PostgreSQL
+
+The production stack ships no database. PostgreSQL runs on the host and the containers reach it through the `host.docker.internal:host-gateway` alias.
+
+That alias resolves to the Docker daemon's host-gateway address — the **default bridge** gateway, `172.17.0.1` — regardless of which network the container sits on. So `listen_addresses` needs no entry for this stack's own subnet, and no PostgreSQL restart is required.
+
+The container's **source** address is a different matter: traffic to the host is not NAT-ed, so packets arrive from this stack's pinned subnet. Both the host firewall and `pg_hba.conf` filter on that source, and both must allow it:
+
+```sh
+# host firewall — the containers' source subnet reaching the gateway
+ufw allow from 172.20.0.0/16 to 172.17.0.1 port 5432 proto tcp
+```
+
+```conf
+# pg_hba.conf — authorise the same subnet
+host    all    all    172.20.0.0/16    scram-sha-256
+```
+
+Then `systemctl reload postgresql`; `pg_hba.conf` is reload-only, so there is no downtime for anything else using the database.
+
+This is why the compose network subnet is pinned to `172.20.0.0/16`: both rules above name it literally, and an allocator-chosen block would silently stop matching.
+
+Symptoms when one is missing: the firewall rule shows as a **connection timeout**, the `pg_hba.conf` rule as `no pg_hba.conf entry for host`.
+
+### Reverse proxy
+
+The API publishes to loopback only and is fronted by Caddy on the host:
+
+```caddyfile
+sot-api.dafkur.com {
+    reverse_proxy 127.0.0.1:8081
+}
+```
+
+Port `8081` is `API_PORT` from `.env.production`. Pick a port nothing else on the host has claimed.
+
+### Repository configuration
+
+Create a `production` environment and set these secrets:
+
+| Secret | Purpose |
+| --- | --- |
+| `DO_HOST` | Droplet hostname or IP |
+| `DO_USER` | SSH user |
+| `DO_SSH_PRIVATE_KEY` | SSH private key for that user |
+| `DO_APP_DIR` | Deploy directory holding `compose.production.yaml` and `.env.production` |
+| `GHCR_USERNAME` | GHCR account used by the droplet to pull |
+| `GHCR_TOKEN` | Personal access token with `read:packages` |
+
+Pushing to GHCR uses the built-in `GITHUB_TOKEN`; `GHCR_USERNAME` and `GHCR_TOKEN` are only for the pull side on the droplet.
+
+The deploy pins exact image digests and runs `docker compose up -d --wait`, which blocks until the API passes `/healthz`. A crash-looping container fails the deploy instead of reporting success. Roll back by re-running compose with `API_IMAGE` and `BOT_IMAGE` set to previous digests.
+
 ## Layout
 
 ```text

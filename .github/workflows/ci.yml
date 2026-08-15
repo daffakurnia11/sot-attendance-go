@@ -1,0 +1,169 @@
+name: Backend CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One run per ref. Superseded pull request runs are pointless, but a deploy must
+# never be cancelled part-way through its SSH session, so main runs queue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pull-request:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make lint
+      - run: make vet
+      - run: make test
+      # The bot mutates shared presence state from the gateway callback and the
+      # poll loop, so the race detector is the check that matters most here.
+      - run: make race
+
+  build-app:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      api-image: ${{ steps.image.outputs.api }}
+      bot-image: ${{ steps.image.outputs.bot }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR rejects uppercase paths, so derive the name instead of trusting the
+      # repository slug to be lowercase.
+      - name: Resolve image name
+        id: name
+        run: echo "value=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # This repository ships two binaries from one Dockerfile, so it publishes
+      # two packages under the repository path rather than one ambiguous image.
+      - uses: docker/metadata-action@v5
+        id: meta-api
+        with:
+          images: ${{ steps.name.outputs.value }}/api
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long
+
+      - uses: docker/metadata-action@v5
+        id: meta-bot
+        with:
+          images: ${{ steps.name.outputs.value }}/bot
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long
+
+      # Both targets descend from the same `build` stage, which compiles both
+      # binaries in one step, so the second build is a cache hit on everything
+      # except its final COPY.
+      - uses: docker/build-push-action@v6
+        id: build-api
+        with:
+          context: .
+          target: production-api
+          push: true
+          tags: ${{ steps.meta-api.outputs.tags }}
+          labels: ${{ steps.meta-api.outputs.labels }}
+          # `go mod download` plus the compile step is the entire build, so a
+          # cold cache means recompiling every dependency on every push.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: docker/build-push-action@v6
+        id: build-bot
+        with:
+          context: .
+          target: production
+          push: true
+          tags: ${{ steps.meta-bot.outputs.tags }}
+          labels: ${{ steps.meta-bot.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Hand the deploy job immutable digests so it cannot drift from whatever
+      # tag format the metadata action happens to emit.
+      - name: Publish image references
+        id: image
+        run: |
+          echo "api=${{ steps.name.outputs.value }}/api@${{ steps.build-api.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "bot=${{ steps.name.outputs.value }}/bot@${{ steps.build-bot.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+  # No `if` needed: `needs` already keeps this skipped whenever build-app is.
+  deploy-to-prod:
+    needs: build-app
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Pull and restart production images
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          API_IMAGE: ${{ needs.build-app.outputs.api-image }}
+          BOT_IMAGE: ${{ needs.build-app.outputs.bot-image }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          APP_DIR: ${{ secrets.DO_APP_DIR }}
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_PRIVATE_KEY }}
+          envs: API_IMAGE,BOT_IMAGE,GHCR_USERNAME,GHCR_TOKEN,APP_DIR
+          script: |
+            set -eu
+            cd "$APP_DIR"
+
+            # Every runtime value (DATABASE_URL, APP_JWT_SECRET,
+            # DISCORD_BOT_TOKEN, ...) is interpolated from this file, and
+            # compose declares the critical ones `:?`. Fail here rather than
+            # half-way through a restart.
+            if [ ! -f .env.production ]; then
+              echo ".env.production is missing in $APP_DIR"
+              exit 1
+            fi
+
+            for required in DATABASE_URL APP_JWT_SECRET DISCORD_BOT_TOKEN; do
+              if ! grep -Eq "^${required}=.+$" .env.production; then
+                echo "$required is missing in $APP_DIR/.env.production"
+                exit 1
+              fi
+            done
+
+            COMPOSE="docker compose --env-file .env.production -f compose.production.yaml"
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USERNAME" --password-stdin
+            docker pull "$API_IMAGE"
+            docker pull "$BOT_IMAGE"
+
+            # --wait blocks until every service passes its healthcheck, so a
+            # crash-looping api fails the deploy instead of reporting success.
+            # Plain `up -d` returns as soon as the container has started.
+            if ! API_IMAGE="$API_IMAGE" BOT_IMAGE="$BOT_IMAGE" $COMPOSE up -d --no-build --wait --wait-timeout 180; then
+              API_IMAGE="$API_IMAGE" BOT_IMAGE="$BOT_IMAGE" $COMPOSE logs --tail=50 api bot
+              exit 1
+            fi
+
+            docker image prune -f

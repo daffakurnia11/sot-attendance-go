@@ -1,0 +1,86 @@
+# Production stack for the droplet. Self-contained on purpose: compose.yaml is
+# the local development file (bind mounts, Air, `target: development`) and has
+# nothing a released host should inherit.
+#
+# PostgreSQL runs on the host, not in this stack, so both binaries reach it over
+# host.docker.internal and the host firewall/pg_hba is what authorises them.
+#
+# Deployed by .github/workflows/ci.yml, which passes the freshly built digests
+# as API_IMAGE and BOT_IMAGE:
+#   docker compose --env-file .env.production -f compose.production.yaml up -d --wait
+name: sot-attendance
+
+networks:
+  # Pinned, not left to Docker's next-free-block allocation. The host
+  # postgresql.conf lists this gateway in listen_addresses and pg_hba.conf
+  # authorises this subnet, so an allocator-chosen block would break every
+  # database connection the first time network creation order changed.
+  # A hard "Pool overlaps with other one" failure at `up` is the intended
+  # outcome if 172.20.0.0/16 is ever claimed by another project first.
+  default:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+
+services:
+  api:
+    image: ${API_IMAGE:?API_IMAGE required}
+    env_file:
+      - .env.production
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      WEB_API_ADDRESS: :8080
+    ports:
+      # Auth.js reaches the API from the Next.js server process, never from a
+      # browser, so this stays bound to loopback and is proxied by the host.
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8080}:8080"
+    healthcheck:
+      # busybox wget ships in the alpine base image; the API exposes /healthz.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: always
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  bot:
+    image: ${BOT_IMAGE:?BOT_IMAGE required}
+    env_file:
+      - .env.production
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      # Both binaries call database.Migrate on startup and the migrations are
+      # bare CREATE ... IF NOT EXISTS with no advisory lock, so running them
+      # concurrently can abort on pg_type_typname_nsp_index. Waiting for a
+      # healthy api serialises the two migrators.
+      api:
+        condition: service_healthy
+    restart: always
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          memory: 128M
