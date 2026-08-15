@@ -42,6 +42,41 @@ func TestPlayerLoggerInitializationSuppressesExistingActivity(t *testing.T) {
 	}
 }
 
+func TestPlayerLoggerBaselineReportsActivePlayers(t *testing.T) {
+	t.Parallel()
+
+	logger := newPlayerLogger("channel", "CR Roleplay", "", 15*time.Second, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	start := time.Date(2026, time.August, 14, 14, 0, 0, 0, time.UTC)
+	guild := &discordgo.Guild{
+		Members: []*discordgo.Member{
+			{User: &discordgo.User{ID: "playing", Username: "playing"}},
+			{User: &discordgo.User{ID: "idle", Username: "idle"}},
+		},
+		Presences: []*discordgo.Presence{
+			presence("playing", discordgo.StatusOnline, &discordgo.Activity{
+				Name: "CR Roleplay", Timestamps: discordgo.TimeStamps{StartTimestamp: start.UnixMilli()},
+			}),
+			presence("idle", discordgo.StatusOnline, &discordgo.Activity{Name: "Visual Studio Code"}),
+		},
+	}
+
+	initialized, tracked, activeUserIDs := logger.initialize(guild, start)
+	if !initialized || tracked != 1 {
+		t.Fatalf("baseline = (initialized: %v, tracked: %d), want (true, 1)", initialized, tracked)
+	}
+	// Only the FiveM player counts as active. Reconciliation closes every
+	// recorded session outside this set, so a member listed here in error would
+	// keep a stale row open, and one omitted in error would be disconnected
+	// mid-session.
+	if len(activeUserIDs) != 1 || activeUserIDs[0] != "playing" {
+		t.Fatalf("active players = %v, want [playing]", activeUserIDs)
+	}
+
+	if _, _, repeated := logger.initialize(guild, start); repeated != nil {
+		t.Errorf("second baseline reported %v active players, want none", repeated)
+	}
+}
+
 func TestPlayerLoggerInitializationIsAtomic(t *testing.T) {
 	t.Parallel()
 
@@ -53,7 +88,7 @@ func TestPlayerLoggerInitializationIsAtomic(t *testing.T) {
 		waitGroup.Add(1)
 		go func() {
 			defer waitGroup.Done()
-			if initialized, _ := logger.initialize(guild, time.Now()); initialized {
+			if initialized, _, _ := logger.initialize(guild, time.Now()); initialized {
 				initializedCount.Add(1)
 			}
 		}()

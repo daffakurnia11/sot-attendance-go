@@ -163,6 +163,46 @@ func (r *Repository) SyncAdmins(ctx context.Context, adminUserIDs []string) erro
 	return nil
 }
 
+// CloseOrphanedSessions records a disconnect for every member whose most
+// recent log still reads connecting or connected but who is not in
+// activeUserIDs.
+//
+// The gateway takes a presence baseline on startup without writing logs, so it
+// cannot observe a disconnect that happened while the process was down. Without
+// this, that member's latest row reads connected indefinitely and the dashboard
+// keeps counting them as online.
+//
+// occurredAt stamps the reconciliation, not the real disconnect, which Discord
+// does not report. Playtime is measured against it, so a session left open
+// across a long outage is credited generously; across a deploy it is a matter
+// of seconds.
+func (r *Repository) CloseOrphanedSessions(ctx context.Context, activeUserIDs []string, occurredAt time.Time) (int64, error) {
+	const query = `
+		WITH latest AS (
+			SELECT DISTINCT ON (member_id) member_id, status, started_at
+			FROM player_logs
+			ORDER BY member_id, occurred_at DESC, id DESC
+		), orphaned AS (
+			SELECT latest.member_id, latest.started_at
+			FROM latest
+			JOIN members ON members.id = latest.member_id
+			WHERE latest.status IN ('connecting', 'connected')
+				AND NOT (members.user_id = ANY($1::text[]))
+		)
+		INSERT INTO player_logs (member_id, status, started_at, occurred_at, playtime)
+		SELECT member_id, 'disconnected', started_at, $2,
+			CASE
+				WHEN started_at IS NOT NULL AND $2 > started_at THEN $2 - started_at
+				ELSE NULL
+			END
+		FROM orphaned`
+	tag, err := r.database.Exec(ctx, query, activeUserIDs, occurredAt)
+	if err != nil {
+		return 0, fmt.Errorf("close orphaned player sessions: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 func (r *Repository) UpsertGuildMembers(ctx context.Context, players []Player, observedAt time.Time) error {
 	if len(players) == 0 {
 		return nil

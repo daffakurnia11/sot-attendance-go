@@ -70,8 +70,9 @@ func newPlayerLogger(channelID, serverName, roleID string, disconnectGrace time.
 }
 
 func (l *playerLogger) refresh(session *discordgo.Session, guild *discordgo.Guild, playerCount int, now time.Time) {
-	if initialized, trackedPlayers := l.initialize(guild, now); initialized {
+	if initialized, trackedPlayers, activeUserIDs := l.initialize(guild, now); initialized {
 		l.logger.Info("player activity baseline initialized", "tracked_players", trackedPlayers)
+		l.closeOrphanedSessions(activeUserIDs, now)
 		return
 	}
 
@@ -104,12 +105,17 @@ func (l *playerLogger) refresh(session *discordgo.Session, guild *discordgo.Guil
 	}
 }
 
-func (l *playerLogger) initialize(guild *discordgo.Guild, now time.Time) (bool, int) {
+// initialize snapshots who is already playing so a restart does not replay
+// every in-progress session into the Discord log channel. It reports the user
+// IDs it decided are active, which is what the database has to be reconciled
+// against; anyone recorded as connected but absent from that set disconnected
+// while the process was down.
+func (l *playerLogger) initialize(guild *discordgo.Guild, now time.Time) (bool, int, []string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if l.initialized {
-		return false, len(l.sessions)
+		return false, len(l.sessions), nil
 	}
 
 	members := l.eligibleMembers(guild)
@@ -124,7 +130,31 @@ func (l *playerLogger) initialize(guild *discordgo.Guild, now time.Time) (bool, 
 		l.sessions[presence.User.ID] = playerSession{phase: phase, startedAt: activityStart(activity, now)}
 	}
 	l.initialized = true
-	return true, len(l.sessions)
+
+	activeUserIDs := make([]string, 0, len(l.sessions))
+	for userID := range l.sessions {
+		activeUserIDs = append(activeUserIDs, userID)
+	}
+	return true, len(l.sessions), activeUserIDs
+}
+
+// closeOrphanedSessions settles the database against the baseline. Deliberately
+// silent: these disconnects already happened, and announcing them on every
+// restart is the noise the baseline exists to avoid.
+func (l *playerLogger) closeOrphanedSessions(activeUserIDs []string, now time.Time) {
+	if l.members == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	closed, err := l.members.CloseOrphanedSessions(ctx, activeUserIDs, now)
+	if err != nil {
+		l.logger.Error("close orphaned player sessions", "error", err)
+		return
+	}
+	if closed > 0 {
+		l.logger.Info("orphaned player sessions closed", "sessions", closed, "active_players", len(activeUserIDs))
+	}
 }
 
 func normalizedPlayerPhase(phase playerPhase) string {
