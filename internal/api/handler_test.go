@@ -69,10 +69,11 @@ type stubDashboard struct {
 }
 
 type stubAttendance struct {
-	report attendancehistory.MonthlyReport
-	err    error
-	year   int
-	month  time.Month
+	report   attendancehistory.MonthlyReport
+	err      error
+	year     int
+	month    time.Month
+	startDay int
 }
 
 type stubSettings struct {
@@ -90,10 +91,33 @@ func (s *stubSettings) Update(_ context.Context, values dbsettings.Values) (dbse
 	return values, nil
 }
 
-func (s *stubAttendance) GetMonthly(_ context.Context, year int, month time.Month) (attendancehistory.MonthlyReport, error) {
+func (s *stubAttendance) GetMonthly(_ context.Context, year int, month time.Month, startDay int) (attendancehistory.MonthlyReport, error) {
 	s.year = year
 	s.month = month
+	s.startDay = startDay
 	return s.report, s.err
+}
+
+func TestMonthlyAttendanceUsesConfiguredContractStartDate(t *testing.T) {
+	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08"}}
+	store := &stubSettings{values: dbsettings.Values{StartDateContract: "28"}}
+	handler := NewHandler(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger(), store)
+
+	response := request(handler, http.MethodGet, "/api/v1/attendance?month=2026-08", "Bearer app-token")
+	if response.Code != http.StatusOK || reader.startDay != 28 {
+		t.Fatalf("response = %d %s, start day = %d", response.Code, response.Body.String(), reader.startDay)
+	}
+}
+
+func TestRequestedPeriodUsesActiveContractMonth(t *testing.T) {
+	year, month, err := requestedPeriod("", time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC), 28)
+	if err != nil || year != 2026 || month != time.July {
+		t.Fatalf("requestedPeriod() = %d-%d, %v; want 2026-07", year, month, err)
+	}
+	year, month, err = requestedPeriod("", time.Date(2026, time.August, 28, 12, 0, 0, 0, time.UTC), 28)
+	if err != nil || year != 2026 || month != time.August {
+		t.Fatalf("requestedPeriod() = %d-%d, %v; want 2026-08", year, month, err)
+	}
 }
 
 func (s *stubDashboard) Get(_ context.Context, memberID int64) (dashboard.Snapshot, error) {
@@ -238,7 +262,7 @@ func TestMonthlyPayslipsRequiresAuthAndCalculatesEveryMember(t *testing.T) {
 		{MemberID: 1, CharacterName: "Below", TotalAttended: 23},
 		{MemberID: 2, CharacterName: "Qualified", TotalAttended: 24},
 	}}}
-	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30"}}
+	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
 	handler := NewHandler(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger(), store)
 
 	unauthorized := request(handler, http.MethodGet, "/api/v1/payslips?month=2026-08", "")
@@ -252,7 +276,7 @@ func TestMonthlyPayslipsRequiresAuthAndCalculatesEveryMember(t *testing.T) {
 }
 
 func TestSettingsRequireAuthAndValidateUpdates(t *testing.T) {
-	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30"}}
+	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
 	members := &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: true}}
 	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), store)
 
@@ -265,7 +289,7 @@ func TestSettingsRequireAuthAndValidateUpdates(t *testing.T) {
 		t.Fatalf("settings response = %d %s", loaded.Code, loaded.Body.String())
 	}
 
-	invalidRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", strings.NewReader(`{"start_attendance":"21:00","end_attendance":"21:00","playtime_threshold":"90m","player_threshold":"15","payment_contract":"8000000","attendance_minimum":"24","attendance_maximum":"30"}`))
+	invalidRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", strings.NewReader(`{"start_attendance":"21:00","end_attendance":"21:00","playtime_threshold":"90m","player_threshold":"15","payment_contract":"8000000","attendance_minimum":"24","attendance_maximum":"30","start_date_contract":"28"}`))
 	invalidRequest.Header.Set("Authorization", "Bearer app-token")
 	invalid := httptest.NewRecorder()
 	handler.ServeHTTP(invalid, invalidRequest)
@@ -273,7 +297,7 @@ func TestSettingsRequireAuthAndValidateUpdates(t *testing.T) {
 		t.Fatalf("invalid response = %d %s", invalid.Code, invalid.Body.String())
 	}
 
-	validRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", strings.NewReader(`{"start_attendance":"20:30","end_attendance":"01:30","playtime_threshold":"1h30m","player_threshold":"20","payment_contract":"9000000","attendance_minimum":"24","attendance_maximum":"30"}`))
+	validRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", strings.NewReader(`{"start_attendance":"20:30","end_attendance":"01:30","playtime_threshold":"1h30m","player_threshold":"20","payment_contract":"9000000","attendance_minimum":"24","attendance_maximum":"30","start_date_contract":"28"}`))
 	validRequest.Header.Set("Authorization", "Bearer app-token")
 	valid := httptest.NewRecorder()
 	handler.ServeHTTP(valid, validRequest)
@@ -283,7 +307,7 @@ func TestSettingsRequireAuthAndValidateUpdates(t *testing.T) {
 }
 
 func TestSettingsUpdateRejectsNonAdmin(t *testing.T) {
-	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30"}}
+	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
 	members := &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: false}}
 	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), store)
 	request := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", strings.NewReader(`{}`))

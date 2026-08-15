@@ -27,6 +27,9 @@ type MemberRecord struct {
 type MonthlyReport struct {
 	Month              string         `json:"month"`
 	DaysInMonth        int            `json:"days_in_month"`
+	PeriodStart        string         `json:"period_start"`
+	PeriodEnd          string         `json:"period_end"`
+	PeriodDates        []string       `json:"period_dates"`
 	AttendanceDays     []string       `json:"attendance_days"`
 	TotalAttended      int            `json:"total_attended"`
 	TotalOpportunities int            `json:"total_opportunities"`
@@ -42,12 +45,20 @@ func NewReportRepository(database *pgxpool.Pool, location *time.Location) *Repor
 	return &ReportRepository{database: database, location: location}
 }
 
-func (r *ReportRepository) GetMonthly(ctx context.Context, year int, month time.Month) (MonthlyReport, error) {
-	start := time.Date(year, month, 1, 0, 0, 0, 0, r.location)
-	end := start.AddDate(0, 1, 0)
+func (r *ReportRepository) GetMonthly(ctx context.Context, year int, month time.Month, contractStartDay int) (MonthlyReport, error) {
+	start := contractBoundary(year, month, contractStartDay, r.location)
+	nextMonth := time.Date(year, month, 1, 0, 0, 0, 0, r.location).AddDate(0, 1, 0)
+	end := contractBoundary(nextMonth.Year(), nextMonth.Month(), contractStartDay, r.location)
+	periodDates := make([]string, 0, int(end.Sub(start).Hours()/24))
+	for date := start; date.Before(end); date = date.AddDate(0, 0, 1) {
+		periodDates = append(periodDates, date.Format("2006-01-02"))
+	}
 	report := MonthlyReport{
 		Month:          start.Format("2006-01"),
-		DaysInMonth:    end.AddDate(0, 0, -1).Day(),
+		DaysInMonth:    len(periodDates),
+		PeriodStart:    start.Format("2006-01-02"),
+		PeriodEnd:      end.AddDate(0, 0, -1).Format("2006-01-02"),
+		PeriodDates:    periodDates,
 		AttendanceDays: make([]string, 0),
 		Members:        make([]MemberRecord, 0),
 	}
@@ -127,4 +138,12 @@ func (r *ReportRepository) GetMonthly(ctx context.Context, year int, month time.
 	slices.Sort(report.AttendanceDays)
 	report.TotalOpportunities = len(report.Members) * len(report.AttendanceDays)
 	return report, nil
+}
+
+func contractBoundary(year int, month time.Month, day int, location *time.Location) time.Time {
+	lastDay := time.Date(year, month+1, 0, 0, 0, 0, 0, location).Day()
+	if day > lastDay {
+		day = lastDay
+	}
+	return time.Date(year, month, day, 0, 0, 0, 0, location)
 }

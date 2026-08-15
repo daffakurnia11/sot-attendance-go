@@ -15,7 +15,7 @@ func TestCalculateDividesContractAcrossEligiblePlayers(t *testing.T) {
 		{MemberID: 4, CharacterName: "Rounded", TotalAttended: 25},
 	}}, settings.Values{
 		StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15",
-		PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30",
+		PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -31,7 +31,7 @@ func TestCalculateDividesContractAcrossEligiblePlayers(t *testing.T) {
 func TestCalculateHandlesNoEligiblePlayers(t *testing.T) {
 	report, err := Calculate(attendance.MonthlyReport{Month: "2026-08", Members: []attendance.MemberRecord{{MemberID: 1, TotalAttended: 0}}}, settings.Values{
 		StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15",
-		PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30",
+		PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28",
 	})
 	if err != nil {
 		t.Fatal(err)

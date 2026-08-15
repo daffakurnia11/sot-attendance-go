@@ -20,6 +20,8 @@ type Player struct {
 
 type Report struct {
 	Month             string   `json:"month"`
+	PeriodStart       string   `json:"period_start"`
+	PeriodEnd         string   `json:"period_end"`
 	PaymentContract   string   `json:"payment_contract"`
 	AttendanceMinimum int      `json:"attendance_minimum"`
 	AttendanceMaximum int      `json:"attendance_maximum"`
@@ -40,6 +42,8 @@ func Calculate(attendanceReport attendance.MonthlyReport, values settings.Values
 
 	report := Report{
 		Month:             attendanceReport.Month,
+		PeriodStart:       attendanceReport.PeriodStart,
+		PeriodEnd:         attendanceReport.PeriodEnd,
 		PaymentContract:   validated.PaymentContract,
 		AttendanceMinimum: minimum,
 		AttendanceMaximum: maximum,

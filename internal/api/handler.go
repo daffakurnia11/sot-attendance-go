@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,7 +43,7 @@ type dashboardReader interface {
 	GetMemberRecords(context.Context, int64) (dashboard.MemberRecords, error)
 }
 type attendanceReader interface {
-	GetMonthly(context.Context, int, time.Month) (attendancehistory.MonthlyReport, error)
+	GetMonthly(context.Context, int, time.Month, int) (attendancehistory.MonthlyReport, error)
 }
 type settingsStore interface {
 	Load(context.Context) (dbsettings.Values, error)
@@ -299,12 +300,27 @@ func (h *Handler) loadMonthlyAttendance(response http.ResponseWriter, request *h
 		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Member bearer token is invalid or expired")
 		return appauth.Claims{}, attendancehistory.MonthlyReport{}, false
 	}
-	year, month, err := requestedMonth(request.URL.Query().Get("month"), time.Now())
+	contractStartDay := 1
+	if h.settings != nil {
+		values, settingsErr := h.settings.Load(request.Context())
+		if settingsErr != nil {
+			h.logger.Error("load contract period setting", "member_id", claims.MemberID, "error", settingsErr)
+			writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Attendance period could not be loaded")
+			return appauth.Claims{}, attendancehistory.MonthlyReport{}, false
+		}
+		contractStartDay, err = strconv.Atoi(values.StartDateContract)
+		if err != nil || contractStartDay < 1 || contractStartDay > 31 {
+			h.logger.Error("invalid contract period setting", "member_id", claims.MemberID, "value", values.StartDateContract)
+			writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Attendance period is invalid")
+			return appauth.Claims{}, attendancehistory.MonthlyReport{}, false
+		}
+	}
+	year, month, err := requestedPeriod(request.URL.Query().Get("month"), time.Now(), contractStartDay)
 	if err != nil {
 		writeError(response, http.StatusBadRequest, "INVALID_MONTH", "Month must use YYYY-MM format")
 		return appauth.Claims{}, attendancehistory.MonthlyReport{}, false
 	}
-	report, err := h.attendance.GetMonthly(request.Context(), year, month)
+	report, err := h.attendance.GetMonthly(request.Context(), year, month, contractStartDay)
 	if err != nil {
 		h.logger.Error("load monthly attendance", "member_id", claims.MemberID, "month", fmt.Sprintf("%04d-%02d", year, month), "error", err)
 		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Attendance could not be loaded")
@@ -313,14 +329,20 @@ func (h *Handler) loadMonthlyAttendance(response http.ResponseWriter, request *h
 	return claims, report, true
 }
 
-func requestedMonth(value string, now time.Time) (int, time.Month, error) {
+func requestedPeriod(value string, now time.Time, contractStartDay int) (int, time.Month, error) {
 	if value == "" {
 		location, err := time.LoadLocation("Asia/Jakarta")
 		if err != nil {
 			return 0, 0, err
 		}
 		now = now.In(location)
-		return now.Year(), now.Month(), nil
+		lastDay := time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, location).Day()
+		boundaryDay := min(contractStartDay, lastDay)
+		periodMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, location)
+		if now.Day() < boundaryDay {
+			periodMonth = periodMonth.AddDate(0, -1, 0)
+		}
+		return periodMonth.Year(), periodMonth.Month(), nil
 	}
 	parsed, err := time.Parse("2006-01", value)
 	if err != nil || parsed.Format("2006-01") != value {

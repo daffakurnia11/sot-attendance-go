@@ -25,6 +25,7 @@ type Values struct {
 	PaymentContract   string `json:"payment_contract"`
 	AttendanceMinimum string `json:"attendance_minimum"`
 	AttendanceMaximum string `json:"attendance_maximum"`
+	StartDateContract string `json:"start_date_contract"`
 }
 
 type queryRower interface {
@@ -44,10 +45,11 @@ func (r *Repository) Load(ctx context.Context) (Values, error) {
 			COALESCE(MAX(value) FILTER (WHERE settings = 'player_threshold'), ''),
 			COALESCE(MAX(value) FILTER (WHERE settings = 'payment_contract'), ''),
 			COALESCE(MAX(value) FILTER (WHERE settings = 'attendance_minimum'), ''),
-			COALESCE(MAX(value) FILTER (WHERE settings = 'attendance_maximum'), '')
+			COALESCE(MAX(value) FILTER (WHERE settings = 'attendance_maximum'), ''),
+			COALESCE(MAX(value) FILTER (WHERE settings = 'start_date_contract'), '')
 		FROM settings`
 	var values Values
-	if err := r.database.QueryRow(ctx, query).Scan(&values.StartAttendance, &values.EndAttendance, &values.PlaytimeThreshold, &values.PlayerThreshold, &values.PaymentContract, &values.AttendanceMinimum, &values.AttendanceMaximum); err != nil {
+	if err := r.database.QueryRow(ctx, query).Scan(&values.StartAttendance, &values.EndAttendance, &values.PlaytimeThreshold, &values.PlayerThreshold, &values.PaymentContract, &values.AttendanceMinimum, &values.AttendanceMaximum, &values.StartDateContract); err != nil {
 		return Values{}, fmt.Errorf("load settings: %w", err)
 	}
 	return values, nil
@@ -63,7 +65,7 @@ func (r *Repository) Update(ctx context.Context, values Values) (Values, error) 
 			('start_attendance', $1::text), ('end_attendance', $2::text),
 			('playtime_threshold', $3::text), ('player_threshold', $4::text),
 			('payment_contract', $5::text), ('attendance_minimum', $6::text),
-			('attendance_maximum', $7::text)
+			('attendance_maximum', $7::text), ('start_date_contract', $8::text)
 		), updated AS (
 			UPDATE settings SET value = input.value FROM input
 			WHERE settings.settings = input.settings
@@ -76,18 +78,19 @@ func (r *Repository) Update(ctx context.Context, values Values) (Values, error) 
 			COALESCE(MAX(value) FILTER (WHERE settings = 'player_threshold'), ''),
 			COALESCE(MAX(value) FILTER (WHERE settings = 'payment_contract'), ''),
 			COALESCE(MAX(value) FILTER (WHERE settings = 'attendance_minimum'), ''),
-			COALESCE(MAX(value) FILTER (WHERE settings = 'attendance_maximum'), ''), COUNT(*)
+			COALESCE(MAX(value) FILTER (WHERE settings = 'attendance_maximum'), ''),
+			COALESCE(MAX(value) FILTER (WHERE settings = 'start_date_contract'), ''), COUNT(*)
 		FROM updated`
 	var result Values
 	var count int
-	err = r.database.QueryRow(ctx, query, normalized.StartAttendance, normalized.EndAttendance, normalized.PlaytimeThreshold, normalized.PlayerThreshold, normalized.PaymentContract, normalized.AttendanceMinimum, normalized.AttendanceMaximum).Scan(
-		&result.StartAttendance, &result.EndAttendance, &result.PlaytimeThreshold, &result.PlayerThreshold, &result.PaymentContract, &result.AttendanceMinimum, &result.AttendanceMaximum, &count,
+	err = r.database.QueryRow(ctx, query, normalized.StartAttendance, normalized.EndAttendance, normalized.PlaytimeThreshold, normalized.PlayerThreshold, normalized.PaymentContract, normalized.AttendanceMinimum, normalized.AttendanceMaximum, normalized.StartDateContract).Scan(
+		&result.StartAttendance, &result.EndAttendance, &result.PlaytimeThreshold, &result.PlayerThreshold, &result.PaymentContract, &result.AttendanceMinimum, &result.AttendanceMaximum, &result.StartDateContract, &count,
 	)
 	if err != nil {
 		return Values{}, fmt.Errorf("update settings: %w", err)
 	}
-	if count != 7 {
-		return Values{}, fmt.Errorf("update settings: expected 7 rows, updated %d", count)
+	if count != 8 {
+		return Values{}, fmt.Errorf("update settings: expected 8 rows, updated %d", count)
 	}
 	return result, nil
 }
@@ -100,6 +103,7 @@ func Validate(values Values) (Values, error) {
 	values.PaymentContract = strings.TrimSpace(values.PaymentContract)
 	values.AttendanceMinimum = strings.TrimSpace(values.AttendanceMinimum)
 	values.AttendanceMaximum = strings.TrimSpace(values.AttendanceMaximum)
+	values.StartDateContract = strings.TrimSpace(values.StartDateContract)
 	start, err := parseClockTime(values.StartAttendance)
 	if err != nil {
 		return Values{}, fmt.Errorf("setting start_attendance: %w", err)
@@ -133,6 +137,10 @@ func Validate(values Values) (Values, error) {
 	}
 	if minimum > maximum {
 		return Values{}, errors.New("setting attendance_minimum must not exceed attendance_maximum")
+	}
+	contractStart, err := strconv.Atoi(values.StartDateContract)
+	if err != nil || contractStart < 1 || contractStart > 31 {
+		return Values{}, errors.New("setting start_date_contract must be between 1 and 31")
 	}
 	return values, nil
 }
