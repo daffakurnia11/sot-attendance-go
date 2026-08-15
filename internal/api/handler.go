@@ -4,13 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	attendancehistory "github.com/daffakurniawan/sot-discord-bot/internal/attendance"
 	appauth "github.com/daffakurniawan/sot-discord-bot/internal/auth"
+	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
+	"github.com/daffakurniawan/sot-discord-bot/internal/payslip"
+	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
 )
 
 type discordIdentityVerifier interface {
@@ -20,24 +26,327 @@ type discordIdentityVerifier interface {
 type memberFinder interface {
 	FindByUserID(context.Context, string) (member.Member, error)
 }
+type memberProfileUpdater interface {
+	UpdateCharacterName(context.Context, int64, string) (member.Member, error)
+}
 
 type tokenIssuer interface {
 	Issue(member.Member) (string, time.Time, error)
 }
 
-type Handler struct {
-	verifier discordIdentityVerifier
-	members  memberFinder
-	issuer   tokenIssuer
-	logger   *slog.Logger
+type tokenVerifier interface {
+	Verify(string) (appauth.Claims, error)
+}
+type dashboardReader interface {
+	Get(context.Context, int64) (dashboard.Snapshot, error)
+	GetMemberRecords(context.Context, int64) (dashboard.MemberRecords, error)
+}
+type attendanceReader interface {
+	GetMonthly(context.Context, int, time.Month) (attendancehistory.MonthlyReport, error)
+}
+type settingsStore interface {
+	Load(context.Context) (dbsettings.Values, error)
+	Update(context.Context, dbsettings.Values) (dbsettings.Values, error)
 }
 
-func NewHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, logger *slog.Logger) http.Handler {
-	handler := &Handler{verifier: verifier, members: members, issuer: issuer, logger: logger}
+type Handler struct {
+	verifier   discordIdentityVerifier
+	members    memberFinder
+	issuer     tokenIssuer
+	tokens     tokenVerifier
+	dashboard  dashboardReader
+	attendance attendanceReader
+	settings   settingsStore
+	logger     *slog.Logger
+}
+
+func NewHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, stores ...settingsStore) http.Handler {
+	handler := &Handler{verifier: verifier, members: members, issuer: issuer, tokens: tokens, dashboard: dashboard, attendance: attendance, logger: logger}
+	if len(stores) > 0 {
+		handler.settings = stores[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handler.health)
 	mux.HandleFunc("POST /api/v1/auth/discord", handler.discordLogin)
+	mux.HandleFunc("GET /api/v1/dashboard", handler.dashboardSnapshot)
+	mux.HandleFunc("GET /api/v1/me/records", handler.memberRecords)
+	mux.HandleFunc("GET /api/v1/attendance", handler.monthlyAttendance)
+	mux.HandleFunc("GET /api/v1/attendance/me", handler.myMonthlyAttendance)
+	mux.HandleFunc("GET /api/v1/payslips", handler.monthlyPayslips)
+	mux.HandleFunc("GET /api/v1/settings", handler.getSettings)
+	mux.HandleFunc("PATCH /api/v1/settings", handler.updateSettings)
+	mux.HandleFunc("PATCH /api/v1/me/profile", handler.updateMyProfile)
 	return handler.logging(mux)
+}
+
+func (h *Handler) monthlyPayslips(response http.ResponseWriter, request *http.Request) {
+	claims, report, ok := h.loadMonthlyAttendance(response, request)
+	if !ok {
+		return
+	}
+	if h.settings == nil {
+		writeError(response, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "Payslip settings are unavailable")
+		return
+	}
+	values, err := h.settings.Load(request.Context())
+	if err != nil {
+		h.logger.Error("load payslip settings", "member_id", claims.MemberID, "month", report.Month, "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Payslips could not be loaded")
+		return
+	}
+	payslipReport, err := payslip.Calculate(report, values)
+	if err != nil {
+		h.logger.Error("calculate payslips", "member_id", claims.MemberID, "month", report.Month, "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Payslips could not be calculated")
+		return
+	}
+	writeJSON(response, http.StatusOK, payslipReport)
+}
+
+func (h *Handler) updateMyProfile(response http.ResponseWriter, request *http.Request) {
+	claims, ok := h.authenticated(response, request)
+	if !ok {
+		return
+	}
+	updater, ok := h.members.(memberProfileUpdater)
+	if !ok {
+		writeError(response, http.StatusServiceUnavailable, "PROFILE_UNAVAILABLE", "Profile is unavailable")
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, 1024)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var payload struct {
+		CharacterName string `json:"character_name"`
+	}
+	if err := decoder.Decode(&payload); err != nil {
+		writeError(response, http.StatusBadRequest, "INVALID_PROFILE", "Profile payload is invalid")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(response, http.StatusBadRequest, "INVALID_PROFILE", "Profile payload must contain one JSON object")
+		return
+	}
+	payload.CharacterName = strings.TrimSpace(payload.CharacterName)
+	if payload.CharacterName == "" || len([]rune(payload.CharacterName)) > 80 || strings.ContainsAny(payload.CharacterName, "\r\n\x00") {
+		writeError(response, http.StatusUnprocessableEntity, "INVALID_CHARACTER_NAME", "Character name must contain 1 to 80 characters on one line")
+		return
+	}
+	updated, err := updater.UpdateCharacterName(request.Context(), claims.MemberID, payload.CharacterName)
+	if err != nil {
+		h.logger.Error("update member profile", "member_id", claims.MemberID, "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Profile could not be updated")
+		return
+	}
+	h.logger.Info("member profile updated", "member_id", claims.MemberID)
+	writeJSON(response, http.StatusOK, map[string]string{"character_name": updated.CharacterName})
+}
+
+func (h *Handler) authenticated(response http.ResponseWriter, request *http.Request) (appauth.Claims, bool) {
+	accessToken, ok := bearerToken(request.Header.Get("Authorization"))
+	if !ok {
+		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Member bearer token is required")
+		return appauth.Claims{}, false
+	}
+	claims, err := h.tokens.Verify(accessToken)
+	if err != nil {
+		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Member bearer token is invalid or expired")
+		return appauth.Claims{}, false
+	}
+	return claims, true
+}
+
+func (h *Handler) getSettings(response http.ResponseWriter, request *http.Request) {
+	claims, ok := h.authenticated(response, request)
+	if !ok {
+		return
+	}
+	if h.settings == nil {
+		writeError(response, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "Settings are unavailable")
+		return
+	}
+	currentMember, found := h.loadAuthenticatedMember(response, request, claims)
+	if !found {
+		return
+	}
+	values, err := h.settings.Load(request.Context())
+	if err != nil {
+		h.logger.Error("load settings", "member_id", claims.MemberID, "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Settings could not be loaded")
+		return
+	}
+	writeJSON(response, http.StatusOK, struct {
+		dbsettings.Values
+		IsAdmin bool `json:"is_admin"`
+	}{Values: values, IsAdmin: currentMember.IsAdmin})
+}
+
+func (h *Handler) updateSettings(response http.ResponseWriter, request *http.Request) {
+	claims, ok := h.authenticated(response, request)
+	if !ok {
+		return
+	}
+	if h.settings == nil {
+		writeError(response, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "Settings are unavailable")
+		return
+	}
+	currentMember, found := h.loadAuthenticatedMember(response, request, claims)
+	if !found {
+		return
+	}
+	if !currentMember.IsAdmin {
+		h.logger.Warn("non-admin settings update denied", "member_id", claims.MemberID)
+		writeError(response, http.StatusForbidden, "ADMIN_REQUIRED", "Administrator role is required to update attendance settings")
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, 4096)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var values dbsettings.Values
+	if err := decoder.Decode(&values); err != nil {
+		writeError(response, http.StatusBadRequest, "INVALID_SETTINGS", "Settings payload is invalid")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(response, http.StatusBadRequest, "INVALID_SETTINGS", "Settings payload must contain one JSON object")
+		return
+	}
+	validated, validationErr := dbsettings.Validate(values)
+	if validationErr != nil {
+		writeError(response, http.StatusUnprocessableEntity, "INVALID_SETTINGS", validationErr.Error())
+		return
+	}
+	updated, err := h.settings.Update(request.Context(), validated)
+	if err != nil {
+		h.logger.Error("update settings", "member_id", claims.MemberID, "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Settings could not be updated")
+		return
+	}
+	h.logger.Info("settings updated", "member_id", claims.MemberID)
+	writeJSON(response, http.StatusOK, struct {
+		dbsettings.Values
+		IsAdmin bool `json:"is_admin"`
+	}{Values: updated, IsAdmin: true})
+}
+
+func (h *Handler) loadAuthenticatedMember(response http.ResponseWriter, request *http.Request, claims appauth.Claims) (member.Member, bool) {
+	currentMember, err := h.members.FindByUserID(request.Context(), claims.DiscordUserID)
+	if err != nil {
+		h.logger.Error("load authenticated member", "member_id", claims.MemberID, "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Member permissions could not be loaded")
+		return member.Member{}, false
+	}
+	return currentMember, true
+}
+
+func (h *Handler) memberRecords(response http.ResponseWriter, request *http.Request) {
+	accessToken, ok := bearerToken(request.Header.Get("Authorization"))
+	if !ok {
+		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Member bearer token is required")
+		return
+	}
+	claims, err := h.tokens.Verify(accessToken)
+	if err != nil {
+		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Member bearer token is invalid or expired")
+		return
+	}
+	records, err := h.dashboard.GetMemberRecords(request.Context(), claims.MemberID)
+	if err != nil {
+		h.logger.Error("load member records", "member_id", claims.MemberID, "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Member records could not be loaded")
+		return
+	}
+	writeJSON(response, http.StatusOK, records)
+}
+
+func (h *Handler) myMonthlyAttendance(response http.ResponseWriter, request *http.Request) {
+	claims, report, ok := h.loadMonthlyAttendance(response, request)
+	if !ok {
+		return
+	}
+	personal := report.Members[:0]
+	for _, record := range report.Members {
+		if record.MemberID == claims.MemberID {
+			personal = append(personal, record)
+			break
+		}
+	}
+	report.Members = personal
+	report.TotalAttended = 0
+	if len(personal) == 1 {
+		report.TotalAttended = personal[0].TotalAttended
+	}
+	report.TotalOpportunities = len(personal) * len(report.AttendanceDays)
+	writeJSON(response, http.StatusOK, report)
+}
+
+func (h *Handler) monthlyAttendance(response http.ResponseWriter, request *http.Request) {
+	_, report, ok := h.loadMonthlyAttendance(response, request)
+	if !ok {
+		return
+	}
+	writeJSON(response, http.StatusOK, report)
+}
+
+func (h *Handler) loadMonthlyAttendance(response http.ResponseWriter, request *http.Request) (appauth.Claims, attendancehistory.MonthlyReport, bool) {
+	accessToken, ok := bearerToken(request.Header.Get("Authorization"))
+	if !ok {
+		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Member bearer token is required")
+		return appauth.Claims{}, attendancehistory.MonthlyReport{}, false
+	}
+	claims, err := h.tokens.Verify(accessToken)
+	if err != nil {
+		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Member bearer token is invalid or expired")
+		return appauth.Claims{}, attendancehistory.MonthlyReport{}, false
+	}
+	year, month, err := requestedMonth(request.URL.Query().Get("month"), time.Now())
+	if err != nil {
+		writeError(response, http.StatusBadRequest, "INVALID_MONTH", "Month must use YYYY-MM format")
+		return appauth.Claims{}, attendancehistory.MonthlyReport{}, false
+	}
+	report, err := h.attendance.GetMonthly(request.Context(), year, month)
+	if err != nil {
+		h.logger.Error("load monthly attendance", "member_id", claims.MemberID, "month", fmt.Sprintf("%04d-%02d", year, month), "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Attendance could not be loaded")
+		return appauth.Claims{}, attendancehistory.MonthlyReport{}, false
+	}
+	return claims, report, true
+}
+
+func requestedMonth(value string, now time.Time) (int, time.Month, error) {
+	if value == "" {
+		location, err := time.LoadLocation("Asia/Jakarta")
+		if err != nil {
+			return 0, 0, err
+		}
+		now = now.In(location)
+		return now.Year(), now.Month(), nil
+	}
+	parsed, err := time.Parse("2006-01", value)
+	if err != nil || parsed.Format("2006-01") != value {
+		return 0, 0, errors.New("invalid month")
+	}
+	return parsed.Year(), parsed.Month(), nil
+}
+
+func (h *Handler) dashboardSnapshot(response http.ResponseWriter, request *http.Request) {
+	accessToken, ok := bearerToken(request.Header.Get("Authorization"))
+	if !ok {
+		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Member bearer token is required")
+		return
+	}
+	claims, err := h.tokens.Verify(accessToken)
+	if err != nil {
+		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Member bearer token is invalid or expired")
+		return
+	}
+	snapshot, err := h.dashboard.Get(request.Context(), claims.MemberID)
+	if err != nil {
+		h.logger.Error("load dashboard", "member_id", claims.MemberID, "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Dashboard could not be loaded")
+		return
+	}
+	writeJSON(response, http.StatusOK, snapshot)
 }
 
 func (h *Handler) health(response http.ResponseWriter, _ *http.Request) {

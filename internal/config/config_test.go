@@ -13,6 +13,7 @@ func TestFromValues(t *testing.T) {
 		name                 string
 		appEnv               string
 		discordRoleID        string
+		discordAdminIDs      string
 		token                string
 		guildID              string
 		serverName           string
@@ -36,13 +37,15 @@ func TestFromValues(t *testing.T) {
 			commandPrefix:        " $ ",
 			playerLogChannelID:   " 789012 ",
 			blacklistedUsers:     " 111, 222,111 ",
+			discordAdminIDs:      " 333,444,333 ",
 			playerChatChannelID:  " 345678 ",
 			playerRecapChannelID: " 901234 ",
 			want: Config{
 				AppEnv: "local",
-				Token:  "token", GuildID: "123456", ServerName: "CR Roleplay",
+				Token:  "token", GuildID: "123456", DiscordMemberRoleID: "123456789", ServerName: "CR Roleplay",
 				PollInterval: 5 * time.Second, CommandPrefix: "$", PlayerLogChannelID: "789012",
 				BlacklistedUserIDs:   []string{"111", "222"},
+				DiscordAdminRoleIDs:  []string{"333", "444"},
 				PlayerChatChannelID:  "345678",
 				PlayerRecapChannelID: "901234",
 				DatabaseURL:          "postgres://test",
@@ -52,7 +55,7 @@ func TestFromValues(t *testing.T) {
 			name: "valid production", appEnv: " PRODUCTION ", discordRoleID: " 555666 ",
 			token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456",
 			want: Config{
-				AppEnv: "production", DiscordRoleID: "555666", Token: "token", GuildID: "123", ServerName: "CR Roleplay",
+				AppEnv: "production", DiscordRoleID: "555666", DiscordMemberRoleID: "555666", Token: "token", GuildID: "123", ServerName: "CR Roleplay",
 				PollInterval: time.Second, CommandPrefix: "!", PlayerLogChannelID: "456", PlayerChatChannelID: "789",
 				PlayerRecapChannelID: "987", DatabaseURL: "postgres://test",
 			},
@@ -74,6 +77,7 @@ func TestFromValues(t *testing.T) {
 		{name: "missing log channel", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", wantErr: true},
 		{name: "invalid log channel", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "abc", wantErr: true},
 		{name: "invalid blacklisted user", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", blacklistedUsers: "123,abc", wantErr: true},
+		{name: "invalid admin role", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", discordAdminIDs: "123,role", wantErr: true},
 		{name: "empty blacklisted entry", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", blacklistedUsers: "123,,456", wantErr: true},
 		{name: "missing player chat channel", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", wantErr: true},
 		{name: "missing player recap channel", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", playerLogChannelID: "456", playerChatChannelID: "789", wantErr: true},
@@ -91,7 +95,7 @@ func TestFromValues(t *testing.T) {
 			if tt.playerRecapChannelID == "" && !tt.wantErr {
 				tt.playerRecapChannelID = "987"
 			}
-			got, err := FromValues(tt.token, tt.guildID, tt.serverName, tt.pollInterval, tt.commandPrefix, tt.playerLogChannelID, tt.blacklistedUsers, tt.playerChatChannelID, tt.playerRecapChannelID, "postgres://test", tt.appEnv, tt.discordRoleID)
+			got, err := FromValues(tt.token, tt.guildID, tt.serverName, tt.pollInterval, tt.commandPrefix, tt.playerLogChannelID, tt.blacklistedUsers, tt.playerChatChannelID, tt.playerRecapChannelID, "postgres://test", tt.appEnv, tt.discordRoleID, tt.discordAdminIDs)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("FromValues() error = %v, wantErr %v", err, tt.wantErr)
 			}

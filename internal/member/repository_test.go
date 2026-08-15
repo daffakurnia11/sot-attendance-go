@@ -77,6 +77,39 @@ func TestRecordLogWrapsDatabaseError(t *testing.T) {
 	}
 }
 
+func TestSyncAdminsUpdatesAndClearsRolesAtomically(t *testing.T) {
+	database := &recordingExecutor{}
+	err := NewRepository(database).SyncAdmins(context.Background(), []string{"100", "200"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(database.query, "is_admin = (user_id = ANY") || len(database.args) != 1 {
+		t.Fatalf("query = %s, args = %#v", database.query, database.args)
+	}
+	ids, ok := database.args[0].([]string)
+	if !ok || len(ids) != 2 || ids[0] != "100" || ids[1] != "200" {
+		t.Fatalf("admin IDs = %#v", database.args[0])
+	}
+}
+
+func TestUpsertGuildMembersBulkUpsertsWithoutReplacingFirstConnection(t *testing.T) {
+	database := &recordingExecutor{}
+	observedAt := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	err := NewRepository(database).UpsertGuildMembers(context.Background(), []Player{
+		{UserID: "100", Username: "delta", DisplayName: "Delta"},
+		{UserID: "200", Username: "pupaw", DisplayName: "Pupaw"},
+	}, observedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(database.query, "FROM unnest") || !strings.Contains(database.query, "ON CONFLICT (user_id) DO UPDATE") || strings.Contains(database.query, "first_connected_at = EXCLUDED") {
+		t.Fatalf("query = %s", database.query)
+	}
+	if len(database.args) != 4 || database.args[3] != observedAt {
+		t.Fatalf("args = %#v", database.args)
+	}
+}
+
 func TestFindByUserIDMapsMissingMember(t *testing.T) {
 	repository := NewRepository(&recordingExecutor{err: pgx.ErrNoRows})
 
@@ -93,6 +126,31 @@ func TestFindByUserIDWrapsDatabaseError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "find member by user ID") {
 		t.Fatalf("FindByUserID() error = %v", err)
 	}
+}
+
+func TestUpdateCharacterNameIsScopedByMemberID(t *testing.T) {
+	database := &recordingExecutor{row: memberRow{member: Member{ID: 7, UserID: "123", Username: "delta", DisplayName: "Delta", CharacterName: "Kenji"}}}
+	updated, err := NewRepository(database).UpdateCharacterName(context.Background(), 7, "Kenji")
+	if err != nil {
+		t.Fatalf("UpdateCharacterName() error = %v", err)
+	}
+	if updated.CharacterName != "Kenji" || len(database.args) != 2 || database.args[0] != int64(7) || !strings.Contains(database.query, "WHERE id = $1") {
+		t.Fatalf("update = %#v, query = %s, args = %#v", updated, database.query, database.args)
+	}
+}
+
+type memberRow struct{ member Member }
+
+func (r memberRow) Scan(destinations ...any) error {
+	*destinations[0].(*int64) = r.member.ID
+	*destinations[1].(*string) = r.member.UserID
+	*destinations[2].(*string) = r.member.Username
+	*destinations[3].(*string) = r.member.DisplayName
+	*destinations[4].(*string) = r.member.CharacterName
+	if len(destinations) > 5 {
+		*destinations[5].(*bool) = r.member.IsAdmin
+	}
+	return nil
 }
 
 func TestSaveAttendanceRecapBulkUpserts(t *testing.T) {

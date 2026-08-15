@@ -47,8 +47,9 @@ type playerLogger struct {
 	blacklisted     map[string]struct{}
 	members         *member.Repository
 
-	mu       sync.Mutex
-	sessions map[string]playerSession
+	mu          sync.Mutex
+	initialized bool
+	sessions    map[string]playerSession
 }
 
 func newPlayerLogger(channelID, serverName, roleID string, disconnectGrace time.Duration, blacklistedUserIDs []string, members *member.Repository, logger *slog.Logger) *playerLogger {
@@ -69,6 +70,11 @@ func newPlayerLogger(channelID, serverName, roleID string, disconnectGrace time.
 }
 
 func (l *playerLogger) refresh(session *discordgo.Session, guild *discordgo.Guild, playerCount int, now time.Time) {
+	if initialized, trackedPlayers := l.initialize(guild, now); initialized {
+		l.logger.Info("player activity baseline initialized", "tracked_players", trackedPlayers)
+		return
+	}
+
 	events := l.transitions(guild, now)
 	for _, event := range events {
 		if l.members != nil {
@@ -98,6 +104,29 @@ func (l *playerLogger) refresh(session *discordgo.Session, guild *discordgo.Guil
 	}
 }
 
+func (l *playerLogger) initialize(guild *discordgo.Guild, now time.Time) (bool, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.initialized {
+		return false, len(l.sessions)
+	}
+
+	members := l.eligibleMembers(guild)
+	for _, presence := range guild.Presences {
+		if presence == nil || presence.User == nil || presence.User.Bot || members[presence.User.ID] == nil {
+			continue
+		}
+		phase, activity := activityPhase(presence, l.serverName)
+		if phase == phaseDisconnected {
+			continue
+		}
+		l.sessions[presence.User.ID] = playerSession{phase: phase, startedAt: activityStart(activity, now)}
+	}
+	l.initialized = true
+	return true, len(l.sessions)
+}
+
 func normalizedPlayerPhase(phase playerPhase) string {
 	return strings.TrimSuffix(strings.ToLower(string(phase)), "..")
 }
@@ -121,15 +150,7 @@ func (l *playerLogger) transitions(guild *discordgo.Guild, now time.Time) []play
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	members := make(map[string]*discordgo.Member, len(guild.Members))
-	for _, member := range guild.Members {
-		if member != nil && member.User != nil && !member.User.Bot && memberHasRole(member, l.roleID) {
-			if _, blocked := l.blacklisted[member.User.ID]; blocked {
-				continue
-			}
-			members[member.User.ID] = member
-		}
-	}
+	members := l.eligibleMembers(guild)
 
 	seen := make(map[string]struct{}, len(guild.Presences))
 	events := make([]playerEvent, 0)
@@ -190,6 +211,20 @@ func (l *playerLogger) transitions(guild *discordgo.Guild, now time.Time) []play
 	}
 
 	return events
+}
+
+func (l *playerLogger) eligibleMembers(guild *discordgo.Guild) map[string]*discordgo.Member {
+	members := make(map[string]*discordgo.Member, len(guild.Members))
+	for _, guildMember := range guild.Members {
+		if guildMember == nil || guildMember.User == nil || guildMember.User.Bot || !memberHasRole(guildMember, l.roleID) {
+			continue
+		}
+		if _, blocked := l.blacklisted[guildMember.User.ID]; blocked {
+			continue
+		}
+		members[guildMember.User.ID] = guildMember
+	}
+	return members
 }
 
 func activityPhase(presence *discordgo.Presence, serverName string) (playerPhase, *discordgo.Activity) {

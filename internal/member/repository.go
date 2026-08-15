@@ -40,6 +40,7 @@ type Member struct {
 	Username      string `json:"username"`
 	DisplayName   string `json:"display_name"`
 	CharacterName string `json:"character_name"`
+	IsAdmin       bool   `json:"is_admin"`
 }
 
 type executor interface {
@@ -151,9 +152,46 @@ type Repository struct{ database executor }
 
 func NewRepository(database executor) *Repository { return &Repository{database: database} }
 
+func (r *Repository) SyncAdmins(ctx context.Context, adminUserIDs []string) error {
+	const query = `
+		UPDATE members
+		SET is_admin = (user_id = ANY($1::text[])), updated_at = NOW()
+		WHERE is_admin IS DISTINCT FROM (user_id = ANY($1::text[]))`
+	if _, err := r.database.Exec(ctx, query, adminUserIDs); err != nil {
+		return fmt.Errorf("sync member admins: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) UpsertGuildMembers(ctx context.Context, players []Player, observedAt time.Time) error {
+	if len(players) == 0 {
+		return nil
+	}
+	userIDs := make([]string, len(players))
+	usernames := make([]string, len(players))
+	displayNames := make([]string, len(players))
+	for index, player := range players {
+		userIDs[index] = player.UserID
+		usernames[index] = player.Username
+		displayNames[index] = player.DisplayName
+	}
+	const query = `
+		INSERT INTO members (user_id, username, display_name, first_connected_at)
+		SELECT data.user_id, data.username, data.display_name, $4
+		FROM unnest($1::text[], $2::text[], $3::text[]) AS data(user_id, username, display_name)
+		ON CONFLICT (user_id) DO UPDATE SET
+			username = EXCLUDED.username,
+			display_name = EXCLUDED.display_name,
+			updated_at = NOW()`
+	if _, err := r.database.Exec(ctx, query, userIDs, usernames, displayNames, observedAt); err != nil {
+		return fmt.Errorf("upsert guild members: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) FindByUserID(ctx context.Context, userID string) (Member, error) {
 	const query = `
-		SELECT id, user_id, username, display_name, COALESCE(character_name, '')
+		SELECT id, user_id, username, display_name, COALESCE(character_name, ''), is_admin
 		FROM members
 		WHERE user_id = $1`
 
@@ -164,6 +202,7 @@ func (r *Repository) FindByUserID(ctx context.Context, userID string) (Member, e
 		&found.Username,
 		&found.DisplayName,
 		&found.CharacterName,
+		&found.IsAdmin,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Member{}, ErrNotFound
@@ -172,6 +211,22 @@ func (r *Repository) FindByUserID(ctx context.Context, userID string) (Member, e
 		return Member{}, fmt.Errorf("find member by user ID: %w", err)
 	}
 	return found, nil
+}
+
+func (r *Repository) UpdateCharacterName(ctx context.Context, memberID int64, characterName string) (Member, error) {
+	const query = `
+		UPDATE members SET character_name = $2, updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, user_id, username, display_name, character_name`
+	var updated Member
+	err := r.database.QueryRow(ctx, query, memberID, characterName).Scan(&updated.ID, &updated.UserID, &updated.Username, &updated.DisplayName, &updated.CharacterName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Member{}, ErrNotFound
+	}
+	if err != nil {
+		return Member{}, fmt.Errorf("update member character name: %w", err)
+	}
+	return updated, nil
 }
 
 func (r *Repository) RecordLog(ctx context.Context, log PlayerLog) error {

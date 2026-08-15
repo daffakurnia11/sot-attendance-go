@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -34,6 +36,10 @@ type Bot struct {
 	attendancePlaytime  time.Duration
 	location            *time.Location
 	database            *pgxpool.Pool
+	guildID             string
+	adminRoleIDs        []string
+	memberRoleID        string
+	adminSync           sync.Mutex
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
@@ -105,6 +111,9 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		attendancePlaytime:  attendanceConfig.PlaytimeThreshold,
 		location:            location,
 		database:            pool,
+		guildID:             cfg.GuildID,
+		adminRoleIDs:        cfg.DiscordAdminRoleIDs,
+		memberRoleID:        cfg.DiscordMemberRoleID,
 	}
 	session.AddHandler(bot.onReady)
 	session.AddHandler(bot.onGuildCreate)
@@ -143,7 +152,78 @@ shutdown:
 
 func (b *Bot) onReady(session *discordgo.Session, event *discordgo.Ready) {
 	b.logger.Info("Discord gateway ready", "bot_user_id", event.User.ID, "bot_username", event.User.Username)
+	go b.syncGuildMembers(session)
 	b.status.Refresh(session)
+}
+
+func (b *Bot) syncGuildMembers(session *discordgo.Session) {
+	if !b.adminSync.TryLock() {
+		return
+	}
+	defer b.adminSync.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	members, err := fetchGuildMembers(session, b.guildID)
+	if err != nil {
+		b.logger.Error("fetch Discord members for startup sync", "guild_id", b.guildID, "error", err)
+		return
+	}
+	roleMembers := matchingRoleMembers(members, []string{b.memberRoleID})
+	players := make([]member.Player, 0, len(roleMembers))
+	for _, guildMember := range roleMembers {
+		players = append(players, member.Player{UserID: guildMember.User.ID, Username: guildMember.User.Username, DisplayName: guildMember.DisplayName()})
+	}
+	if err := b.members.UpsertGuildMembers(ctx, players, time.Now()); err != nil {
+		b.logger.Error("upsert Discord role members", "guild_id", b.guildID, "error", err)
+		return
+	}
+	adminUserIDs := matchingRoleMemberIDs(members, b.adminRoleIDs)
+	if err := b.members.SyncAdmins(ctx, adminUserIDs); err != nil {
+		b.logger.Error("sync member admins", "guild_id", b.guildID, "error", err)
+		return
+	}
+	b.logger.Info("guild members synced", "guild_id", b.guildID, "discord_members", len(members), "role_members", len(players), "admins", len(adminUserIDs))
+}
+
+func fetchGuildMembers(session *discordgo.Session, guildID string) ([]*discordgo.Member, error) {
+	all := make([]*discordgo.Member, 0)
+	after := ""
+	for {
+		page, err := session.GuildMembers(guildID, after, 1000)
+		if err != nil {
+			return nil, fmt.Errorf("list guild members: %w", err)
+		}
+		all = append(all, page...)
+		if len(page) < 1000 {
+			return all, nil
+		}
+		after = page[len(page)-1].User.ID
+	}
+}
+
+func matchingRoleMemberIDs(members []*discordgo.Member, roleIDs []string) []string {
+	matched := matchingRoleMembers(members, roleIDs)
+	result := make([]string, 0, len(matched))
+	for _, guildMember := range matched {
+		result = append(result, guildMember.User.ID)
+	}
+	return result
+}
+
+func matchingRoleMembers(members []*discordgo.Member, roleIDs []string) []*discordgo.Member {
+	result := make([]*discordgo.Member, 0)
+	if len(roleIDs) == 0 || (len(roleIDs) == 1 && roleIDs[0] == "") {
+		return result
+	}
+	for _, guildMember := range members {
+		if guildMember == nil || guildMember.User == nil || guildMember.User.Bot {
+			continue
+		}
+		if slices.ContainsFunc(guildMember.Roles, func(roleID string) bool { return slices.Contains(roleIDs, roleID) }) {
+			result = append(result, guildMember)
+		}
+	}
+	return result
 }
 
 func (b *Bot) onGuildCreate(session *discordgo.Session, event *discordgo.GuildCreate) {

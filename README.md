@@ -2,6 +2,8 @@
 
 Go backend containing Discord attendance bot and member-authenticated web API.
 
+Dashboard CFX players come from `FIVEM_SERVER_IP/players.json`. `FIVEM_PLAYER_ID` filters player names case-insensitively (for example, `SOT`). CFX failure is logged and returned as unavailable without hiding database-backed dashboard statistics.
+
 ## Web API authentication
 
 Web API runs as separate `cmd/api` process on `WEB_API_ADDRESS` (`:8080` by default). Local Compose exposes it only on `127.0.0.1:8080`.
@@ -60,6 +62,8 @@ make local-logs
 Bot status shows `N playing CR Roleplay`. Counter polls cached Discord presences every `DISCORD_POLL_INTERVAL` milliseconds. It includes visible online members whose Discord activity name, details, or state matches `FIVEM_SERVER_NAME`, ignoring case, spaces, and punctuation. Offline, invisible, and bot accounts are excluded. Discord REST member responses do not contain activities; Presence Intent feeds this cache.
 
 Set `APP_ENV=production` to restrict status counts and player transition logs to members holding `DISCORD_ROLE_ID`. `DISCORD_ROLE_ID` is required in production. Set `APP_ENV=local` to inspect all non-bot guild members during testing; role filtering is disabled even when a role ID is present.
+
+On gateway startup, bot fetches every guild member. Members holding `DISCORD_ROLE_ID` are bulk-upserted into `members` without creating player logs or replacing existing `first_connected_at`. `DISCORD_ADMIN_IDS` accepts comma-separated Discord role IDs and synchronizes `members.is_admin`; members without any configured admin role are cleared.
 
 Player transitions are sent as embeds to `DISCORD_PLAYER_LOG_CHANNEL_ID`: `Connecting..` when activity name is `FiveM` and details contain `Connecting`, `Connected` when activity name matches `FIVEM_SERVER_NAME`, and `Disconnected` when neither signature exists or member becomes offline/invisible. Server text inside FiveM details/state does not count as connected. Repeated polls in same state do not duplicate logs. Embeds use Discord activity start timestamps, show `SOT Players: N` without a capacity suffix, and include Discord embed timestamp.
 

@@ -44,6 +44,10 @@ func (c *Counter) Refresh(session *discordgo.Session) {
 		c.logger.Warn("guild unavailable for status counter", "guild_id", c.guildID, "error", err)
 		return
 	}
+	if guild.Unavailable {
+		c.logger.Debug("guild unavailable for player baseline", "guild_id", c.guildID)
+		return
+	}
 
 	playing := matchingMemberIDs(guild, c.serverName, c.roleID)
 	count := len(playing)

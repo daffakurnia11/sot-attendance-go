@@ -14,6 +14,8 @@ type Config struct {
 	Token                string
 	GuildID              string
 	DiscordRoleID        string
+	DiscordMemberRoleID  string
+	DiscordAdminRoleIDs  []string
 	ServerName           string
 	PollInterval         time.Duration
 	CommandPrefix        string
@@ -38,15 +40,22 @@ func Load() (Config, error) {
 		os.Getenv("DATABASE_URL"),
 		os.Getenv("APP_ENV"),
 		os.Getenv("DISCORD_ROLE_ID"),
+		os.Getenv("DISCORD_ADMIN_IDS"),
 	)
 }
 
-func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerLogChannelID, blacklistedUsers, playerChatChannelID, playerRecapChannelID, databaseURL, appEnv, discordRoleID string) (Config, error) {
+func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerLogChannelID, blacklistedUsers, playerChatChannelID, playerRecapChannelID, databaseURL, appEnv, discordRoleID, discordAdminIDs string) (Config, error) {
 	appEnv = strings.ToLower(strings.TrimSpace(appEnv))
 	if appEnv != "local" && appEnv != "production" {
 		return Config{}, errors.New("APP_ENV must be local or production")
 	}
 	discordRoleID = strings.TrimSpace(discordRoleID)
+	discordMemberRoleID := discordRoleID
+	if discordMemberRoleID != "" {
+		if err := validateDiscordID(discordMemberRoleID); err != nil {
+			return Config{}, fmt.Errorf("DISCORD_ROLE_ID: %w", err)
+		}
+	}
 	if appEnv == "production" {
 		if err := validateDiscordID(discordRoleID); err != nil {
 			return Config{}, fmt.Errorf("DISCORD_ROLE_ID: %w", err)
@@ -105,6 +114,10 @@ func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerL
 	if err != nil {
 		return Config{}, fmt.Errorf("BLACKLISTED_USERS: %w", err)
 	}
+	discordAdminRoleIDs, err := parseDiscordIDs(discordAdminIDs)
+	if err != nil {
+		return Config{}, fmt.Errorf("DISCORD_ADMIN_IDS: %w", err)
+	}
 
 	playerChatChannelID = strings.TrimSpace(playerChatChannelID)
 	if err := validateDiscordID(playerChatChannelID); err != nil {
@@ -125,6 +138,8 @@ func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerL
 		Token:                token,
 		GuildID:              guildID,
 		DiscordRoleID:        discordRoleID,
+		DiscordMemberRoleID:  discordMemberRoleID,
+		DiscordAdminRoleIDs:  discordAdminRoleIDs,
 		ServerName:           serverName,
 		PollInterval:         time.Duration(pollMilliseconds) * time.Millisecond,
 		CommandPrefix:        commandPrefix,

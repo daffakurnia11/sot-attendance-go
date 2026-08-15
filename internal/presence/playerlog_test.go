@@ -3,11 +3,66 @@ package presence
 import (
 	"io"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
+
+func TestPlayerLoggerInitializationSuppressesExistingActivity(t *testing.T) {
+	t.Parallel()
+
+	logger := newPlayerLogger("channel", "CR Roleplay", "", 15*time.Second, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	start := time.Date(2026, time.August, 14, 14, 0, 0, 0, time.UTC)
+	guild := &discordgo.Guild{
+		Members: []*discordgo.Member{{User: &discordgo.User{ID: "player", Username: "player"}}},
+		Presences: []*discordgo.Presence{presence("player", discordgo.StatusOnline, &discordgo.Activity{
+			Name: "CR Roleplay", Timestamps: discordgo.TimeStamps{StartTimestamp: start.UnixMilli()},
+		})},
+	}
+
+	logger.refresh(nil, guild, 1, start.Add(time.Hour))
+	if !logger.initialized || len(logger.sessions) != 1 {
+		t.Fatalf("startup baseline = (initialized: %v, tracked: %d), want (true, 1)", logger.initialized, len(logger.sessions))
+	}
+	if events := logger.transitions(guild, start.Add(time.Hour)); len(events) != 0 {
+		t.Fatalf("startup activity emitted %d events", len(events))
+	}
+
+	guild.Presences[0].Status = discordgo.StatusOffline
+	if events := logger.transitions(guild, start.Add(time.Hour+time.Second)); len(events) != 0 {
+		t.Fatalf("first missing poll emitted %d events", len(events))
+	}
+	events := logger.transitions(guild, start.Add(time.Hour+16*time.Second))
+	assertEvent(t, events, phaseDisconnected)
+	if !events[0].startedAt.Equal(start) {
+		t.Errorf("disconnected start = %v, want %v", events[0].startedAt, start)
+	}
+}
+
+func TestPlayerLoggerInitializationIsAtomic(t *testing.T) {
+	t.Parallel()
+
+	logger := newPlayerLogger("channel", "CR Roleplay", "", 15*time.Second, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	guild := &discordgo.Guild{}
+	var initializedCount atomic.Int32
+	var waitGroup sync.WaitGroup
+	for range 10 {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			if initialized, _ := logger.initialize(guild, time.Now()); initialized {
+				initializedCount.Add(1)
+			}
+		}()
+	}
+	waitGroup.Wait()
+	if got := initializedCount.Load(); got != 1 {
+		t.Fatalf("initialize succeeded %d times, want 1", got)
+	}
+}
 
 func TestPlayerLoggerTransitions(t *testing.T) {
 	t.Parallel()

@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"github.com/daffakurniawan/sot-discord-bot/internal/api"
+	attendancehistory "github.com/daffakurniawan/sot-discord-bot/internal/attendance"
 	appauth "github.com/daffakurniawan/sot-discord-bot/internal/auth"
+	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/database"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
+	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
 )
 
 func main() {
@@ -50,7 +53,13 @@ func main() {
 		os.Exit(1)
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	handler := api.NewHandler(api.NewDiscordVerifier(client), member.NewRepository(pool), issuer, logger)
+	cfxClient := dashboard.NewCFXClient(client, config.FiveMServerURL, config.FiveMPlayerID)
+	location, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		logger.Error("load API timezone", "error", err)
+		os.Exit(1)
+	}
+	handler := api.NewHandler(api.NewDiscordVerifier(client), member.NewRepository(pool), issuer, issuer, dashboard.NewRepository(pool, cfxClient, logger), attendancehistory.NewReportRepository(pool, location), logger, dbsettings.NewRepository(pool))
 	server := &http.Server{
 		Addr:              config.Address,
 		Handler:           handler,
