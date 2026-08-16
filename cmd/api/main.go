@@ -58,7 +58,7 @@ func main() {
 		os.Exit(1)
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	cfxClient := dashboard.NewCFXClient(client, config.FiveMServerURL, config.FiveMPlayerID)
+	cfxClient := dashboard.NewCFXClient(client, config.FiveMCFXID, config.FiveMPlayerID)
 	location, err := time.LoadLocation("Asia/Jakarta")
 	if err != nil {
 		logger.Error("load API timezone", "error", err)

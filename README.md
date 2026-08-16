@@ -2,7 +2,7 @@
 
 Go backend containing Discord attendance bot and member-authenticated web API.
 
-Dashboard CFX players come from `FIVEM_SERVER_IP/players.json`. `FIVEM_PLAYER_ID` filters player names case-insensitively (for example, `SOT`). CFX failure is logged and returned as unavailable without hiding database-backed dashboard statistics.
+Dashboard CFX players come from the public Cfx.re directory, `https://frontend.cfx-services.net/api/servers/single/<FIVEM_SERVER_CFX_ID>`, where the ID is the short server code in a join link. Reading the directory rather than the game server's own `players.json` means the host only needs outbound HTTPS, not a route to the game server. `FIVEM_PLAYER_ID` filters player names case-insensitively as a substring (for example, `SOT` also matches `EM - SOTxHT BHND`). CFX failure is logged and returned as unavailable without hiding database-backed dashboard statistics.
 
 ## Web API authentication
 

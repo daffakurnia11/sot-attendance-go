@@ -2,18 +2,17 @@ package api
 
 import (
 	"errors"
-	"net/url"
 	"os"
 	"strings"
 	"time"
 )
 
 type Config struct {
-	Address        string
-	JWTSecret      string
-	JWTTTL         time.Duration
-	FiveMServerURL string
-	FiveMPlayerID  string
+	Address       string
+	JWTSecret     string
+	JWTTTL        time.Duration
+	FiveMCFXID    string
+	FiveMPlayerID string
 }
 
 func LoadConfig() (Config, error) {
@@ -21,12 +20,12 @@ func LoadConfig() (Config, error) {
 		os.Getenv("WEB_API_ADDRESS"),
 		os.Getenv("APP_JWT_SECRET"),
 		os.Getenv("APP_JWT_TTL"),
-		os.Getenv("FIVEM_SERVER_IP"),
+		os.Getenv("FIVEM_SERVER_CFX_ID"),
 		os.Getenv("FIVEM_PLAYER_ID"),
 	)
 }
 
-func ConfigFromValues(address, jwtSecret, jwtTTL, fiveMServerURL, fiveMPlayerID string) (Config, error) {
+func ConfigFromValues(address, jwtSecret, jwtTTL, fiveMCFXID, fiveMPlayerID string) (Config, error) {
 	address = strings.TrimSpace(address)
 	if address == "" {
 		address = ":8080"
@@ -46,14 +45,29 @@ func ConfigFromValues(address, jwtSecret, jwtTTL, fiveMServerURL, fiveMPlayerID 
 	if err != nil || ttl <= 0 || ttl > 24*time.Hour {
 		return Config{}, errors.New("APP_JWT_TTL must be a positive Go duration no longer than 24h")
 	}
-	fiveMServerURL = strings.TrimRight(strings.TrimSpace(fiveMServerURL), "/")
-	parsedURL, err := url.Parse(fiveMServerURL)
-	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
-		return Config{}, errors.New("FIVEM_SERVER_IP must be a valid HTTP or HTTPS URL")
+	// The Cfx.re server code, the short identifier from a server's join link.
+	// Restricted to the characters those codes use so a stray path segment or
+	// query string cannot be appended to the directory URL.
+	fiveMCFXID = strings.TrimSpace(fiveMCFXID)
+	if fiveMCFXID == "" || !isCFXServerID(fiveMCFXID) {
+		return Config{}, errors.New("FIVEM_SERVER_CFX_ID must be a Cfx.re server code such as kr7k7d")
 	}
 	fiveMPlayerID = strings.TrimSpace(fiveMPlayerID)
 	if fiveMPlayerID == "" {
 		return Config{}, errors.New("FIVEM_PLAYER_ID is required")
 	}
-	return Config{Address: address, JWTSecret: jwtSecret, JWTTTL: ttl, FiveMServerURL: fiveMServerURL, FiveMPlayerID: fiveMPlayerID}, nil
+	return Config{Address: address, JWTSecret: jwtSecret, JWTTTL: ttl, FiveMCFXID: fiveMCFXID, FiveMPlayerID: fiveMPlayerID}, nil
+}
+
+func isCFXServerID(value string) bool {
+	for _, character := range value {
+		switch {
+		case character >= '0' && character <= '9':
+		case character >= 'a' && character <= 'z':
+		case character >= 'A' && character <= 'Z':
+		default:
+			return false
+		}
+	}
+	return true
 }
