@@ -81,6 +81,9 @@ func NewHandler(verifier discordIdentityVerifier, members memberFinder, issuer t
 }
 
 func (h *Handler) monthlyPayslips(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.admin(response, request, "payslips"); !ok {
+		return
+	}
 	claims, report, ok := h.loadMonthlyAttendance(response, request)
 	if !ok {
 		return
@@ -230,6 +233,28 @@ func (h *Handler) updateSettings(response http.ResponseWriter, request *http.Req
 	}{Values: updated, IsAdmin: true})
 }
 
+// admin authenticates and then requires the administrator role.
+//
+// Guards the reports that cover the whole roster: every member's attendance
+// grid and everyone's payout. A member's own figures stay open to them through
+// /api/v1/attendance/me and /api/v1/me/records.
+func (h *Handler) admin(response http.ResponseWriter, request *http.Request, action string) (appauth.Claims, bool) {
+	claims, ok := h.authenticated(response, request)
+	if !ok {
+		return appauth.Claims{}, false
+	}
+	currentMember, found := h.loadAuthenticatedMember(response, request, claims)
+	if !found {
+		return appauth.Claims{}, false
+	}
+	if !currentMember.IsAdmin {
+		h.logger.Warn("non-admin request denied", "member_id", claims.MemberID, "action", action)
+		writeError(response, http.StatusForbidden, "ADMIN_REQUIRED", "Administrator role is required")
+		return appauth.Claims{}, false
+	}
+	return claims, true
+}
+
 func (h *Handler) loadAuthenticatedMember(response http.ResponseWriter, request *http.Request, claims appauth.Claims) (member.Member, bool) {
 	currentMember, err := h.members.FindByUserID(request.Context(), claims.DiscordUserID)
 	if err != nil {
@@ -282,6 +307,9 @@ func (h *Handler) myMonthlyAttendance(response http.ResponseWriter, request *htt
 }
 
 func (h *Handler) monthlyAttendance(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.admin(response, request, "attendance"); !ok {
+		return
+	}
 	_, report, ok := h.loadMonthlyAttendance(response, request)
 	if !ok {
 		return

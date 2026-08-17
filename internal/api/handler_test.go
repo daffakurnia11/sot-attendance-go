@@ -101,7 +101,7 @@ func (s *stubAttendance) GetMonthly(_ context.Context, year int, month time.Mont
 func TestMonthlyAttendanceUsesConfiguredContractStartDate(t *testing.T) {
 	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08"}}
 	store := &stubSettings{values: dbsettings.Values{StartDateContract: "28"}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger(), store)
+	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger(), store)
 
 	response := request(handler, http.MethodGet, "/api/v1/attendance?month=2026-08", "Bearer app-token")
 	if response.Code != http.StatusOK || reader.startDay != 28 {
@@ -222,7 +222,7 @@ func TestMemberRecordsUseLoggedInMember(t *testing.T) {
 
 func TestMonthlyAttendanceRequiresAuthAndValidMonth(t *testing.T) {
 	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08", TotalAttended: 12}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger())
+	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger())
 
 	unauthorized := request(handler, http.MethodGet, "/api/v1/attendance?month=2026-08", "")
 	if unauthorized.Code != http.StatusUnauthorized {
@@ -246,7 +246,7 @@ func TestMyMonthlyAttendanceOnlyReturnsLoggedInMember(t *testing.T) {
 			{MemberID: 7, DisplayName: "Logged In", TotalAttended: 1},
 		},
 	}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger())
+	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger())
 
 	response := request(handler, http.MethodGet, "/api/v1/attendance/me?month=2026-08", "Bearer app-token")
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "Other") || !strings.Contains(response.Body.String(), "Logged In") {
@@ -263,7 +263,7 @@ func TestMonthlyPayslipsRequiresAuthAndCalculatesEveryMember(t *testing.T) {
 		{MemberID: 2, CharacterName: "Qualified", TotalAttended: 24},
 	}}}
 	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger(), store)
+	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger(), store)
 
 	unauthorized := request(handler, http.MethodGet, "/api/v1/payslips?month=2026-08", "")
 	if unauthorized.Code != http.StatusUnauthorized {
@@ -341,4 +341,36 @@ func request(handler http.Handler, method, path, authorization string) *httptest
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func TestRosterWideReportsRejectNonAdmin(t *testing.T) {
+	// The attendance grid covers every member and the payslip report covers
+	// everyone's payout, so both are administrator-only.
+	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
+	members := &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: false}}
+	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08"}}
+	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, reader, testLogger(), store)
+
+	for _, path := range []string{"/api/v1/attendance", "/api/v1/payslips"} {
+		response := request(handler, http.MethodGet, path, "Bearer app-token")
+		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "ADMIN_REQUIRED") {
+			t.Fatalf("%s response = %d %s, want 403 ADMIN_REQUIRED", path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestMemberOwnReportsStayOpenToNonAdmin(t *testing.T) {
+	// A member's own figures are theirs to read; only roster-wide views are
+	// gated, so the personal endpoints must not regress with the admin change.
+	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
+	members := &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: false}}
+	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08", AttendanceDays: []string{"2026-08-05"}}}
+	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, reader, testLogger(), store)
+
+	for _, path := range []string{"/api/v1/attendance/me", "/api/v1/me/records", "/api/v1/dashboard"} {
+		response := request(handler, http.MethodGet, path, "Bearer app-token")
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s response = %d %s, want 200", path, response.Code, response.Body.String())
+		}
+	}
 }
