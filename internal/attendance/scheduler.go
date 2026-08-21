@@ -15,16 +15,36 @@ type attendanceSchedule struct {
 	timeOfDay time.Duration
 }
 
+type ScheduleTimes struct {
+	Start time.Duration
+	End   time.Duration
+}
+
+type scheduleLoader func(context.Context) (ScheduleTimes, error)
+
 type Scheduler struct {
 	channelID  string
 	serverName string
 	location   *time.Location
 	schedules  []attendanceSchedule
+	loadTimes  scheduleLoader
+	refresh    time.Duration
 	logger     *slog.Logger
 	endAction  func(context.Context, *discordgo.Session, time.Time) error
 }
 
 func NewScheduler(channelID, serverName string, startTime, endTime time.Duration, endAction func(context.Context, *discordgo.Session, time.Time) error, logger *slog.Logger) (*Scheduler, error) {
+	scheduler, err := NewDynamicScheduler(channelID, serverName, func(context.Context) (ScheduleTimes, error) {
+		return ScheduleTimes{Start: startTime, End: endTime}, nil
+	}, endAction, logger)
+	if err != nil {
+		return nil, err
+	}
+	scheduler.schedules = schedulesFor(ScheduleTimes{Start: startTime, End: endTime})
+	return scheduler, nil
+}
+
+func NewDynamicScheduler(channelID, serverName string, loadTimes scheduleLoader, endAction func(context.Context, *discordgo.Session, time.Time) error, logger *slog.Logger) (*Scheduler, error) {
 	location, err := time.LoadLocation("Asia/Jakarta")
 	if err != nil {
 		return nil, fmt.Errorf("load Asia/Jakarta timezone: %w", err)
@@ -33,21 +53,32 @@ func NewScheduler(channelID, serverName string, startTime, endTime time.Duration
 		channelID:  channelID,
 		serverName: serverName,
 		location:   location,
-		schedules: []attendanceSchedule{
-			{command: commandattendance.AttendanceStart, timeOfDay: startTime},
-			{command: commandattendance.AttendanceEnd, timeOfDay: endTime},
-		},
-		logger:    logger,
-		endAction: endAction,
+		loadTimes:  loadTimes,
+		refresh:    30 * time.Second,
+		logger:     logger,
+		endAction:  endAction,
 	}, nil
 }
 
 func (s *Scheduler) Run(ctx context.Context, session *discordgo.Session) {
 	for {
+		times, err := s.loadTimes(ctx)
+		if err != nil {
+			s.logger.Error("load attendance schedule", "error", err)
+			if !waitFor(ctx, s.refresh) {
+				return
+			}
+			continue
+		}
+		s.schedules = schedulesFor(times)
 		now := time.Now()
 		schedule, runAt := s.next(now)
 		s.logger.Info("attendance announcement scheduled", "command", schedule.command, "channel_id", s.channelID, "run_at", runAt.In(s.location).Format(time.RFC3339), "timezone", s.location.String())
-		timer := time.NewTimer(time.Until(runAt))
+		wait := time.Until(runAt)
+		if wait > s.refresh {
+			wait = s.refresh
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {
@@ -55,6 +86,9 @@ func (s *Scheduler) Run(ctx context.Context, session *discordgo.Session) {
 			}
 			return
 		case announcedAt := <-timer.C:
+			if announcedAt.Before(runAt) {
+				continue
+			}
 			s.logger.Info("attendance schedule fired", "command", schedule.command, "scheduled_at", runAt.In(s.location).Format(time.RFC3339))
 			if schedule.command == commandattendance.AttendanceEnd {
 				go s.sendClosing(session, announcedAt, runAt)
@@ -68,6 +102,24 @@ func (s *Scheduler) Run(ctx context.Context, session *discordgo.Session) {
 			}
 			s.logger.Info("scheduled attendance announced", "command", schedule.command, "channel_id", s.channelID, "scheduled_at", runAt.In(s.location).Format(time.RFC3339))
 		}
+	}
+}
+
+func schedulesFor(times ScheduleTimes) []attendanceSchedule {
+	return []attendanceSchedule{
+		{command: commandattendance.AttendanceStart, timeOfDay: times.Start},
+		{command: commandattendance.AttendanceEnd, timeOfDay: times.End},
+	}
+}
+
+func waitFor(ctx context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

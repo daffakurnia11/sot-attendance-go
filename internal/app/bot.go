@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -24,22 +27,21 @@ import (
 )
 
 type Bot struct {
-	session             *discordgo.Session
-	status              *presence.Counter
-	router              *router.Router
-	logger              *slog.Logger
-	pollInterval        time.Duration
-	attendance          *attendancescheduler.Scheduler
-	members             *member.Repository
-	attendanceStartTime time.Duration
-	attendanceEndTime   time.Duration
-	attendancePlaytime  time.Duration
-	location            *time.Location
-	database            *pgxpool.Pool
-	guildID             string
-	adminRoleIDs        []string
-	memberRoleID        string
-	adminSync           sync.Mutex
+	session      *discordgo.Session
+	status       *presence.Counter
+	router       *router.Router
+	logger       *slog.Logger
+	pollInterval time.Duration
+	attendance   *attendancescheduler.Scheduler
+	members      *member.Repository
+	settings     *dbsettings.Repository
+	location     *time.Location
+	database     *pgxpool.Pool
+	guildID      string
+	adminRoleIDs []string
+	memberRoleID string
+	adminSync    sync.Mutex
+	ready        atomic.Bool
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
@@ -49,12 +51,14 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := database.Migrate(ctx, pool); err != nil {
+	if database.SkipMigrations(os.Getenv("SKIP_MIGRATIONS")) {
+		logger.Warn("startup migrations skipped", "reason", "SKIP_MIGRATIONS")
+	} else if err := database.Migrate(ctx, pool); err != nil {
 		pool.Close()
 		return nil, err
 	}
-	attendanceConfig, err := dbsettings.NewRepository(pool).LoadAttendance(ctx)
-	if err != nil {
+	settingsRepository := dbsettings.NewRepository(pool)
+	if _, err := settingsRepository.LoadAttendance(ctx); err != nil {
 		pool.Close()
 		return nil, err
 	}
@@ -78,6 +82,10 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		return nil, fmt.Errorf("load Asia/Jakarta timezone: %w", err)
 	}
 	endAction := func(ctx context.Context, session *discordgo.Session, now time.Time) error {
+		attendanceConfig, err := settingsRepository.LoadAttendance(ctx)
+		if err != nil {
+			return fmt.Errorf("reload attendance settings: %w", err)
+		}
 		attendanceStart, attendanceEnd := commandrecap.AttendanceWindow(now, attendanceConfig.StartTime, attendanceConfig.EndTime, location)
 		recaps, err := members.PlaytimeRecap(ctx, attendanceStart, attendanceEnd)
 		if err != nil {
@@ -92,34 +100,57 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		logger.Info("attendance recap sent", "channel_id", cfg.PlayerRecapChannelID, "players", len(recaps), "attendance_start", attendanceStart, "automatic", true)
 		return nil
 	}
-	attendance, err := attendancescheduler.NewScheduler(cfg.PlayerChatChannelID, cfg.ServerName, attendanceConfig.StartTime, attendanceConfig.EndTime, endAction, logger)
+	attendance, err := attendancescheduler.NewDynamicScheduler(cfg.PlayerChatChannelID, cfg.ServerName, func(ctx context.Context) (attendancescheduler.ScheduleTimes, error) {
+		latest, err := settingsRepository.LoadAttendance(ctx)
+		if err != nil {
+			return attendancescheduler.ScheduleTimes{}, err
+		}
+		return attendancescheduler.ScheduleTimes{Start: latest.StartTime, End: latest.EndTime}, nil
+	}, endAction, logger)
 	if err != nil {
 		pool.Close()
 		return nil, err
 	}
 
 	bot := &Bot{
-		session:             session,
-		status:              presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.PlayerLogChannelID, cfg.DiscordRoleID, cfg.PollInterval, cfg.BlacklistedUserIDs, members, logger),
-		router:              router.NewRouter(cfg.CommandPrefix),
-		logger:              logger,
-		pollInterval:        cfg.PollInterval,
-		attendance:          attendance,
-		members:             members,
-		attendanceStartTime: attendanceConfig.StartTime,
-		attendanceEndTime:   attendanceConfig.EndTime,
-		attendancePlaytime:  attendanceConfig.PlaytimeThreshold,
-		location:            location,
-		database:            pool,
-		guildID:             cfg.GuildID,
-		adminRoleIDs:        cfg.DiscordAdminRoleIDs,
-		memberRoleID:        cfg.DiscordMemberRoleID,
+		session:      session,
+		status:       presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.PlayerLogChannelID, cfg.DiscordRoleID, cfg.PollInterval, cfg.BlacklistedUserIDs, members, logger),
+		router:       router.NewRouter(cfg.CommandPrefix),
+		logger:       logger,
+		pollInterval: cfg.PollInterval,
+		attendance:   attendance,
+		members:      members,
+		settings:     settingsRepository,
+		location:     location,
+		database:     pool,
+		guildID:      cfg.GuildID,
+		adminRoleIDs: cfg.DiscordAdminRoleIDs,
+		memberRoleID: cfg.DiscordMemberRoleID,
 	}
 	session.AddHandler(bot.onReady)
+	session.AddHandler(bot.onDisconnect)
+	session.AddHandler(bot.onResumed)
 	session.AddHandler(bot.onGuildCreate)
 	session.AddHandler(bot.onMessageCreate)
 
 	return bot, nil
+}
+
+// HealthHandler reports Discord gateway readiness. Process-only liveness is
+// insufficient: a bot can keep running while disconnected and doing no work.
+func (b *Bot) HealthHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "application/json; charset=utf-8")
+		response.Header().Set("Cache-Control", "no-store")
+		if !b.ready.Load() {
+			response.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = response.Write([]byte(`{"status":"not_ready"}` + "\n"))
+			return
+		}
+		_, _ = response.Write([]byte(`{"status":"ok"}` + "\n"))
+	})
+	return mux
 }
 
 func (b *Bot) Run(ctx context.Context) error {
@@ -151,9 +182,20 @@ shutdown:
 }
 
 func (b *Bot) onReady(session *discordgo.Session, event *discordgo.Ready) {
+	b.ready.Store(true)
 	b.logger.Info("Discord gateway ready", "bot_user_id", event.User.ID, "bot_username", event.User.Username)
 	go b.syncGuildMembers(session)
 	b.status.Refresh(session)
+}
+
+func (b *Bot) onDisconnect(_ *discordgo.Session, _ *discordgo.Disconnect) {
+	b.ready.Store(false)
+	b.logger.Warn("Discord gateway disconnected")
+}
+
+func (b *Bot) onResumed(_ *discordgo.Session, event *discordgo.Resumed) {
+	b.ready.Store(true)
+	b.logger.Info("Discord gateway resumed", "trace_entries", len(event.Trace))
 }
 
 func (b *Bot) syncGuildMembers(session *discordgo.Session) {
@@ -262,14 +304,18 @@ func (b *Bot) onMessageCreate(session *discordgo.Session, message *discordgo.Mes
 
 func (b *Bot) handleRecap(session *discordgo.Session, message *discordgo.MessageCreate) error {
 	now := time.Now()
-	attendanceStart, attendanceEnd := commandrecap.AttendanceWindow(now, b.attendanceStartTime, b.attendanceEndTime, b.location)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	attendanceConfig, err := b.settings.LoadAttendance(ctx)
+	if err != nil {
+		return fmt.Errorf("reload attendance settings: %w", err)
+	}
+	attendanceStart, attendanceEnd := commandrecap.AttendanceWindow(now, attendanceConfig.StartTime, attendanceConfig.EndTime, b.location)
 	recaps, err := b.members.PlaytimeRecap(ctx, attendanceStart, attendanceEnd)
 	if err != nil {
 		return err
 	}
-	if _, err := session.ChannelMessageSendEmbed(message.ChannelID, commandrecap.Embed(recaps, attendanceStart, now, b.attendancePlaytime)); err != nil {
+	if _, err := session.ChannelMessageSendEmbed(message.ChannelID, commandrecap.Embed(recaps, attendanceStart, now, attendanceConfig.PlaytimeThreshold)); err != nil {
 		return fmt.Errorf("send attendance recap: %w", err)
 	}
 	b.logger.Info("attendance recap sent", "guild_id", message.GuildID, "channel_id", message.ChannelID, "user_id", message.Author.ID, "players", len(recaps), "attendance_start", attendanceStart)
