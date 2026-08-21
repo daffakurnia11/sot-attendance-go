@@ -77,7 +77,9 @@ gateway rather than to `127.0.0.1`, so a loopback-only forward is invisible to
 them. That also exposes the forwarded port to whatever network the machine is
 on, so close it when finished.
 
-Bot status shows `N playing CR Roleplay`. Counter polls cached Discord presences every `DISCORD_POLL_INTERVAL` milliseconds. It includes visible online members whose Discord activity name, details, or state matches `FIVEM_SERVER_NAME`, ignoring case, spaces, and punctuation. Offline, invisible, and bot accounts are excluded. Discord REST member responses do not contain activities; Presence Intent feeds this cache.
+Bot status rotates between `N CR players on Discord` and `N CR players on CFX` every `DISCORD_POLL_STATUS` milliseconds. Discord count polls cached presences every `DISCORD_POLL_INTERVAL` milliseconds and includes visible online members whose activity name matches `FIVEM_SERVER_NAME`, ignoring case, spaces, and punctuation. Offline, invisible, and bot accounts are excluded. Discord REST member responses do not contain activities; Presence Intent feeds this cache.
+
+CFX count polls public directory every `FIVEM_SERVER_CFX_POLL_INTERVAL` milliseconds and applies existing `FIVEM_PLAYER_ID` name filter. Failed CFX requests keep last successful count; CFX status remains hidden until first successful poll.
 
 Set `APP_ENV=production` to restrict status counts and player transition logs to members holding `DISCORD_ROLE_ID`. `DISCORD_ROLE_ID` is required in production. Set `APP_ENV=local` to inspect all non-bot guild members during testing; role filtering is disabled even when a role ID is present.
 

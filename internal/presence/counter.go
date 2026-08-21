@@ -1,7 +1,6 @@
 package presence
 
 import (
-	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -58,15 +57,14 @@ func (c *Counter) Refresh(session *discordgo.Session) {
 	if count == c.lastCount {
 		return
 	}
-
-	status := fmt.Sprintf("%d playing %s", count, c.serverName)
-	if err := session.UpdateGameStatus(0, status); err != nil {
-		c.logger.Error("update bot status", "guild_id", c.guildID, "count", count, "error", err)
-		return
-	}
-
 	c.lastCount = count
-	c.logger.Info("bot status updated", "guild_id", c.guildID, "server_name", c.serverName, "count", count)
+	c.logger.Info("Discord activity count updated", "guild_id", c.guildID, "server_name", c.serverName, "count", count)
+}
+
+func (c *Counter) Count() (int, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastCount, c.lastCount >= 0
 }
 
 func (c *Counter) GuildID() string { return c.guildID }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +20,7 @@ import (
 	commandrecap "github.com/daffakurniawan/sot-discord-bot/internal/command/recap"
 	"github.com/daffakurniawan/sot-discord-bot/internal/command/router"
 	"github.com/daffakurniawan/sot-discord-bot/internal/config"
+	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/database"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
 	"github.com/daffakurniawan/sot-discord-bot/internal/presence"
@@ -26,22 +28,31 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+type cfxPlayerReader interface {
+	Players(context.Context) ([]dashboard.CFXPlayer, error)
+}
+
 type Bot struct {
-	session      *discordgo.Session
-	status       *presence.Counter
-	router       *router.Router
-	logger       *slog.Logger
-	pollInterval time.Duration
-	attendance   *attendancescheduler.Scheduler
-	members      *member.Repository
-	settings     *dbsettings.Repository
-	location     *time.Location
-	database     *pgxpool.Pool
-	guildID      string
-	adminRoleIDs []string
-	memberRoleID string
-	adminSync    sync.Mutex
-	ready        atomic.Bool
+	session            *discordgo.Session
+	status             *presence.Counter
+	router             *router.Router
+	logger             *slog.Logger
+	pollInterval       time.Duration
+	cfxPollInterval    time.Duration
+	statusPollInterval time.Duration
+	attendance         *attendancescheduler.Scheduler
+	cfx                cfxPlayerReader
+	members            *member.Repository
+	settings           *dbsettings.Repository
+	location           *time.Location
+	database           *pgxpool.Pool
+	guildID            string
+	adminRoleIDs       []string
+	memberRoleID       string
+	adminSync          sync.Mutex
+	ready              atomic.Bool
+	cfxCount           atomic.Int64
+	showCFXStatus      bool
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
@@ -113,20 +124,24 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 	}
 
 	bot := &Bot{
-		session:      session,
-		status:       presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.PlayerLogChannelID, cfg.DiscordRoleID, cfg.PollInterval, cfg.BlacklistedUserIDs, members, logger),
-		router:       router.NewRouter(cfg.CommandPrefix),
-		logger:       logger,
-		pollInterval: cfg.PollInterval,
-		attendance:   attendance,
-		members:      members,
-		settings:     settingsRepository,
-		location:     location,
-		database:     pool,
-		guildID:      cfg.GuildID,
-		adminRoleIDs: cfg.DiscordAdminRoleIDs,
-		memberRoleID: cfg.DiscordMemberRoleID,
+		session:            session,
+		status:             presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.PlayerLogChannelID, cfg.DiscordRoleID, cfg.PollInterval, cfg.BlacklistedUserIDs, members, logger),
+		router:             router.NewRouter(cfg.CommandPrefix),
+		logger:             logger,
+		pollInterval:       cfg.PollInterval,
+		cfxPollInterval:    cfg.CFXPollInterval,
+		statusPollInterval: cfg.StatusPollInterval,
+		attendance:         attendance,
+		cfx:                dashboard.NewCFXClient(&http.Client{Timeout: 5 * time.Second}, cfg.CFXServerID, cfg.CFXPlayerID),
+		members:            members,
+		settings:           settingsRepository,
+		location:           location,
+		database:           pool,
+		guildID:            cfg.GuildID,
+		adminRoleIDs:       cfg.DiscordAdminRoleIDs,
+		memberRoleID:       cfg.DiscordMemberRoleID,
 	}
+	bot.cfxCount.Store(-1)
 	session.AddHandler(bot.onReady)
 	session.AddHandler(bot.onDisconnect)
 	session.AddHandler(bot.onResumed)
@@ -159,15 +174,20 @@ func (b *Bot) Run(ctx context.Context) error {
 	}
 	b.logger.Info("bot connected")
 	go b.attendance.Run(ctx, b.session)
+	go b.runCFXPoller(ctx)
 
-	ticker := time.NewTicker(b.pollInterval)
-	defer ticker.Stop()
+	discordTicker := time.NewTicker(b.pollInterval)
+	defer discordTicker.Stop()
+	statusTicker := time.NewTicker(b.statusPollInterval)
+	defer statusTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			goto shutdown
-		case <-ticker.C:
+		case <-discordTicker.C:
 			b.status.Refresh(b.session)
+		case <-statusTicker.C:
+			b.rotateStatus()
 		}
 	}
 
@@ -179,6 +199,71 @@ shutdown:
 	}
 	b.database.Close()
 	return nil
+}
+
+func (b *Bot) runCFXPoller(ctx context.Context) {
+	b.refreshCFX(ctx)
+	ticker := time.NewTicker(b.cfxPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.refreshCFX(ctx)
+		}
+	}
+}
+
+func (b *Bot) refreshCFX(ctx context.Context) {
+	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	players, err := b.cfx.Players(requestContext)
+	if err != nil {
+		b.logger.Warn("refresh CFX player count", "error", err)
+		return
+	}
+	count := int64(len(players))
+	previous := b.cfxCount.Swap(count)
+	if previous != count {
+		b.logger.Info("CFX player count updated", "count", count)
+	}
+}
+
+func (b *Bot) rotateStatus() {
+	discordCount, discordAvailable := b.status.Count()
+	cfxCount := b.cfxCount.Load()
+	status, nextCFX, ok := rotatingStatus(shortServerName(b.status.ServerName()), discordCount, discordAvailable, int(cfxCount), cfxCount >= 0, b.showCFXStatus)
+	if !ok {
+		return
+	}
+	b.showCFXStatus = nextCFX
+	if err := b.session.UpdateGameStatus(0, status); err != nil {
+		b.logger.Error("update rotating bot status", "status", status, "error", err)
+		return
+	}
+	b.logger.Debug("rotating bot status updated", "status", status)
+}
+
+func rotatingStatus(serverLabel string, discordCount int, discordAvailable bool, cfxCount int, cfxAvailable bool, showCFX bool) (string, bool, bool) {
+	if showCFX && cfxAvailable {
+		return fmt.Sprintf("%d %s players on CFX", cfxCount, serverLabel), false, true
+	}
+	if discordAvailable {
+		return fmt.Sprintf("%d %s players on Discord", discordCount, serverLabel), true, true
+	}
+	if cfxAvailable {
+		return fmt.Sprintf("%d %s players on CFX", cfxCount, serverLabel), false, true
+	}
+	return "", showCFX, false
+}
+
+func shortServerName(serverName string) string {
+	parts := strings.Fields(serverName)
+	if len(parts) == 0 {
+		return "CR"
+	}
+	return parts[0]
 }
 
 func (b *Bot) onReady(session *discordgo.Session, event *discordgo.Ready) {

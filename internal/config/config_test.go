@@ -105,3 +105,37 @@ func TestFromValues(t *testing.T) {
 		})
 	}
 }
+
+func TestWithStatusPolling(t *testing.T) {
+	t.Parallel()
+
+	configured, err := withStatusPolling(Config{}, " kr7k7d ", " SOT ", "60000", "2500")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured.CFXServerID != "kr7k7d" || configured.CFXPlayerID != "SOT" || configured.CFXPollInterval != time.Minute || configured.StatusPollInterval != 2500*time.Millisecond {
+		t.Fatalf("withStatusPolling() = %#v", configured)
+	}
+
+	invalid := []struct {
+		name       string
+		serverID   string
+		playerID   string
+		cfxPoll    string
+		statusPoll string
+	}{
+		{name: "missing server", playerID: "SOT", cfxPoll: "60000", statusPoll: "2500"},
+		{name: "invalid server", serverID: "kr7k7d/path", playerID: "SOT", cfxPoll: "60000", statusPoll: "2500"},
+		{name: "missing player filter", serverID: "kr7k7d", cfxPoll: "60000", statusPoll: "2500"},
+		{name: "invalid CFX poll", serverID: "kr7k7d", playerID: "SOT", cfxPoll: "0", statusPoll: "2500"},
+		{name: "invalid status poll", serverID: "kr7k7d", playerID: "SOT", cfxPoll: "60000", statusPoll: "nope"},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := withStatusPolling(Config{}, test.serverID, test.playerID, test.cfxPoll, test.statusPoll); err == nil {
+				t.Fatal("withStatusPolling() error = nil")
+			}
+		})
+	}
+}

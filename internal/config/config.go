@@ -18,6 +18,10 @@ type Config struct {
 	DiscordAdminRoleIDs  []string
 	ServerName           string
 	PollInterval         time.Duration
+	CFXServerID          string
+	CFXPlayerID          string
+	CFXPollInterval      time.Duration
+	StatusPollInterval   time.Duration
 	CommandPrefix        string
 	PlayerLogChannelID   string
 	BlacklistedUserIDs   []string
@@ -27,7 +31,7 @@ type Config struct {
 }
 
 func Load() (Config, error) {
-	return FromValues(
+	config, err := FromValues(
 		os.Getenv("DISCORD_BOT_TOKEN"),
 		os.Getenv("DISCORD_GUILD_ID"),
 		os.Getenv("FIVEM_SERVER_NAME"),
@@ -42,6 +46,50 @@ func Load() (Config, error) {
 		os.Getenv("DISCORD_ROLE_ID"),
 		os.Getenv("DISCORD_ADMIN_IDS"),
 	)
+	if err != nil {
+		return Config{}, err
+	}
+	return withStatusPolling(config, os.Getenv("FIVEM_SERVER_CFX_ID"), os.Getenv("FIVEM_PLAYER_ID"), os.Getenv("FIVEM_SERVER_CFX_POLL_INTERVAL"), os.Getenv("DISCORD_POLL_STATUS"))
+}
+
+func withStatusPolling(config Config, cfxServerID, cfxPlayerID, cfxPollInterval, statusPollInterval string) (Config, error) {
+	cfxServerID = strings.TrimSpace(cfxServerID)
+	if cfxServerID == "" {
+		return Config{}, errors.New("FIVEM_SERVER_CFX_ID is required")
+	}
+	for _, character := range cfxServerID {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z')) {
+			return Config{}, errors.New("FIVEM_SERVER_CFX_ID must contain letters and digits only")
+		}
+	}
+	cfxPlayerID = strings.TrimSpace(cfxPlayerID)
+	if cfxPlayerID == "" {
+		return Config{}, errors.New("FIVEM_PLAYER_ID is required")
+	}
+	cfxPoll, err := parseMilliseconds("FIVEM_SERVER_CFX_POLL_INTERVAL", cfxPollInterval)
+	if err != nil {
+		return Config{}, err
+	}
+	statusPoll, err := parseMilliseconds("DISCORD_POLL_STATUS", statusPollInterval)
+	if err != nil {
+		return Config{}, err
+	}
+	config.CFXServerID = cfxServerID
+	config.CFXPlayerID = cfxPlayerID
+	config.CFXPollInterval = cfxPoll
+	config.StatusPollInterval = statusPoll
+	return config, nil
+}
+
+func parseMilliseconds(name, value string) (time.Duration, error) {
+	milliseconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || milliseconds <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer in milliseconds", name)
+	}
+	if milliseconds > int64((1<<63-1)/time.Millisecond) {
+		return 0, fmt.Errorf("%s is too large", name)
+	}
+	return time.Duration(milliseconds) * time.Millisecond, nil
 }
 
 func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerLogChannelID, blacklistedUsers, playerChatChannelID, playerRecapChannelID, databaseURL, appEnv, discordRoleID, discordAdminIDs string) (Config, error) {
