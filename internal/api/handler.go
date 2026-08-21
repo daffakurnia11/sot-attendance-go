@@ -14,6 +14,7 @@ import (
 
 	attendancehistory "github.com/daffakurniawan/sot-discord-bot/internal/attendance"
 	appauth "github.com/daffakurniawan/sot-discord-bot/internal/auth"
+	"github.com/daffakurniawan/sot-discord-bot/internal/crafting"
 	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
 	"github.com/daffakurniawan/sot-discord-bot/internal/payslip"
@@ -49,6 +50,10 @@ type settingsStore interface {
 	Load(context.Context) (dbsettings.Values, error)
 	Update(context.Context, dbsettings.Values) (dbsettings.Values, error)
 }
+type craftingStore interface {
+	List(context.Context) ([]crafting.RecipeSummary, error)
+	Get(context.Context, string) (crafting.Recipe, error)
+}
 
 type Handler struct {
 	verifier   discordIdentityVerifier
@@ -58,14 +63,24 @@ type Handler struct {
 	dashboard  dashboardReader
 	attendance attendanceReader
 	settings   settingsStore
+	crafting   craftingStore
 	logger     *slog.Logger
 }
 
 func NewHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, stores ...settingsStore) http.Handler {
-	handler := &Handler{verifier: verifier, members: members, issuer: issuer, tokens: tokens, dashboard: dashboard, attendance: attendance, logger: logger}
+	var settings settingsStore
 	if len(stores) > 0 {
-		handler.settings = stores[0]
+		settings = stores[0]
 	}
+	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, nil)
+}
+
+func NewHandlerWithCrafting(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes craftingStore) http.Handler {
+	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes)
+}
+
+func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes craftingStore) http.Handler {
+	handler := &Handler{verifier: verifier, members: members, issuer: issuer, tokens: tokens, dashboard: dashboard, attendance: attendance, settings: settings, crafting: recipes, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handler.health)
 	mux.HandleFunc("POST /api/v1/auth/discord", handler.discordLogin)
@@ -77,6 +92,9 @@ func NewHandler(verifier discordIdentityVerifier, members memberFinder, issuer t
 	mux.HandleFunc("GET /api/v1/settings", handler.getSettings)
 	mux.HandleFunc("PATCH /api/v1/settings", handler.updateSettings)
 	mux.HandleFunc("PATCH /api/v1/me/profile", handler.updateMyProfile)
+	mux.HandleFunc("GET /api/v1/crafting/recipes", handler.craftingRecipes)
+	mux.HandleFunc("POST /api/v1/crafting/calculate", handler.calculateCrafting)
+	mux.HandleFunc("POST /api/v1/crafting/calculate-batch", handler.calculateCraftingBatch)
 	return handler.logging(mux)
 }
 

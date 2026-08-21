@@ -18,6 +18,7 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/api"
 	attendancehistory "github.com/daffakurniawan/sot-discord-bot/internal/attendance"
 	appauth "github.com/daffakurniawan/sot-discord-bot/internal/auth"
+	"github.com/daffakurniawan/sot-discord-bot/internal/crafting"
 	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/database"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
@@ -68,7 +69,8 @@ func main() {
 		logger.Error("load API timezone", "error", err)
 		os.Exit(1)
 	}
-	handler := api.NewHandler(api.NewDiscordVerifier(client), member.NewRepository(pool), issuer, issuer, dashboard.NewRepository(pool, cfxClient, logger), attendancehistory.NewReportRepository(pool, location), logger, dbsettings.NewRepository(pool))
+	settingsRepository := dbsettings.NewRepository(pool)
+	handler := api.NewHandlerWithCrafting(api.NewDiscordVerifier(client), member.NewRepository(pool), issuer, issuer, dashboard.NewRepository(pool, cfxClient, logger), attendancehistory.NewReportRepository(pool, location), logger, settingsRepository, crafting.NewRepository(pool))
 	server := &http.Server{
 		Addr:              config.Address,
 		Handler:           handler,

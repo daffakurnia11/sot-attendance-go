@@ -13,6 +13,7 @@ import (
 
 	attendancehistory "github.com/daffakurniawan/sot-discord-bot/internal/attendance"
 	appauth "github.com/daffakurniawan/sot-discord-bot/internal/auth"
+	"github.com/daffakurniawan/sot-discord-bot/internal/crafting"
 	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
 	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
@@ -80,6 +81,22 @@ type stubSettings struct {
 	values  dbsettings.Values
 	updated dbsettings.Values
 	err     error
+}
+
+type stubCrafting struct {
+	recipes    []crafting.RecipeSummary
+	recipe     crafting.Recipe
+	err        error
+	weaponCode string
+}
+
+func (s *stubCrafting) List(context.Context) ([]crafting.RecipeSummary, error) {
+	return s.recipes, s.err
+}
+
+func (s *stubCrafting) Get(_ context.Context, weaponCode string) (crafting.Recipe, error) {
+	s.weaponCode = weaponCode
+	return s.recipe, s.err
 }
 
 func (s *stubSettings) Load(context.Context) (dbsettings.Values, error) { return s.values, s.err }
@@ -189,6 +206,64 @@ func TestHealthAndMethodRouting(t *testing.T) {
 	wrongMethod := request(handler, http.MethodGet, "/api/v1/auth/discord", "")
 	if wrongMethod.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("wrong method response = %d", wrongMethod.Code)
+	}
+}
+
+func TestCraftingRecipesRequireAuthAndCalculateTotals(t *testing.T) {
+	store := &stubCrafting{
+		recipes: []crafting.RecipeSummary{{WeaponCode: "desert_eagle", WeaponName: "Desert Eagle", OutputQuantity: 1, CraftingTimeSeconds: 8}},
+		recipe: crafting.Recipe{
+			RecipeSummary: crafting.RecipeSummary{WeaponCode: "desert_eagle", WeaponName: "Desert Eagle", OutputQuantity: 1, CraftingTimeSeconds: 8},
+			Ingredients:   []crafting.Ingredient{{ItemCode: "iron", ItemName: "Iron", Quantity: 25}},
+		},
+	}
+	handler := NewHandlerWithCrafting(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, store)
+	unauthorized := request(handler, http.MethodGet, "/api/v1/crafting/recipes", "")
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized response = %d %s", unauthorized.Code, unauthorized.Body.String())
+	}
+	listed := request(handler, http.MethodGet, "/api/v1/crafting/recipes", "Bearer app-token")
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"weapon_code":"desert_eagle"`) {
+		t.Fatalf("list response = %d %s", listed.Code, listed.Body.String())
+	}
+	calculationRequest := httptest.NewRequest(http.MethodPost, "/api/v1/crafting/calculate", strings.NewReader(`{"weapon_code":"desert_eagle","quantity":3}`))
+	calculationRequest.Header.Set("Authorization", "Bearer app-token")
+	calculation := httptest.NewRecorder()
+	handler.ServeHTTP(calculation, calculationRequest)
+	if calculation.Code != http.StatusOK || store.weaponCode != "desert_eagle" || !strings.Contains(calculation.Body.String(), `"total_quantity":75`) || !strings.Contains(calculation.Body.String(), `"crafting_time_seconds":24`) {
+		t.Fatalf("calculation response = %d %s, weapon = %q", calculation.Code, calculation.Body.String(), store.weaponCode)
+	}
+}
+
+func TestCraftingCalculationRejectsInvalidQuantityAndUnknownRecipe(t *testing.T) {
+	store := &stubCrafting{err: crafting.ErrNotFound}
+	handler := NewHandlerWithCrafting(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, store)
+	for body, wantStatus := range map[string]int{
+		`{"weapon_code":"desert_eagle","quantity":0}`: http.StatusUnprocessableEntity,
+		`{"weapon_code":"missing","quantity":1}`:      http.StatusNotFound,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/crafting/calculate", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer app-token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != wantStatus {
+			t.Fatalf("body %s response = %d %s, want %d", body, response.Code, response.Body.String(), wantStatus)
+		}
+	}
+}
+
+func TestBatchCraftingCalculationTotalsRecipes(t *testing.T) {
+	store := &stubCrafting{recipe: crafting.Recipe{
+		RecipeSummary: crafting.RecipeSummary{WeaponCode: "weapon", WeaponName: "Weapon", OutputQuantity: 1, CraftingTimeSeconds: 8},
+		Ingredients:   []crafting.Ingredient{{ItemCode: "iron", ItemName: "Iron", Quantity: 20}},
+	}}
+	handler := NewHandlerWithCrafting(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, store)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/crafting/calculate-batch", strings.NewReader(`{"recipes":[{"weapon_code":"one","quantity":2},{"weapon_code":"two","quantity":3}]}`))
+	request.Header.Set("Authorization", "Bearer app-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"total_requested_quantity":5`) || !strings.Contains(response.Body.String(), `"total_quantity":100`) {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 }
 
