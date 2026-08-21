@@ -32,10 +32,11 @@ type playerSession struct {
 }
 
 type playerEvent struct {
-	member     *discordgo.Member
-	phase      playerPhase
-	startedAt  time.Time
-	occurredAt time.Time
+	member        *discordgo.Member
+	characterName string
+	phase         playerPhase
+	startedAt     time.Time
+	occurredAt    time.Time
 }
 
 type playerLogger struct {
@@ -92,12 +93,18 @@ func (l *playerLogger) refresh(session *discordgo.Session, guild *discordgo.Guil
 				Status: normalizedPlayerPhase(event.phase), StartedAt: nullableTime(event.startedAt),
 				OccurredAt: event.occurredAt, Playtime: eventPlaytime(event),
 			})
-			cancel()
 			if err != nil {
 				l.logger.Error("persist player activity log", "user_id", event.member.User.ID, "status", event.phase, "error", err)
 			}
+			storedMember, findErr := l.members.FindByUserID(ctx, event.member.User.ID)
+			cancel()
+			if findErr != nil {
+				l.logger.Warn("load character name for player activity log", "user_id", event.member.User.ID, "error", findErr)
+			} else {
+				event.characterName = strings.TrimSpace(storedMember.CharacterName)
+			}
 		}
-		if _, err := session.ChannelMessageSendEmbed(l.channelID, playerLogEmbed(event, l.serverName, playerCount)); err != nil {
+		if _, err := session.ChannelMessageSendEmbed(l.channelID, playerLogEmbed(event, playerCount)); err != nil {
 			l.logger.Error("send player activity log", "channel_id", l.channelID, "user_id", event.member.User.ID, "status", event.phase, "error", err)
 			continue
 		}
@@ -299,11 +306,13 @@ func activityStart(activity *discordgo.Activity, now time.Time) time.Time {
 	return startedAt
 }
 
-func playerLogEmbed(event playerEvent, serverName string, playerCount int) *discordgo.MessageEmbed {
-	title := fmt.Sprintf("%s (@%s)", event.member.DisplayName(), event.member.User.Username)
-	builder := embed.New(title).
-		Description("**" + serverName + "**").
-		Color(playerPhaseColor(event.phase))
+func playerLogEmbed(event playerEvent, playerCount int) *discordgo.MessageEmbed {
+	name := strings.TrimSpace(event.characterName)
+	if name == "" {
+		name = event.member.DisplayName()
+	}
+	title := fmt.Sprintf("%s (@%s)", name, event.member.User.Username)
+	builder := embed.New(title).Color(playerPhaseColor(event.phase))
 
 	if event.phase == phaseDisconnected {
 		builder.Field("Exit Time", discordTimestamp(event.occurredAt), true).

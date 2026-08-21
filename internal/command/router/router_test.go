@@ -10,13 +10,14 @@ func TestRouterMatch(t *testing.T) {
 		content string
 		want    string
 	}{
-		{content: "!me", want: "me"},
-		{content: "  !me  ", want: "me"},
 		{content: "!recap", want: "recap"},
-		{content: "!attendance-start", want: "attendance-start"},
-		{content: "!attendance-end", want: "attendance-end"},
+		{content: "!check", want: "check"},
+		{content: "!check <@123456789>", want: "check"},
+		{content: "!check <@!123456789>", want: "check"},
 		{content: "!Me"},
-		{content: "!me extra"},
+		{content: "!check extra"},
+		{content: "!check <@member>"},
+		{content: "!check <@123> extra"},
 		{content: "hello"},
 	}
 	for _, tt := range tests {

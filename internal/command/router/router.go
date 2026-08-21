@@ -11,15 +11,33 @@ func NewRouter(prefix string) *Router {
 }
 
 func (r *Router) Match(content string) string {
-	switch strings.TrimSpace(content) {
-	case r.prefix + "me":
-		return "me"
+	trimmed := strings.TrimSpace(content)
+	switch trimmed {
 	case r.prefix + "recap":
 		return "recap"
-	case r.prefix + "attendance-start":
-		return "attendance-start"
-	case r.prefix + "attendance-end":
-		return "attendance-end"
+	case r.prefix + "check":
+		return "check"
+	}
+	parts := strings.Fields(trimmed)
+	if len(parts) == 2 && parts[0] == r.prefix+"check" && isUserMention(parts[1]) {
+		return "check"
 	}
 	return ""
+}
+
+func isUserMention(value string) bool {
+	if !strings.HasPrefix(value, "<@") || !strings.HasSuffix(value, ">") {
+		return false
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(value, "<@"), ">")
+	id = strings.TrimPrefix(id, "!")
+	if id == "" {
+		return false
+	}
+	for _, character := range id {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }

@@ -27,6 +27,7 @@ type PlayerLog struct {
 
 type PlaytimeRecap struct {
 	MemberID      int64
+	UserID        string
 	DisplayName   string
 	CharacterName string
 	Playtime      time.Duration
@@ -83,6 +84,7 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 			GROUP BY member_id
 		)
 		SELECT m.id,
+			m.user_id,
 			m.display_name,
 			COALESCE(NULLIF(m.character_name, ''), 'Unregistered'),
 			FLOOR(t.seconds)::bigint
@@ -101,7 +103,7 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 	for rows.Next() {
 		var recap PlaytimeRecap
 		var seconds int64
-		if err := rows.Scan(&recap.MemberID, &recap.DisplayName, &recap.CharacterName, &seconds); err != nil {
+		if err := rows.Scan(&recap.MemberID, &recap.UserID, &recap.DisplayName, &recap.CharacterName, &seconds); err != nil {
 			return nil, fmt.Errorf("scan playtime recap: %w", err)
 		}
 		recap.Playtime = time.Duration(seconds) * time.Second

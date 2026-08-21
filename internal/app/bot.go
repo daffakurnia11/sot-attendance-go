@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,8 +14,6 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	attendancescheduler "github.com/daffakurniawan/sot-discord-bot/internal/attendance"
-	"github.com/daffakurniawan/sot-discord-bot/internal/command/attendance"
-	"github.com/daffakurniawan/sot-discord-bot/internal/command/profile"
 	commandrecap "github.com/daffakurniawan/sot-discord-bot/internal/command/recap"
 	"github.com/daffakurniawan/sot-discord-bot/internal/command/router"
 	"github.com/daffakurniawan/sot-discord-bot/internal/config"
@@ -147,6 +144,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 	session.AddHandler(bot.onResumed)
 	session.AddHandler(bot.onGuildCreate)
 	session.AddHandler(bot.onMessageCreate)
+	session.AddHandler(bot.onInteractionCreate)
 
 	return bot, nil
 }
@@ -269,6 +267,7 @@ func shortServerName(serverName string) string {
 func (b *Bot) onReady(session *discordgo.Session, event *discordgo.Ready) {
 	b.ready.Store(true)
 	b.logger.Info("Discord gateway ready", "bot_user_id", event.User.ID, "bot_username", event.User.Username)
+	go b.registerSlashCommands(session, event.User.ID)
 	go b.syncGuildMembers(session)
 	b.status.Refresh(session)
 }
@@ -370,12 +369,10 @@ func (b *Bot) onMessageCreate(session *discordgo.Session, message *discordgo.Mes
 
 	var err error
 	switch commandName {
-	case "me":
-		err = b.handleMe(session, message)
 	case commandrecap.Command:
 		err = b.handleRecap(session, message)
-	case attendance.AttendanceStart, attendance.AttendanceEnd:
-		err = b.handleAttendance(session, message, commandName)
+	case commandrecap.CheckCommand:
+		err = b.handleCheck(session, message)
 	}
 	if err == nil {
 		return
@@ -387,68 +384,40 @@ func (b *Bot) onMessageCreate(session *discordgo.Session, message *discordgo.Mes
 	}
 }
 
+func (b *Bot) handleCheck(session *discordgo.Session, message *discordgo.MessageCreate) error {
+	targetUserID := message.Author.ID
+	if len(message.Mentions) > 0 {
+		if len(message.Mentions) != 1 || message.Mentions[0] == nil {
+			return fmt.Errorf("check command requires exactly one member mention")
+		}
+		targetUserID = message.Mentions[0].ID
+	}
+	now := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	embed, participants, attendanceStart, err := b.buildCheckEmbed(ctx, targetUserID, now)
+	if err != nil {
+		return err
+	}
+
+	if _, err := session.ChannelMessageSendEmbed(message.ChannelID, embed); err != nil {
+		return fmt.Errorf("send attendance check: %w", err)
+	}
+	b.logger.Info("attendance check sent", "guild_id", message.GuildID, "channel_id", message.ChannelID, "user_id", message.Author.ID, "target_user_id", targetUserID, "participants", participants, "attendance_start", attendanceStart)
+	return nil
+}
+
 func (b *Bot) handleRecap(session *discordgo.Session, message *discordgo.MessageCreate) error {
 	now := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	attendanceConfig, err := b.settings.LoadAttendance(ctx)
-	if err != nil {
-		return fmt.Errorf("reload attendance settings: %w", err)
-	}
-	attendanceStart, attendanceEnd := commandrecap.AttendanceWindow(now, attendanceConfig.StartTime, attendanceConfig.EndTime, b.location)
-	recaps, err := b.members.PlaytimeRecap(ctx, attendanceStart, attendanceEnd)
+	embed, participants, attendanceStart, err := b.buildRecapEmbed(ctx, now)
 	if err != nil {
 		return err
 	}
-	if _, err := session.ChannelMessageSendEmbed(message.ChannelID, commandrecap.Embed(recaps, attendanceStart, now, attendanceConfig.PlaytimeThreshold)); err != nil {
+	if _, err := session.ChannelMessageSendEmbed(message.ChannelID, embed); err != nil {
 		return fmt.Errorf("send attendance recap: %w", err)
 	}
-	b.logger.Info("attendance recap sent", "guild_id", message.GuildID, "channel_id", message.ChannelID, "user_id", message.Author.ID, "players", len(recaps), "attendance_start", attendanceStart)
-	return nil
-}
-
-func (b *Bot) handleAttendance(session *discordgo.Session, message *discordgo.MessageCreate, commandName string) error {
-	permissions, err := session.UserChannelPermissions(message.Author.ID, message.ChannelID)
-	if err != nil {
-		return fmt.Errorf("get caller permissions: %w", err)
-	}
-	if permissions&discordgo.PermissionAdministrator == 0 {
-		return errors.New("administrator permission required")
-	}
-
-	if _, err := session.ChannelMessageSendComplex(message.ChannelID, attendance.Announcement(commandName, b.status.ServerName(), time.Now())); err != nil {
-		return fmt.Errorf("send attendance announcement: %w", err)
-	}
-	b.logger.Info("attendance announced", "command", commandName, "guild_id", message.GuildID, "channel_id", message.ChannelID, "user_id", message.Author.ID)
-	return nil
-}
-
-func (b *Bot) handleMe(session *discordgo.Session, message *discordgo.MessageCreate) error {
-	member := message.Member
-	if member == nil || member.User == nil {
-		var err error
-		member, err = session.State.Member(message.GuildID, message.Author.ID)
-		if err != nil {
-			member, err = session.GuildMember(message.GuildID, message.Author.ID)
-			if err != nil {
-				return fmt.Errorf("get member: %w", err)
-			}
-		}
-	}
-
-	memberPresence, err := session.State.Presence(message.GuildID, message.Author.ID)
-	if err != nil && !errors.Is(err, discordgo.ErrStateNotFound) {
-		return fmt.Errorf("get presence: %w", err)
-	}
-
-	var activity *discordgo.Activity
-	if memberPresence != nil {
-		activity = presence.MatchingActivity(memberPresence.Activities, b.status.ServerName())
-	}
-
-	memberProfile := profile.Build(member, activity, time.Now())
-	if _, err := session.ChannelMessageSendEmbed(message.ChannelID, profile.Embed(memberProfile)); err != nil {
-		return fmt.Errorf("send profile: %w", err)
-	}
+	b.logger.Info("attendance recap sent", "guild_id", message.GuildID, "channel_id", message.ChannelID, "user_id", message.Author.ID, "players", participants, "attendance_start", attendanceStart)
 	return nil
 }

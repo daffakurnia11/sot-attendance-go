@@ -307,10 +307,10 @@ func TestPlayerLogEmbed(t *testing.T) {
 	start := time.Date(2026, time.August, 11, 16, 40, 0, 0, time.UTC)
 	end := start.Add(2*time.Hour + 5*time.Minute)
 	embed := playerLogEmbed(playerEvent{
-		member: member, phase: phaseDisconnected, startedAt: start, occurredAt: end,
-	}, "CR Roleplay", 0)
+		member: member, characterName: "Kenji Nakamura", phase: phaseDisconnected, startedAt: start, occurredAt: end,
+	}, 0)
 
-	if embed.Title != "DeltaKilo (@deltakilo11)" || embed.Description != "**CR Roleplay**" {
+	if embed.Title != "Kenji Nakamura (@deltakilo11)" || embed.Description != "" {
 		t.Errorf("unexpected header: %#v", embed)
 	}
 	if embed.Color != colorDisconnected || len(embed.Fields) != 3 {
@@ -335,12 +335,22 @@ func TestPlayerLogEmbed(t *testing.T) {
 	}
 }
 
+func TestPlayerLogEmbedFallsBackToDisplayName(t *testing.T) {
+	t.Parallel()
+
+	member := &discordgo.Member{Nick: "DeltaKilo", User: &discordgo.User{Username: "deltakilo11"}}
+	embed := playerLogEmbed(playerEvent{member: member, characterName: "  ", phase: phaseConnected}, 1)
+	if embed.Title != "DeltaKilo (@deltakilo11)" {
+		t.Errorf("Title = %q, want display-name fallback", embed.Title)
+	}
+}
+
 func TestPlayerLogEmbedConnecting(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, time.August, 11, 16, 40, 0, 0, time.UTC)
 	member := &discordgo.Member{User: &discordgo.User{Username: "player"}}
-	embed := playerLogEmbed(playerEvent{member: member, phase: phaseConnecting, occurredAt: now}, "CR Roleplay", 1)
+	embed := playerLogEmbed(playerEvent{member: member, phase: phaseConnecting, occurredAt: now}, 1)
 	if embed.Color != colorConnecting || len(embed.Fields) != 2 {
 		t.Errorf("unexpected connecting layout: %#v", embed)
 	}

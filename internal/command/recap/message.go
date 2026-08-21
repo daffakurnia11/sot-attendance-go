@@ -12,8 +12,47 @@ import (
 
 const (
 	Command              = "recap"
+	CheckCommand         = "check"
 	maxDescriptionLength = 4096
 )
+
+func CheckEmbed(currentMember member.Member, recaps []member.PlaytimeRecap, attendanceStart, now time.Time, requiredPlaytime time.Duration) *discordgo.MessageEmbed {
+	playtime := time.Duration(0)
+	for _, recap := range recaps {
+		if recap.MemberID == currentMember.ID {
+			playtime = recap.Playtime
+			break
+		}
+	}
+
+	attended := 0
+	for _, recap := range recaps {
+		if recap.Playtime > requiredPlaytime {
+			attended++
+		}
+	}
+
+	characterName := strings.TrimSpace(currentMember.CharacterName)
+	if characterName == "" {
+		characterName = currentMember.DisplayName
+	}
+	status := "Not Attended"
+	color := 0xFEE75C
+	if playtime > requiredPlaytime {
+		status = "Attended"
+		color = 0x57F287
+	}
+
+	return embed.New(fmt.Sprintf("Attendance Check (%s)", attendanceStart.Format("02 January 2006"))).
+		Description(fmt.Sprintf("Minimum playtime: %s", formatPlaytime(requiredPlaytime))).
+		Color(color).
+		Field("Name", fmt.Sprintf("%s (<@%s>)", escapeMarkdown(characterName), currentMember.UserID), false).
+		Field("Playtime", formatPlaytime(playtime), true).
+		Field("Status", status, true).
+		Footer(fmt.Sprintf("Attended: %d • Not attending: %d • Participants: %d", attended, len(recaps)-attended, len(recaps)), "").
+		Timestamp(now).
+		Build()
+}
 
 func AttendanceWindow(now time.Time, startTime, endTime time.Duration, location *time.Location) (time.Time, time.Time) {
 	now = now.In(location)
@@ -68,10 +107,10 @@ func appendSection(description *strings.Builder, title string, recaps []member.P
 		return
 	}
 	for index, recap := range recaps {
-		line := fmt.Sprintf("%d. %s (%s) - %s\n",
+		line := fmt.Sprintf("%d. %s (<@%s>) - %s\n",
 			index+1,
 			escapeMarkdown(recap.CharacterName),
-			escapeMarkdown(recap.DisplayName),
+			recap.UserID,
 			formatPlaytime(recap.Playtime),
 		)
 		description.WriteString(line)

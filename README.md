@@ -85,17 +85,19 @@ Set `APP_ENV=production` to restrict status counts and player transition logs to
 
 On gateway startup, bot fetches every guild member. Members holding `DISCORD_ROLE_ID` are bulk-upserted into `members` without creating player logs or replacing existing `first_connected_at`. `DISCORD_ADMIN_IDS` accepts comma-separated Discord role IDs and synchronizes `members.is_admin`; members without any configured admin role are cleared.
 
-Player transitions are sent as embeds to `DISCORD_PLAYER_LOG_CHANNEL_ID`: `Connecting..` when activity name is `FiveM` and details contain `Connecting`, `Connected` when activity name matches `FIVEM_SERVER_NAME`, and `Disconnected` when neither signature exists or member becomes offline/invisible. Server text inside FiveM details/state does not count as connected. Repeated polls in same state do not duplicate logs. Embeds use Discord activity start timestamps, show `SOT Players: N` without a capacity suffix, and include Discord embed timestamp.
+Player transitions are sent as embeds to `DISCORD_PLAYER_LOG_CHANNEL_ID`: `Connecting..` when activity name is `FiveM` and details contain `Connecting`, `Connected` when activity name matches `FIVEM_SERVER_NAME`, and `Disconnected` when neither signature exists or member becomes offline/invisible. Server text inside FiveM details/state does not count as connected. Repeated polls in same state do not duplicate logs. Embed titles use the saved character name, falling back to the Discord display name when no character name is saved. Embeds omit the server-name description, use Discord activity start timestamps, show `SOT Players: N` without a capacity suffix, and include Discord embed timestamp.
 
 A pending disconnect is delayed for at least 15 seconds (or two poll intervals when longer). If Discord replaces the `FiveM` activity with the server activity during that window, the pending disconnect is cancelled, preventing a false disconnect between `Connecting..` and `Connected`.
 
 `BLACKLISTED_USERS` accepts comma-separated Discord user IDs. Blacklisted users produce no player transition logs, but remain included in bot status count and can still use commands.
 
-`DISCORD_COMMAND_PREFIX` controls message commands. Run `<prefix>me` (default `!me`) to show display name, username, FiveM playtime, Discord-reported activity start time, avatar thumbnail, and timestamp. Non-playing members show `Not Played`. Playtime is calculated from Discord activity `timestamps.start`; when Discord omits or sends an invalid start timestamp, playtime and start time show `Unavailable`.
+`DISCORD_COMMAND_PREFIX` controls message commands.
 
-Run `<prefix>recap` (default `!recap`) to show ranked member playtime in an embed. Recap uses `start_attendance` from the `settings` table in `Asia/Jakarta`; session time before that boundary is excluded. Completed sessions and currently connected sessions are included. `playtime_threshold` uses Go duration format such as `90m`; playtime strictly above this threshold appears under Attended, otherwise under Not Attending.
+The bot also registers guild-scoped `/check` and `/recap` application commands at gateway startup. These slash commands mirror their prefix-command equivalents and appear in Discord's command picker.
 
-Discord Administrators can announce attendance in the current channel with `<prefix>attendance-start` and `<prefix>attendance-end`. Start copy invites members to launch FiveM and join `FIVEM_SERVER_NAME`; end copy thanks players. Both embeds omit time fields, retain footer timestamps, and send an explicit `@here` mention. Discord `@here` alerts online members who can access the channel, not offline members.
+Run `<prefix>recap` (default `!recap`) to show ranked member playtime with clickable Discord member mentions in an embed. Recap uses `start_attendance` from the `settings` table in `Asia/Jakarta`; session time before that boundary is excluded. Completed sessions and currently connected sessions are included. `playtime_threshold` uses Go duration format such as `90m`; playtime strictly above this threshold appears under Attended, otherwise under Not Attended.
+
+Run `<prefix>check` (default `!check`) to show the caller's character name followed by a clickable Discord member mention in one Name field, plus playtime and attendance status for the same attendance window. Mention one member after the command, such as `!check @member`, to check that member instead. `/check` exposes the same optional member selector. The footer summarizes attended, not-attending, and participating members. A member without playtime in the window appears with `0m` and `Not Attended`.
 
 Daily scheduler sends start broadcast to `DISCORD_PLAYER_CHAT_CHANNEL_ID` at `settings.start_attendance`. At `settings.end_attendance`, it sends closing broadcast to player chat and attendance recap embed to `DISCORD_PLAYER_RECAP_CHANNEL_ID`. Closing and recap delivery are attempted independently. Times use strict `HH:MM` 24-hour format in `Asia/Jakarta`. Example `21:00` start plus `01:00` end handles overnight attendance. Startup does not backfill missed announcements; next scheduled occurrence is used. Missing or invalid attendance settings stop bot startup. Bot reloads schedule every 30 seconds and reloads window plus playtime threshold before end recap, so dashboard edits apply without restart.
 
@@ -202,7 +204,6 @@ internal/auth/    signed application access tokens
 internal/presence/ FiveM matching, status counter, transition logging
 internal/attendance/ daily Asia/Jakarta scheduler
 internal/command/attendance/ attendance announcement presentation
-internal/command/profile/    profile command presentation
 internal/command/router/     prefix command routing
 internal/config/  environment validation
 internal/database/ PostgreSQL pool and embedded SQL migrations
