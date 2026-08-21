@@ -34,6 +34,8 @@ API verifies token against Discord `/users/@me`, then looks up verified Discord 
 
 Generate `APP_JWT_SECRET` with a cryptographically secure generator, for example `openssl rand -base64 48`. Do not reuse `AUTH_SECRET` or Discord client secret. `APP_JWT_TTL` defaults to `15m` and cannot exceed `24h`.
 
+Login lifetime is adjustable through `APP_JWT_TTL`. Keep it equivalent to frontend `AUTH_SESSION_MAX_AGE_SECONDS` (for example `1h` and `3600`). Effective lifetime is whichever expires first.
+
 Health endpoint: `GET /healthz`.
 
 ## Discord setup
@@ -55,9 +57,25 @@ Never commit or paste bot token into source or logs. Rotate it in Developer Port
 ## Run locally
 
 ```sh
-make local-up
+make local-up      # API and bot
+make local-api     # API only
 make local-logs
+make local-down
 ```
+
+Both run targets use `DATABASE_URL` from `.env` exactly as written, whether that
+names the compose database or a remote one. There is no mode and no check.
+
+Set `SKIP_MIGRATIONS=true` in `.env` to leave the schema untouched at startup.
+The migrations are idempotent and destroy nothing, but a branch carrying a new
+one would otherwise apply it to whichever database the build points at. Both
+processes log `startup migrations skipped` when it is set.
+
+Reaching a remote database from these containers needs the tunnel bound to every
+interface, not just loopback: `host.docker.internal` resolves to Docker's
+gateway rather than to `127.0.0.1`, so a loopback-only forward is invisible to
+them. That also exposes the forwarded port to whatever network the machine is
+on, so close it when finished.
 
 Bot status shows `N playing CR Roleplay`. Counter polls cached Discord presences every `DISCORD_POLL_INTERVAL` milliseconds. It includes visible online members whose Discord activity name, details, or state matches `FIVEM_SERVER_NAME`, ignoring case, spaces, and punctuation. Offline, invisible, and bot accounts are excluded. Discord REST member responses do not contain activities; Presence Intent feeds this cache.
 
@@ -77,18 +95,18 @@ Run `<prefix>recap` (default `!recap`) to show ranked member playtime in an embe
 
 Discord Administrators can announce attendance in the current channel with `<prefix>attendance-start` and `<prefix>attendance-end`. Start copy invites members to launch FiveM and join `FIVEM_SERVER_NAME`; end copy thanks players. Both embeds omit time fields, retain footer timestamps, and send an explicit `@here` mention. Discord `@here` alerts online members who can access the channel, not offline members.
 
-Daily scheduler sends start broadcast to `DISCORD_PLAYER_CHAT_CHANNEL_ID` at `settings.start_attendance`. At `settings.end_attendance`, it sends closing broadcast to player chat and attendance recap embed to `DISCORD_PLAYER_RECAP_CHANNEL_ID`. Closing and recap delivery are attempted independently. Times use strict `HH:MM` 24-hour format in `Asia/Jakarta`. Example `21:00` start plus `01:00` end handles overnight attendance. Startup does not backfill missed announcements; next scheduled occurrence is used. Missing or invalid attendance settings stop bot startup.
+Daily scheduler sends start broadcast to `DISCORD_PLAYER_CHAT_CHANNEL_ID` at `settings.start_attendance`. At `settings.end_attendance`, it sends closing broadcast to player chat and attendance recap embed to `DISCORD_PLAYER_RECAP_CHANNEL_ID`. Closing and recap delivery are attempted independently. Times use strict `HH:MM` 24-hour format in `Asia/Jakarta`. Example `21:00` start plus `01:00` end handles overnight attendance. Startup does not backfill missed announcements; next scheduled occurrence is used. Missing or invalid attendance settings stop bot startup. Bot reloads schedule every 30 seconds and reloads window plus playtime threshold before end recap, so dashboard edits apply without restart.
 
 Before sending automatic end recap, scheduler bulk upserts one `attendance_logs` row per participant. Each row snapshots capped playtime, required threshold, and attended result. Re-running same attendance window updates existing rows instead of creating duplicates.
 
 Go source is bind-mounted into development container. Air rebuilds and replaces bot process after `.go` file changes; no manual Docker restart needed. Gateway reconnect takes a moment after each rebuild.
 
-Local Compose also starts PostgreSQL. Use `make local-db-up` to start database without bot. Bot applies embedded SQL migrations at startup. When member reaches `Connected` FiveM state first time, user ID, username, display name, and Discord activity start time are inserted into `members`. Unique `user_id` prevents duplicate rows on later reconnects. Blacklisted users are not stored.
+Local Compose also starts PostgreSQL. Bot applies embedded SQL migrations at startup. When member reaches `Connected` FiveM state first time, user ID, username, display name, and Discord activity start time are inserted into `members`. Unique `user_id` prevents duplicate rows on later reconnects. Blacklisted users are not stored.
 
 Stop with:
 
 ```sh
-make local-down
+make down
 ```
 
 ## Quality checks
@@ -115,6 +133,8 @@ Copy `compose.production.yaml` into the deploy directory and create `.env.produc
 `compose.production.yaml` is separate from `compose.yaml` on purpose: the latter is the local development stack with bind mounts and Air, and has nothing a released host should inherit.
 
 `bot` waits for a healthy `api` before starting. Both binaries apply the embedded migrations at startup, and those migrations are bare `CREATE ... IF NOT EXISTS` with no advisory lock, so starting them together can abort on `pg_type_typname_nsp_index`. The dependency serialises the two migrators.
+
+Bot exposes internal `BOT_HEALTH_ADDRESS` readiness endpoint. It returns 200 only after Discord `READY`/`RESUMED` and returns 503 after gateway disconnect. Production Compose blocks deployment until both API and bot are ready.
 
 ### Host PostgreSQL
 

@@ -33,6 +33,21 @@ func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+// SkipMigrations reports whether the startup migration should be skipped.
+//
+// Set SKIP_MIGRATIONS when pointing a local build at a database owned by
+// somebody else. The migrations are idempotent and destroy nothing, but a
+// branch carrying a new one would otherwise apply it to that database the
+// moment the process starts.
+func SkipMigrations(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	entries, err := migrations.ReadDir("migrations")
 	if err != nil {

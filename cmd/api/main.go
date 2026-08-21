@@ -39,7 +39,8 @@ func main() {
 
 	startupContext, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
 	pool, err := database.Open(startupContext, databaseURL)
-	if err == nil {
+	skipMigrations := database.SkipMigrations(os.Getenv("SKIP_MIGRATIONS"))
+	if err == nil && !skipMigrations {
 		err = database.Migrate(startupContext, pool)
 	}
 	cancelStartup()
@@ -49,6 +50,9 @@ func main() {
 		}
 		logger.Error("initialize API database", "error", err)
 		os.Exit(1)
+	}
+	if skipMigrations {
+		logger.Warn("startup migrations skipped", "reason", "SKIP_MIGRATIONS")
 	}
 	defer pool.Close()
 

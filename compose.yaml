@@ -6,6 +6,13 @@ services:
     command: ["air", "-c", ".air.api.toml"]
     env_file:
       - .env
+    # Local runs never migrate. The migrations are idempotent and destroy
+    # nothing, but this stack points wherever DATABASE_URL says, including a
+    # database it does not own, and a branch carrying a new migration would
+    # otherwise apply it on startup. compose.production.yaml does not set this,
+    # so deploys still migrate.
+    environment:
+      SKIP_MIGRATIONS: "true"
     init: true
     restart: unless-stopped
     depends_on:
@@ -28,6 +35,13 @@ services:
       target: development
     env_file:
       - .env
+    # Local runs never migrate. The migrations are idempotent and destroy
+    # nothing, but this stack points wherever DATABASE_URL says, including a
+    # database it does not own, and a branch carrying a new migration would
+    # otherwise apply it on startup. compose.production.yaml does not set this,
+    # so deploys still migrate.
+    environment:
+      SKIP_MIGRATIONS: "true"
     init: true
     restart: unless-stopped
     depends_on:
