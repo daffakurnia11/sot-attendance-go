@@ -1,4 +1,4 @@
-.PHONY: local-up local-api local-down local-logs lint vet test race build check
+.PHONY: local-up local-api local-down local-logs format lint vet test race build check
 
 # Both run targets use DATABASE_URL from .env exactly as written, whether that
 # is the compose database or a remote one. Set SKIP_MIGRATIONS=true in .env when
@@ -22,6 +22,9 @@ local-logs:
 
 # gofmt -l prints the paths it would rewrite and exits 0 either way, so the
 # non-empty check is what turns unformatted code into a failure.
+format:
+	pnpm format
+
 lint:
 	@unformatted="$$(gofmt -l .)"; \
 		if [ -n "$$unformatted" ]; then echo "gofmt required for:"; echo "$$unformatted"; exit 1; fi

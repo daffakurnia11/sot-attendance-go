@@ -1,0 +1,14 @@
+{
+  "name": "sot-attendance-go-formatting",
+  "private": true,
+  "scripts": {
+    "format": "pnpm format:prettier && pnpm format:go",
+    "format:check": "prettier --check . --ignore-unknown",
+    "format:go": "gofmt -w .",
+    "format:prettier": "prettier --write . --ignore-unknown"
+  },
+  "devDependencies": {
+    "prettier": "3.6.2"
+  },
+  "packageManager": "pnpm@11.0.9"
+}

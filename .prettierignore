@@ -1,0 +1,11 @@
+.cache
+.git
+tmp-api
+node_modules
+pnpm-lock.yaml
+.env*
+go.sum
+*.go
+*.sql
+Dockerfile
+Makefile

@@ -176,14 +176,14 @@ Port `8081` is `API_PORT` from `.env.production`. Pick a port nothing else on th
 
 Create a `production` environment and set these secrets:
 
-| Secret | Purpose |
-| --- | --- |
-| `DO_HOST` | Droplet hostname or IP |
-| `DO_USER` | SSH user |
-| `DO_SSH_PRIVATE_KEY` | SSH private key for that user |
-| `DO_APP_DIR` | Deploy directory holding `compose.production.yaml` and `.env.production` |
-| `GHCR_USERNAME` | GHCR account used by the droplet to pull |
-| `GHCR_TOKEN` | Personal access token with `read:packages` |
+| Secret               | Purpose                                                                  |
+| -------------------- | ------------------------------------------------------------------------ |
+| `DO_HOST`            | Droplet hostname or IP                                                   |
+| `DO_USER`            | SSH user                                                                 |
+| `DO_SSH_PRIVATE_KEY` | SSH private key for that user                                            |
+| `DO_APP_DIR`         | Deploy directory holding `compose.production.yaml` and `.env.production` |
+| `GHCR_USERNAME`      | GHCR account used by the droplet to pull                                 |
+| `GHCR_TOKEN`         | Personal access token with `read:packages`                               |
 
 Pushing to GHCR uses the built-in `GITHUB_TOKEN`; `GHCR_USERNAME` and `GHCR_TOKEN` are only for the pull side on the droplet.
 
