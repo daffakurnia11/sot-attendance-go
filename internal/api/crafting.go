@@ -102,47 +102,24 @@ func (h *Handler) calculateCraftingBatch(response http.ResponseWriter, request *
 		writeError(response, http.StatusBadRequest, "INVALID_CRAFTING_REQUEST", "Crafting payload must contain one JSON object")
 		return
 	}
-	if len(payload.Recipes) < 1 || len(payload.Recipes) > crafting.MaxRecipes {
-		writeError(response, http.StatusUnprocessableEntity, "INVALID_CRAFTING_REQUEST", "Recipe count must be between 1 and 20")
+	result, err := crafting.CalculateBatch(request.Context(), h.crafting, payload.Recipes)
+	if errors.Is(err, crafting.ErrInvalidBatch) {
+		writeError(response, http.StatusUnprocessableEntity, "INVALID_CRAFTING_REQUEST", "Every weapon is required, recipe count must be between 1 and 20, and quantity must be between 1 and 10000")
 		return
 	}
-	seen := make(map[string]struct{}, len(payload.Recipes))
-	calculations := make([]crafting.Calculation, 0, len(payload.Recipes))
-	for _, item := range payload.Recipes {
-		item.WeaponCode = strings.TrimSpace(item.WeaponCode)
-		if item.WeaponCode == "" || len(item.WeaponCode) > 80 || item.Quantity < 1 || item.Quantity > crafting.MaxQuantity {
-			writeError(response, http.StatusUnprocessableEntity, "INVALID_CRAFTING_REQUEST", "Every weapon is required and quantity must be between 1 and 10000")
-			return
-		}
-		if _, exists := seen[item.WeaponCode]; exists {
-			writeError(response, http.StatusUnprocessableEntity, "DUPLICATE_CRAFTING_RECIPE", "Each weapon recipe may only be selected once")
-			return
-		}
-		seen[item.WeaponCode] = struct{}{}
-		recipe, err := h.crafting.Get(request.Context(), item.WeaponCode)
-		if errors.Is(err, crafting.ErrNotFound) {
-			writeError(response, http.StatusNotFound, "CRAFTING_RECIPE_NOT_FOUND", "Crafting recipe was not found")
-			return
-		}
-		if err != nil {
-			h.logger.Error("load batch crafting recipe", "member_id", claims.MemberID, "weapon_code", item.WeaponCode, "error", err)
-			writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Crafting recipe could not be loaded")
-			return
-		}
-		calculation, err := crafting.Calculate(recipe, item.Quantity)
-		if err != nil {
-			h.logger.Error("calculate batch crafting recipe", "member_id", claims.MemberID, "weapon_code", item.WeaponCode, "quantity", item.Quantity, "error", err)
-			writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Crafting recipe could not be calculated")
-			return
-		}
-		calculations = append(calculations, calculation)
+	if errors.Is(err, crafting.ErrDuplicateRecipe) {
+		writeError(response, http.StatusUnprocessableEntity, "DUPLICATE_CRAFTING_RECIPE", "Each weapon recipe may only be selected once")
+		return
 	}
-	result, err := crafting.Combine(calculations)
+	if errors.Is(err, crafting.ErrNotFound) {
+		writeError(response, http.StatusNotFound, "CRAFTING_RECIPE_NOT_FOUND", "Crafting recipe was not found")
+		return
+	}
 	if err != nil {
-		h.logger.Error("combine crafting recipes", "member_id", claims.MemberID, "error", err)
+		h.logger.Error("calculate batch crafting recipes", "member_id", claims.MemberID, "error", err)
 		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Crafting recipes could not be combined")
 		return
 	}
-	h.logger.Info("batch crafting recipes calculated", "member_id", claims.MemberID, "recipe_count", len(calculations), "weapon_quantity", result.TotalRequestedQuantity)
+	h.logger.Info("batch crafting recipes calculated", "member_id", claims.MemberID, "recipe_count", len(result.Recipes), "weapon_quantity", result.TotalRequestedQuantity)
 	writeJSON(response, http.StatusOK, result)
 }

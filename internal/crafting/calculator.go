@@ -1,15 +1,24 @@
 package crafting
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 )
 
 const MaxQuantity = 10_000
 const MaxRecipes = 20
 
 var ErrNotFound = errors.New("crafting recipe not found")
+var ErrInvalidBatch = errors.New("invalid crafting batch")
+var ErrDuplicateRecipe = errors.New("duplicate crafting recipe")
+
+type Store interface {
+	List(context.Context) ([]RecipeSummary, error)
+	Get(context.Context, string) (Recipe, error)
+}
 
 type RecipeSummary struct {
 	WeaponCode          string `json:"weapon_code"`
@@ -63,6 +72,34 @@ type TotalIngredient struct {
 	ItemCode      string `json:"item_code"`
 	ItemName      string `json:"item_name"`
 	TotalQuantity int64  `json:"total_quantity"`
+}
+
+func CalculateBatch(ctx context.Context, store Store, items []BatchItem) (BatchCalculation, error) {
+	if len(items) < 1 || len(items) > MaxRecipes {
+		return BatchCalculation{}, fmt.Errorf("%w: recipe count must be between 1 and %d", ErrInvalidBatch, MaxRecipes)
+	}
+	seen := make(map[string]struct{}, len(items))
+	calculations := make([]Calculation, 0, len(items))
+	for _, item := range items {
+		item.WeaponCode = strings.ToLower(strings.TrimSpace(item.WeaponCode))
+		if item.WeaponCode == "" || len(item.WeaponCode) > 80 || item.Quantity < 1 || item.Quantity > MaxQuantity {
+			return BatchCalculation{}, fmt.Errorf("%w: every weapon is required and quantity must be between 1 and %d", ErrInvalidBatch, MaxQuantity)
+		}
+		if _, exists := seen[item.WeaponCode]; exists {
+			return BatchCalculation{}, fmt.Errorf("%w: %s", ErrDuplicateRecipe, item.WeaponCode)
+		}
+		seen[item.WeaponCode] = struct{}{}
+		recipe, err := store.Get(ctx, item.WeaponCode)
+		if err != nil {
+			return BatchCalculation{}, fmt.Errorf("load crafting recipe %q: %w", item.WeaponCode, err)
+		}
+		calculation, err := Calculate(recipe, item.Quantity)
+		if err != nil {
+			return BatchCalculation{}, fmt.Errorf("calculate crafting recipe %q: %w", item.WeaponCode, err)
+		}
+		calculations = append(calculations, calculation)
+	}
+	return Combine(calculations)
 }
 
 func Combine(calculations []Calculation) (BatchCalculation, error) {

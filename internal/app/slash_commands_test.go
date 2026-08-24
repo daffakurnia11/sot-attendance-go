@@ -11,10 +11,10 @@ func TestSlashCommandsMirrorPrefixCommands(t *testing.T) {
 	t.Parallel()
 
 	commands := slashCommands()
-	if len(commands) != 2 {
-		t.Fatalf("slashCommands() count = %d, want 2", len(commands))
+	if len(commands) != 3 {
+		t.Fatalf("slashCommands() count = %d, want 3", len(commands))
 	}
-	wantNames := []string{"check", "recap"}
+	wantNames := []string{"craft", "check", "recap"}
 	prefixRouter := router.NewRouter("!")
 	for index, command := range commands {
 		if command.Name != wantNames[index] || command.Description == "" {
@@ -23,19 +23,23 @@ func TestSlashCommandsMirrorPrefixCommands(t *testing.T) {
 		if command.Contexts == nil || len(*command.Contexts) != 1 || (*command.Contexts)[0] != discordgo.InteractionContextGuild {
 			t.Errorf("command %q contexts = %#v", command.Name, command.Contexts)
 		}
-		if got := prefixRouter.Match("!" + command.Name); got != command.Name {
+		prefixContent := "!" + command.Name
+		if command.Name == "craft" {
+			prefixContent += " vector:1"
+		}
+		if got := prefixRouter.Match(prefixContent); got != command.Name {
 			t.Errorf("slash command %q has no matching prefix command", command.Name)
 		}
 	}
-	if len(commands[0].Options) != 1 || commands[0].Options[0].Name != "member" || commands[0].Options[0].Type != discordgo.ApplicationCommandOptionUser || commands[0].Options[0].Required {
-		t.Errorf("check options = %#v", commands[0].Options)
+	if len(commands[1].Options) != 1 || commands[1].Options[0].Name != "member" || commands[1].Options[0].Type != discordgo.ApplicationCommandOptionUser || commands[1].Options[0].Required {
+		t.Errorf("check options = %#v", commands[1].Options)
 	}
 }
 
 func TestIsSlashCommand(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{"check", "recap"} {
+	for _, name := range []string{"craft", "check", "recap"} {
 		if !isSlashCommand(name) {
 			t.Errorf("isSlashCommand(%q) = false", name)
 		}

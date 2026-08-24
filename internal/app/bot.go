@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,9 +15,11 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	attendancescheduler "github.com/daffakurniawan/sot-discord-bot/internal/attendance"
+	commandcrafting "github.com/daffakurniawan/sot-discord-bot/internal/command/crafting"
 	commandrecap "github.com/daffakurniawan/sot-discord-bot/internal/command/recap"
 	"github.com/daffakurniawan/sot-discord-bot/internal/command/router"
 	"github.com/daffakurniawan/sot-discord-bot/internal/config"
+	craftingdomain "github.com/daffakurniawan/sot-discord-bot/internal/crafting"
 	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/database"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
@@ -41,6 +44,8 @@ type Bot struct {
 	cfx                cfxPlayerReader
 	members            *member.Repository
 	settings           *dbsettings.Repository
+	crafting           craftingdomain.Store
+	craftDrafts        *craftDraftStore
 	location           *time.Location
 	database           *pgxpool.Pool
 	guildID            string
@@ -71,6 +76,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		return nil, err
 	}
 	members := member.NewRepository(pool)
+	craftingRepository := craftingdomain.NewRepository(pool)
 
 	session, err := discordgo.New("Bot " + cfg.Token)
 	if err != nil {
@@ -132,6 +138,8 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		cfx:                dashboard.NewCFXClient(&http.Client{Timeout: 5 * time.Second}, cfg.CFXServerID, cfg.CFXPlayerID),
 		members:            members,
 		settings:           settingsRepository,
+		crafting:           craftingRepository,
+		craftDrafts:        newCraftDraftStore(10 * time.Minute),
 		location:           location,
 		database:           pool,
 		guildID:            cfg.GuildID,
@@ -373,6 +381,8 @@ func (b *Bot) onMessageCreate(session *discordgo.Session, message *discordgo.Mes
 		err = b.handleRecap(session, message)
 	case commandrecap.CheckCommand:
 		err = b.handleCheck(session, message)
+	case commandcrafting.Command:
+		err = b.handleCraft(session, message)
 	}
 	if err == nil {
 		return
@@ -381,6 +391,43 @@ func (b *Bot) onMessageCreate(session *discordgo.Session, message *discordgo.Mes
 	b.logger.Error("handle command", "command", commandName, "guild_id", message.GuildID, "channel_id", message.ChannelID, "user_id", message.Author.ID, "error", err)
 	if _, sendErr := session.ChannelMessageSendReply(message.ChannelID, "Could not run that command. Check your permissions or try again shortly.", message.Reference()); sendErr != nil {
 		b.logger.Error("send command error", "command", commandName, "channel_id", message.ChannelID, "error", sendErr)
+	}
+}
+
+func (b *Bot) handleCraft(session *discordgo.Session, message *discordgo.MessageCreate) error {
+	items, err := commandcrafting.Parse(message.Content, b.router.Prefix())
+	if err != nil {
+		if errors.Is(err, commandcrafting.ErrInvalidSyntax) {
+			_, sendErr := session.ChannelMessageSendReply(message.ChannelID, commandcrafting.Usage(b.router.Prefix()), message.Reference())
+			return sendErr
+		}
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := craftingdomain.CalculateBatch(ctx, b.crafting, items)
+	if err != nil {
+		if errors.Is(err, craftingdomain.ErrNotFound) || errors.Is(err, craftingdomain.ErrDuplicateRecipe) || errors.Is(err, craftingdomain.ErrInvalidBatch) {
+			_, sendErr := session.ChannelMessageSendReply(message.ChannelID, fmt.Sprintf("Invalid crafting request: %s\n%s", userCraftError(err), commandcrafting.Usage(b.router.Prefix())), message.Reference())
+			return sendErr
+		}
+		return err
+	}
+	if _, err := session.ChannelMessageSendEmbed(message.ChannelID, commandcrafting.Embed(result)); err != nil {
+		return fmt.Errorf("send crafting calculation: %w", err)
+	}
+	b.logger.Info("crafting command sent", "guild_id", message.GuildID, "channel_id", message.ChannelID, "user_id", message.Author.ID, "recipe_count", len(result.Recipes), "weapon_quantity", result.TotalRequestedQuantity)
+	return nil
+}
+
+func userCraftError(err error) string {
+	switch {
+	case errors.Is(err, craftingdomain.ErrDuplicateRecipe):
+		return "each weapon may only appear once"
+	case errors.Is(err, craftingdomain.ErrNotFound):
+		return "weapon recipe was not found"
+	default:
+		return "quantity must be between 1 and 10000, with 1 to 20 products"
 	}
 }
 

@@ -93,7 +93,11 @@ A pending disconnect is delayed for at least 15 seconds (or two poll intervals w
 
 `DISCORD_COMMAND_PREFIX` controls message commands.
 
-The bot also registers guild-scoped `/check` and `/recap` application commands at gateway startup. These slash commands mirror their prefix-command equivalents and appear in Discord's command picker.
+The bot also registers guild-scoped `/craft`, `/check`, and `/recap` application commands at gateway startup. These slash commands mirror their prefix-command equivalents and appear in Discord's command picker.
+
+Run `/craft` to open an ephemeral multi-product crafting builder. Select a weapon, enter its quantity, and repeat for up to 20 products. The bot combines matching materials into one total, shows the total crafting time, and lets the caller explicitly post the completed result to the channel. Drafts expire after 10 minutes and quantities must be between 1 and 10,000.
+
+For a faster public calculation, use the prefix command with one or more `<weapon-code>:<quantity>` pairs. Example: `!craft vector:30 mp9:20 crx_mk2:5`. Weapon codes are case-insensitive; hyphens are normalized to underscores. Both command forms read the saved `crafting_recipes` data and use the same calculator as the web API.
 
 Run `<prefix>recap` (default `!recap`) to show ranked member playtime with clickable Discord member mentions in an embed. Recap uses `start_attendance` from the `settings` table in `Asia/Jakarta`; session time before that boundary is excluded. Completed sessions and currently connected sessions are included. `playtime_threshold` uses Go duration format such as `90m`; playtime strictly above this threshold appears under Attended, otherwise under Not Attended.
 
@@ -204,8 +208,10 @@ internal/auth/    signed application access tokens
 internal/presence/ FiveM matching, status counter, transition logging
 internal/attendance/ daily Asia/Jakarta scheduler
 internal/command/attendance/ attendance announcement presentation
+internal/command/crafting/ crafting command parsing and Discord presentation
 internal/command/router/     prefix command routing
 internal/config/  environment validation
+internal/crafting/ crafting recipe persistence and shared calculator
 internal/database/ PostgreSQL pool and embedded SQL migrations
 internal/discord/embed/ reusable Discord embed builder
 internal/member/  member persistence

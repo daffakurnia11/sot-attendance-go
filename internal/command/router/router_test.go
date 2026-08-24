@@ -14,6 +14,7 @@ func TestRouterMatch(t *testing.T) {
 		{content: "!check", want: "check"},
 		{content: "!check <@123456789>", want: "check"},
 		{content: "!check <@!123456789>", want: "check"},
+		{content: "!craft vector:30 mp9:20", want: "craft"},
 		{content: "!Me"},
 		{content: "!check extra"},
 		{content: "!check <@member>"},

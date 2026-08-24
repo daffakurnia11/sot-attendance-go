@@ -50,11 +50,6 @@ type settingsStore interface {
 	Load(context.Context) (dbsettings.Values, error)
 	Update(context.Context, dbsettings.Values) (dbsettings.Values, error)
 }
-type craftingStore interface {
-	List(context.Context) ([]crafting.RecipeSummary, error)
-	Get(context.Context, string) (crafting.Recipe, error)
-}
-
 type Handler struct {
 	verifier   discordIdentityVerifier
 	members    memberFinder
@@ -63,7 +58,7 @@ type Handler struct {
 	dashboard  dashboardReader
 	attendance attendanceReader
 	settings   settingsStore
-	crafting   craftingStore
+	crafting   crafting.Store
 	logger     *slog.Logger
 }
 
@@ -75,11 +70,11 @@ func NewHandler(verifier discordIdentityVerifier, members memberFinder, issuer t
 	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, nil)
 }
 
-func NewHandlerWithCrafting(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes craftingStore) http.Handler {
+func NewHandlerWithCrafting(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store) http.Handler {
 	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes)
 }
 
-func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes craftingStore) http.Handler {
+func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store) http.Handler {
 	handler := &Handler{verifier: verifier, members: members, issuer: issuer, tokens: tokens, dashboard: dashboard, attendance: attendance, settings: settings, crafting: recipes, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handler.health)

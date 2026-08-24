@@ -7,12 +7,14 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	commandcrafting "github.com/daffakurniawan/sot-discord-bot/internal/command/crafting"
 	commandrecap "github.com/daffakurniawan/sot-discord-bot/internal/command/recap"
 )
 
 func slashCommands() []*discordgo.ApplicationCommand {
 	guildContexts := []discordgo.InteractionContextType{discordgo.InteractionContextGuild}
 	return []*discordgo.ApplicationCommand{
+		{Name: commandcrafting.Command, Description: "Build a multi-product crafting plan", Contexts: &guildContexts},
 		{
 			Name: commandrecap.CheckCommand, Description: "Check attendance and playtime", Contexts: &guildContexts,
 			Options: []*discordgo.ApplicationCommandOption{{
@@ -34,11 +36,24 @@ func (b *Bot) registerSlashCommands(session *discordgo.Session, applicationID st
 }
 
 func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.InteractionCreate) {
-	if event == nil || event.Interaction == nil || event.Type != discordgo.InteractionApplicationCommand || event.GuildID != b.guildID {
+	if event == nil || event.Interaction == nil || event.GuildID != b.guildID {
+		return
+	}
+	if event.Type == discordgo.InteractionMessageComponent || event.Type == discordgo.InteractionModalSubmit {
+		if isCraftInteraction(event.Interaction) {
+			b.handleCraftInteraction(session, event.Interaction)
+		}
+		return
+	}
+	if event.Type != discordgo.InteractionApplicationCommand {
 		return
 	}
 	commandName := event.ApplicationCommandData().Name
 	if !isSlashCommand(commandName) {
+		return
+	}
+	if commandName == commandcrafting.Command {
+		b.handleCraftSlashStart(session, event.Interaction)
 		return
 	}
 
@@ -64,7 +79,7 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 
 func isSlashCommand(name string) bool {
 	switch name {
-	case commandrecap.CheckCommand, commandrecap.Command:
+	case commandrecap.CheckCommand, commandrecap.Command, commandcrafting.Command:
 		return true
 	default:
 		return false

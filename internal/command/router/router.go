@@ -2,6 +2,8 @@ package router
 
 import "strings"
 
+const CraftCommand = "craft"
+
 type Router struct {
 	prefix string
 }
@@ -9,6 +11,8 @@ type Router struct {
 func NewRouter(prefix string) *Router {
 	return &Router{prefix: prefix}
 }
+
+func (r *Router) Prefix() string { return r.prefix }
 
 func (r *Router) Match(content string) string {
 	trimmed := strings.TrimSpace(content)
@@ -19,6 +23,9 @@ func (r *Router) Match(content string) string {
 		return "check"
 	}
 	parts := strings.Fields(trimmed)
+	if len(parts) >= 2 && parts[0] == r.prefix+CraftCommand {
+		return CraftCommand
+	}
 	if len(parts) == 2 && parts[0] == r.prefix+"check" && isUserMention(parts[1]) {
 		return "check"
 	}
