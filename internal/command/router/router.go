@@ -2,7 +2,10 @@ package router
 
 import "strings"
 
-const CraftCommand = "craft"
+const (
+	CraftCommand = "craft"
+	MoneyCommand = "money"
+)
 
 type Router struct {
 	prefix string
@@ -25,6 +28,9 @@ func (r *Router) Match(content string) string {
 	parts := strings.Fields(trimmed)
 	if len(parts) >= 2 && parts[0] == r.prefix+CraftCommand {
 		return CraftCommand
+	}
+	if len(parts) >= 2 && parts[0] == r.prefix+MoneyCommand {
+		return MoneyCommand
 	}
 	if len(parts) == 2 && parts[0] == r.prefix+"check" && isUserMention(parts[1]) {
 		return "check"

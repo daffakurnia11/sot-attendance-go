@@ -40,13 +40,13 @@ func TestRepositoryLoadAttendance(t *testing.T) {
 		want    Attendance
 		wantErr string
 	}{
-		{name: "valid", values: []string{"21:00", "01:00", "90m", "15", "8000000", "24", "30", "28"}, want: Attendance{StartTime: 21 * time.Hour, EndTime: time.Hour, PlaytimeThreshold: 90 * time.Minute}},
-		{name: "trim values", values: []string{" 08:30 ", " 17:45 ", " 1h30m ", "15", "8000000", "24", "30", "28"}, want: Attendance{StartTime: 8*time.Hour + 30*time.Minute, EndTime: 17*time.Hour + 45*time.Minute, PlaytimeThreshold: 90 * time.Minute}},
-		{name: "missing start", values: []string{"", "01:00", "90m", "15", "8000000", "24", "30", "28"}, wantErr: "setting start_attendance"},
-		{name: "invalid end", values: []string{"21:00", "1am", "90m", "15", "8000000", "24", "30", "28"}, wantErr: "setting end_attendance"},
-		{name: "same times", values: []string{"21:00", "21:00", "90m", "15", "8000000", "24", "30", "28"}, wantErr: "must differ"},
-		{name: "missing playtime", values: []string{"21:00", "01:00", "", "15", "8000000", "24", "30", "28"}, wantErr: "setting playtime_threshold"},
-		{name: "non-positive playtime", values: []string{"21:00", "01:00", "0m", "15", "8000000", "24", "30", "28"}, wantErr: "setting playtime_threshold"},
+		{name: "valid", values: []string{"21:00", "01:00", "90m", "15", "8000000", "24", "30", "28", "1012500", "18000"}, want: Attendance{StartTime: 21 * time.Hour, EndTime: time.Hour, PlaytimeThreshold: 90 * time.Minute}},
+		{name: "trim values", values: []string{" 08:30 ", " 17:45 ", " 1h30m ", "15", "8000000", "24", "30", "28", "1012500", "18000"}, want: Attendance{StartTime: 8*time.Hour + 30*time.Minute, EndTime: 17*time.Hour + 45*time.Minute, PlaytimeThreshold: 90 * time.Minute}},
+		{name: "missing start", values: []string{"", "01:00", "90m", "15", "8000000", "24", "30", "28", "1012500", "18000"}, wantErr: "setting start_attendance"},
+		{name: "invalid end", values: []string{"21:00", "1am", "90m", "15", "8000000", "24", "30", "28", "1012500", "18000"}, wantErr: "setting end_attendance"},
+		{name: "same times", values: []string{"21:00", "21:00", "90m", "15", "8000000", "24", "30", "28", "1012500", "18000"}, wantErr: "must differ"},
+		{name: "missing playtime", values: []string{"21:00", "01:00", "", "15", "8000000", "24", "30", "28", "1012500", "18000"}, wantErr: "setting playtime_threshold"},
+		{name: "non-positive playtime", values: []string{"21:00", "01:00", "0m", "15", "8000000", "24", "30", "28", "1012500", "18000"}, wantErr: "setting playtime_threshold"},
 		{name: "query failure", rowErr: errors.New("database unavailable"), wantErr: "load attendance settings"},
 	}
 

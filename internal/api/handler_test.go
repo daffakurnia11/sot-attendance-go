@@ -364,7 +364,7 @@ func TestSettingsRequireAuthAndValidateUpdates(t *testing.T) {
 		t.Fatalf("settings response = %d %s", loaded.Code, loaded.Body.String())
 	}
 
-	invalidRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", strings.NewReader(`{"start_attendance":"21:00","end_attendance":"21:00","playtime_threshold":"90m","player_threshold":"15","payment_contract":"8000000","attendance_minimum":"24","attendance_maximum":"30","start_date_contract":"28"}`))
+	invalidRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", strings.NewReader(`{"start_attendance":"21:00","end_attendance":"21:00","playtime_threshold":"90m","player_threshold":"15","payment_contract":"8000000","attendance_minimum":"24","attendance_maximum":"30","start_date_contract":"28","office_money_balance":"1012500","dirty_money_balance":"18000"}`))
 	invalidRequest.Header.Set("Authorization", "Bearer app-token")
 	invalid := httptest.NewRecorder()
 	handler.ServeHTTP(invalid, invalidRequest)
@@ -372,11 +372,11 @@ func TestSettingsRequireAuthAndValidateUpdates(t *testing.T) {
 		t.Fatalf("invalid response = %d %s", invalid.Code, invalid.Body.String())
 	}
 
-	validRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", strings.NewReader(`{"start_attendance":"20:30","end_attendance":"01:30","playtime_threshold":"1h30m","player_threshold":"20","payment_contract":"9000000","attendance_minimum":"24","attendance_maximum":"30","start_date_contract":"28"}`))
+	validRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", strings.NewReader(`{"start_attendance":"20:30","end_attendance":"01:30","playtime_threshold":"1h30m","player_threshold":"20","payment_contract":"9000000","attendance_minimum":"24","attendance_maximum":"30","start_date_contract":"28","office_money_balance":"1012500","dirty_money_balance":"18000"}`))
 	validRequest.Header.Set("Authorization", "Bearer app-token")
 	valid := httptest.NewRecorder()
 	handler.ServeHTTP(valid, validRequest)
-	if valid.Code != http.StatusOK || store.updated.PlayerThreshold != "20" || store.updated.PaymentContract != "9000000" {
+	if valid.Code != http.StatusOK || store.updated.PlayerThreshold != "20" || store.updated.PaymentContract != "9000000" || store.updated.OfficeMoneyBalance != "1012500" || store.updated.DirtyMoneyBalance != "18000" {
 		t.Fatalf("valid response = %d %s, updated = %#v", valid.Code, valid.Body.String(), store.updated)
 	}
 }

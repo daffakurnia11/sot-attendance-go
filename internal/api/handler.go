@@ -233,6 +233,16 @@ func (h *Handler) updateSettings(response http.ResponseWriter, request *http.Req
 		writeError(response, http.StatusUnprocessableEntity, "INVALID_SETTINGS", validationErr.Error())
 		return
 	}
+	validated.OfficeMoneyBalance, validationErr = dbsettings.ValidateOfficeMoneyBalance(values.OfficeMoneyBalance)
+	if validationErr != nil {
+		writeError(response, http.StatusUnprocessableEntity, "INVALID_SETTINGS", validationErr.Error())
+		return
+	}
+	validated.DirtyMoneyBalance, validationErr = dbsettings.ValidateDirtyMoneyBalance(values.DirtyMoneyBalance)
+	if validationErr != nil {
+		writeError(response, http.StatusUnprocessableEntity, "INVALID_SETTINGS", validationErr.Error())
+		return
+	}
 	updated, err := h.settings.Update(request.Context(), validated)
 	if err != nil {
 		h.logger.Error("update settings", "member_id", claims.MemberID, "error", err)

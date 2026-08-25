@@ -139,3 +139,16 @@ func TestWithStatusPolling(t *testing.T) {
 		})
 	}
 }
+
+func TestWithMoneyChannels(t *testing.T) {
+	t.Parallel()
+	configured, err := withMoneyChannels(Config{}, " 123 ", " 456 ")
+	if err != nil || configured.OfficeMoneyChannelID != "123" || configured.DirtyMoneyChannelID != "456" {
+		t.Fatalf("withMoneyChannels() = %#v, %v", configured, err)
+	}
+	for _, channels := range [][2]string{{"", "456"}, {"abc", "456"}, {"123", ""}, {"123", "dirty"}, {"123", "123"}} {
+		if _, err := withMoneyChannels(Config{}, channels[0], channels[1]); err == nil {
+			t.Errorf("withMoneyChannels(%q, %q) error = nil", channels[0], channels[1])
+		}
+	}
+}

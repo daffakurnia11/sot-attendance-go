@@ -16,6 +16,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	attendancescheduler "github.com/daffakurniawan/sot-discord-bot/internal/attendance"
 	commandcrafting "github.com/daffakurniawan/sot-discord-bot/internal/command/crafting"
+	commandmoney "github.com/daffakurniawan/sot-discord-bot/internal/command/money"
 	commandrecap "github.com/daffakurniawan/sot-discord-bot/internal/command/recap"
 	"github.com/daffakurniawan/sot-discord-bot/internal/command/router"
 	"github.com/daffakurniawan/sot-discord-bot/internal/config"
@@ -23,6 +24,7 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/database"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
+	moneydomain "github.com/daffakurniawan/sot-discord-bot/internal/money"
 	"github.com/daffakurniawan/sot-discord-bot/internal/presence"
 	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,28 +35,31 @@ type cfxPlayerReader interface {
 }
 
 type Bot struct {
-	session            *discordgo.Session
-	status             *presence.Counter
-	router             *router.Router
-	logger             *slog.Logger
-	pollInterval       time.Duration
-	cfxPollInterval    time.Duration
-	statusPollInterval time.Duration
-	attendance         *attendancescheduler.Scheduler
-	cfx                cfxPlayerReader
-	members            *member.Repository
-	settings           *dbsettings.Repository
-	crafting           craftingdomain.Store
-	craftDrafts        *craftDraftStore
-	location           *time.Location
-	database           *pgxpool.Pool
-	guildID            string
-	adminRoleIDs       []string
-	memberRoleID       string
-	adminSync          sync.Mutex
-	ready              atomic.Bool
-	cfxCount           atomic.Int64
-	showCFXStatus      bool
+	session              *discordgo.Session
+	status               *presence.Counter
+	router               *router.Router
+	logger               *slog.Logger
+	pollInterval         time.Duration
+	cfxPollInterval      time.Duration
+	statusPollInterval   time.Duration
+	attendance           *attendancescheduler.Scheduler
+	cfx                  cfxPlayerReader
+	members              *member.Repository
+	settings             *dbsettings.Repository
+	crafting             craftingdomain.Store
+	money                *moneydomain.Repository
+	craftDrafts          *craftDraftStore
+	location             *time.Location
+	database             *pgxpool.Pool
+	guildID              string
+	adminRoleIDs         []string
+	memberRoleID         string
+	officeMoneyChannelID string
+	dirtyMoneyChannelID  string
+	adminSync            sync.Mutex
+	ready                atomic.Bool
+	cfxCount             atomic.Int64
+	showCFXStatus        bool
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
@@ -127,24 +132,27 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 	}
 
 	bot := &Bot{
-		session:            session,
-		status:             presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.PlayerLogChannelID, cfg.DiscordRoleID, cfg.PollInterval, cfg.BlacklistedUserIDs, members, logger),
-		router:             router.NewRouter(cfg.CommandPrefix),
-		logger:             logger,
-		pollInterval:       cfg.PollInterval,
-		cfxPollInterval:    cfg.CFXPollInterval,
-		statusPollInterval: cfg.StatusPollInterval,
-		attendance:         attendance,
-		cfx:                dashboard.NewCFXClient(&http.Client{Timeout: 5 * time.Second}, cfg.CFXServerID, cfg.CFXPlayerID),
-		members:            members,
-		settings:           settingsRepository,
-		crafting:           craftingRepository,
-		craftDrafts:        newCraftDraftStore(10 * time.Minute),
-		location:           location,
-		database:           pool,
-		guildID:            cfg.GuildID,
-		adminRoleIDs:       cfg.DiscordAdminRoleIDs,
-		memberRoleID:       cfg.DiscordMemberRoleID,
+		session:              session,
+		status:               presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.PlayerLogChannelID, cfg.DiscordRoleID, cfg.PollInterval, cfg.BlacklistedUserIDs, members, logger),
+		router:               router.NewRouter(cfg.CommandPrefix),
+		logger:               logger,
+		pollInterval:         cfg.PollInterval,
+		cfxPollInterval:      cfg.CFXPollInterval,
+		statusPollInterval:   cfg.StatusPollInterval,
+		attendance:           attendance,
+		cfx:                  dashboard.NewCFXClient(&http.Client{Timeout: 5 * time.Second}, cfg.CFXServerID, cfg.CFXPlayerID),
+		members:              members,
+		settings:             settingsRepository,
+		crafting:             craftingRepository,
+		money:                moneydomain.NewRepository(pool),
+		craftDrafts:          newCraftDraftStore(10 * time.Minute),
+		location:             location,
+		database:             pool,
+		guildID:              cfg.GuildID,
+		adminRoleIDs:         cfg.DiscordAdminRoleIDs,
+		memberRoleID:         cfg.DiscordMemberRoleID,
+		officeMoneyChannelID: cfg.OfficeMoneyChannelID,
+		dirtyMoneyChannelID:  cfg.DirtyMoneyChannelID,
 	}
 	bot.cfxCount.Store(-1)
 	session.AddHandler(bot.onReady)
@@ -383,6 +391,8 @@ func (b *Bot) onMessageCreate(session *discordgo.Session, message *discordgo.Mes
 		err = b.handleCheck(session, message)
 	case commandcrafting.Command:
 		err = b.handleCraft(session, message)
+	case commandmoney.Command:
+		err = b.handleMoney(session, message)
 	}
 	if err == nil {
 		return
@@ -391,6 +401,69 @@ func (b *Bot) onMessageCreate(session *discordgo.Session, message *discordgo.Mes
 	b.logger.Error("handle command", "command", commandName, "guild_id", message.GuildID, "channel_id", message.ChannelID, "user_id", message.Author.ID, "error", err)
 	if _, sendErr := session.ChannelMessageSendReply(message.ChannelID, "Could not run that command. Check your permissions or try again shortly.", message.Reference()); sendErr != nil {
 		b.logger.Error("send command error", "command", commandName, "channel_id", message.ChannelID, "error", sendErr)
+	}
+}
+
+func (b *Bot) handleMoney(session *discordgo.Session, message *discordgo.MessageCreate) error {
+	request, err := commandmoney.Parse(message.Content, b.router.Prefix())
+	if err != nil {
+		_, sendErr := session.ChannelMessageSendReply(message.ChannelID, commandmoney.Usage(b.router.Prefix()), message.Reference())
+		return sendErr
+	}
+	account, validChannel := b.moneyAccountForChannel(message.ChannelID)
+	if !validChannel {
+		_, sendErr := session.ChannelMessageSendReply(message.ChannelID, "Money commands can only be used in <#"+b.officeMoneyChannelID+"> or <#"+b.dirtyMoneyChannelID+">.", message.Reference())
+		return sendErr
+	}
+	request.Account = account
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	currentMember, err := b.members.FindByUserID(ctx, message.Author.ID)
+	if err != nil {
+		return fmt.Errorf("find money command member: %w", err)
+	}
+	if request.Action == "balance" {
+		balance, err := b.money.Balance(ctx, request.Account)
+		if err != nil {
+			return err
+		}
+		_, err = session.ChannelMessageSendEmbed(message.ChannelID, commandmoney.BalanceEmbed(request.Account, balance))
+		return err
+	}
+	if !currentMember.IsAdmin {
+		_, sendErr := session.ChannelMessageSendReply(message.ChannelID, "Administrator permission is required to change money balances.", message.Reference())
+		return sendErr
+	}
+	transaction, err := b.money.Transact(ctx, moneydomain.Transaction{Account: request.Account, Action: request.Action, Amount: request.Amount, Reason: request.Reason, ActorMemberID: currentMember.ID})
+	if err != nil {
+		if errors.Is(err, moneydomain.ErrInsufficientFunds) {
+			_, sendErr := session.ChannelMessageSendReply(message.ChannelID, "Insufficient balance for that withdrawal.", message.Reference())
+			return sendErr
+		}
+		return err
+	}
+	if _, err := session.ChannelMessageSendEmbed(message.ChannelID, commandmoney.TransactionEmbed(transaction, currentMember.CharacterName)); err != nil {
+		return fmt.Errorf("send money transaction: %w", err)
+	}
+	b.logger.Info("money transaction applied", "guild_id", message.GuildID, "channel_id", message.ChannelID, "user_id", message.Author.ID, "member_id", currentMember.ID, "transaction_id", transaction.ID, "account", transaction.Account, "action", transaction.Action, "amount", transaction.Amount)
+	return nil
+}
+
+func (b *Bot) moneyChannelID(account moneydomain.Account) string {
+	if account == moneydomain.AccountDirty {
+		return b.dirtyMoneyChannelID
+	}
+	return b.officeMoneyChannelID
+}
+
+func (b *Bot) moneyAccountForChannel(channelID string) (moneydomain.Account, bool) {
+	switch channelID {
+	case b.officeMoneyChannelID:
+		return moneydomain.AccountOffice, true
+	case b.dirtyMoneyChannelID:
+		return moneydomain.AccountDirty, true
+	default:
+		return "", false
 	}
 }
 

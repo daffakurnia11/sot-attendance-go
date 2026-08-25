@@ -18,14 +18,16 @@ type Attendance struct {
 }
 
 type Values struct {
-	StartAttendance   string `json:"start_attendance"`
-	EndAttendance     string `json:"end_attendance"`
-	PlaytimeThreshold string `json:"playtime_threshold"`
-	PlayerThreshold   string `json:"player_threshold"`
-	PaymentContract   string `json:"payment_contract"`
-	AttendanceMinimum string `json:"attendance_minimum"`
-	AttendanceMaximum string `json:"attendance_maximum"`
-	StartDateContract string `json:"start_date_contract"`
+	StartAttendance    string `json:"start_attendance"`
+	EndAttendance      string `json:"end_attendance"`
+	PlaytimeThreshold  string `json:"playtime_threshold"`
+	PlayerThreshold    string `json:"player_threshold"`
+	PaymentContract    string `json:"payment_contract"`
+	AttendanceMinimum  string `json:"attendance_minimum"`
+	AttendanceMaximum  string `json:"attendance_maximum"`
+	StartDateContract  string `json:"start_date_contract"`
+	OfficeMoneyBalance string `json:"office_money_balance"`
+	DirtyMoneyBalance  string `json:"dirty_money_balance"`
 }
 
 type queryRower interface {
@@ -46,10 +48,12 @@ func (r *Repository) Load(ctx context.Context) (Values, error) {
 			COALESCE(MAX(value) FILTER (WHERE settings = 'payment_contract'), ''),
 			COALESCE(MAX(value) FILTER (WHERE settings = 'attendance_minimum'), ''),
 			COALESCE(MAX(value) FILTER (WHERE settings = 'attendance_maximum'), ''),
-			COALESCE(MAX(value) FILTER (WHERE settings = 'start_date_contract'), '')
+			COALESCE(MAX(value) FILTER (WHERE settings = 'start_date_contract'), ''),
+			COALESCE(MAX(value) FILTER (WHERE settings = 'office_money_balance'), ''),
+			COALESCE(MAX(value) FILTER (WHERE settings = 'dirty_money_balance'), '')
 		FROM settings`
 	var values Values
-	if err := r.database.QueryRow(ctx, query).Scan(&values.StartAttendance, &values.EndAttendance, &values.PlaytimeThreshold, &values.PlayerThreshold, &values.PaymentContract, &values.AttendanceMinimum, &values.AttendanceMaximum, &values.StartDateContract); err != nil {
+	if err := r.database.QueryRow(ctx, query).Scan(&values.StartAttendance, &values.EndAttendance, &values.PlaytimeThreshold, &values.PlayerThreshold, &values.PaymentContract, &values.AttendanceMinimum, &values.AttendanceMaximum, &values.StartDateContract, &values.OfficeMoneyBalance, &values.DirtyMoneyBalance); err != nil {
 		return Values{}, fmt.Errorf("load settings: %w", err)
 	}
 	return values, nil
@@ -60,16 +64,25 @@ func (r *Repository) Update(ctx context.Context, values Values) (Values, error) 
 	if err != nil {
 		return Values{}, err
 	}
+	normalized.OfficeMoneyBalance, err = ValidateOfficeMoneyBalance(values.OfficeMoneyBalance)
+	if err != nil {
+		return Values{}, err
+	}
+	normalized.DirtyMoneyBalance, err = ValidateDirtyMoneyBalance(values.DirtyMoneyBalance)
+	if err != nil {
+		return Values{}, err
+	}
 	const query = `
 		WITH input(settings, value) AS (VALUES
 			('start_attendance', $1::text), ('end_attendance', $2::text),
 			('playtime_threshold', $3::text), ('player_threshold', $4::text),
 			('payment_contract', $5::text), ('attendance_minimum', $6::text),
-			('attendance_maximum', $7::text), ('start_date_contract', $8::text)
+			('attendance_maximum', $7::text), ('start_date_contract', $8::text),
+			('office_money_balance', $9::text), ('dirty_money_balance', $10::text)
 		), updated AS (
-			UPDATE settings SET value = input.value FROM input
+			UPDATE settings SET value = input.value, updated_at = NOW() FROM input
 			WHERE settings.settings = input.settings
-			RETURNING settings.settings, settings.value
+			RETURNING settings.settings
 		)
 		SELECT
 			COALESCE(MAX(value) FILTER (WHERE settings = 'start_attendance'), ''),
@@ -79,18 +92,21 @@ func (r *Repository) Update(ctx context.Context, values Values) (Values, error) 
 			COALESCE(MAX(value) FILTER (WHERE settings = 'payment_contract'), ''),
 			COALESCE(MAX(value) FILTER (WHERE settings = 'attendance_minimum'), ''),
 			COALESCE(MAX(value) FILTER (WHERE settings = 'attendance_maximum'), ''),
-			COALESCE(MAX(value) FILTER (WHERE settings = 'start_date_contract'), ''), COUNT(*)
-		FROM updated`
+			COALESCE(MAX(value) FILTER (WHERE settings = 'start_date_contract'), ''),
+			COALESCE(MAX(value) FILTER (WHERE settings = 'office_money_balance'), ''),
+			COALESCE(MAX(value) FILTER (WHERE settings = 'dirty_money_balance'), ''),
+			(SELECT COUNT(*) FROM updated)
+		FROM settings`
 	var result Values
 	var count int
-	err = r.database.QueryRow(ctx, query, normalized.StartAttendance, normalized.EndAttendance, normalized.PlaytimeThreshold, normalized.PlayerThreshold, normalized.PaymentContract, normalized.AttendanceMinimum, normalized.AttendanceMaximum, normalized.StartDateContract).Scan(
-		&result.StartAttendance, &result.EndAttendance, &result.PlaytimeThreshold, &result.PlayerThreshold, &result.PaymentContract, &result.AttendanceMinimum, &result.AttendanceMaximum, &result.StartDateContract, &count,
+	err = r.database.QueryRow(ctx, query, normalized.StartAttendance, normalized.EndAttendance, normalized.PlaytimeThreshold, normalized.PlayerThreshold, normalized.PaymentContract, normalized.AttendanceMinimum, normalized.AttendanceMaximum, normalized.StartDateContract, normalized.OfficeMoneyBalance, normalized.DirtyMoneyBalance).Scan(
+		&result.StartAttendance, &result.EndAttendance, &result.PlaytimeThreshold, &result.PlayerThreshold, &result.PaymentContract, &result.AttendanceMinimum, &result.AttendanceMaximum, &result.StartDateContract, &result.OfficeMoneyBalance, &result.DirtyMoneyBalance, &count,
 	)
 	if err != nil {
 		return Values{}, fmt.Errorf("update settings: %w", err)
 	}
-	if count != 8 {
-		return Values{}, fmt.Errorf("update settings: expected 8 rows, updated %d", count)
+	if count != 10 {
+		return Values{}, fmt.Errorf("update settings: expected 10 rows, updated %d", count)
 	}
 	return result, nil
 }
@@ -143,6 +159,22 @@ func Validate(values Values) (Values, error) {
 		return Values{}, errors.New("setting start_date_contract must be between 1 and 31")
 	}
 	return values, nil
+}
+
+func ValidateOfficeMoneyBalance(value string) (string, error) {
+	return validateMoneyBalance("office_money_balance", value)
+}
+
+func ValidateDirtyMoneyBalance(value string) (string, error) {
+	return validateMoneyBalance("dirty_money_balance", value)
+}
+
+func validateMoneyBalance(setting string, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if _, err := strconv.ParseUint(value, 10, 63); err != nil {
+		return "", fmt.Errorf("setting %s must be a non-negative integer", setting)
+	}
+	return value, nil
 }
 
 func (r *Repository) LoadAttendance(ctx context.Context) (Attendance, error) {

@@ -27,6 +27,8 @@ type Config struct {
 	BlacklistedUserIDs   []string
 	PlayerChatChannelID  string
 	PlayerRecapChannelID string
+	OfficeMoneyChannelID string
+	DirtyMoneyChannelID  string
 	DatabaseURL          string
 }
 
@@ -49,7 +51,28 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	config, err = withMoneyChannels(config, os.Getenv("DISCORD_OFFICE_MONEY_CHANNEL_ID"), os.Getenv("DISCORD_DIRTY_MONEY_CHANNEL_ID"))
+	if err != nil {
+		return Config{}, err
+	}
 	return withStatusPolling(config, os.Getenv("FIVEM_SERVER_CFX_ID"), os.Getenv("FIVEM_PLAYER_ID"), os.Getenv("FIVEM_SERVER_CFX_POLL_INTERVAL"), os.Getenv("DISCORD_POLL_STATUS"))
+}
+
+func withMoneyChannels(config Config, officeChannelID, dirtyChannelID string) (Config, error) {
+	officeChannelID = strings.TrimSpace(officeChannelID)
+	if err := validateDiscordID(officeChannelID); err != nil {
+		return Config{}, fmt.Errorf("DISCORD_OFFICE_MONEY_CHANNEL_ID: %w", err)
+	}
+	dirtyChannelID = strings.TrimSpace(dirtyChannelID)
+	if err := validateDiscordID(dirtyChannelID); err != nil {
+		return Config{}, fmt.Errorf("DISCORD_DIRTY_MONEY_CHANNEL_ID: %w", err)
+	}
+	if officeChannelID == dirtyChannelID {
+		return Config{}, errors.New("DISCORD_OFFICE_MONEY_CHANNEL_ID and DISCORD_DIRTY_MONEY_CHANNEL_ID must be different")
+	}
+	config.OfficeMoneyChannelID = officeChannelID
+	config.DirtyMoneyChannelID = dirtyChannelID
+	return config, nil
 }
 
 func withStatusPolling(config Config, cfxServerID, cfxPlayerID, cfxPollInterval, statusPollInterval string) (Config, error) {
