@@ -36,6 +36,7 @@ type stubMembers struct {
 	userID               string
 	updatedMemberID      int64
 	updatedCharacterName string
+	updatedCFXName       string
 }
 
 func (m *stubMembers) FindByUserID(_ context.Context, userID string) (member.Member, error) {
@@ -43,9 +44,9 @@ func (m *stubMembers) FindByUserID(_ context.Context, userID string) (member.Mem
 	return m.found, m.error
 }
 
-func (m *stubMembers) UpdateCharacterName(_ context.Context, memberID int64, characterName string) (member.Member, error) {
-	m.updatedMemberID, m.updatedCharacterName = memberID, characterName
-	return member.Member{ID: memberID, CharacterName: characterName}, m.error
+func (m *stubMembers) UpdateProfile(_ context.Context, memberID int64, characterName, cfxName string) (member.Member, error) {
+	m.updatedMemberID, m.updatedCharacterName, m.updatedCFXName = memberID, characterName, cfxName
+	return member.Member{ID: memberID, CharacterName: characterName, CFXName: cfxName}, m.error
 }
 
 type stubIssuer struct {
@@ -268,7 +269,11 @@ func TestBatchCraftingCalculationTotalsRecipes(t *testing.T) {
 }
 
 func TestDashboardRequiresValidMemberToken(t *testing.T) {
-	dashboards := &stubDashboard{snapshot: dashboard.Snapshot{TotalMembers: 12, PlayerThreshold: 15}}
+	dashboards := &stubDashboard{snapshot: dashboard.Snapshot{
+		TotalMembers:    12,
+		PlayerThreshold: 15,
+		DiscordPlayers:  []dashboard.Player{{MemberID: 7, CFXName: "SOT - Kenji"}},
+	}}
 	handler := NewHandler(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, dashboards, &stubAttendance{}, testLogger())
 
 	unauthorized := request(handler, http.MethodGet, "/api/v1/dashboard", "")
@@ -276,7 +281,7 @@ func TestDashboardRequiresValidMemberToken(t *testing.T) {
 		t.Fatalf("unauthorized response = %d %s", unauthorized.Code, unauthorized.Body.String())
 	}
 	authorized := request(handler, http.MethodGet, "/api/v1/dashboard", "Bearer app-token")
-	if authorized.Code != http.StatusOK || dashboards.memberID != 7 || !strings.Contains(authorized.Body.String(), `"total_members":12`) {
+	if authorized.Code != http.StatusOK || dashboards.memberID != 7 || !strings.Contains(authorized.Body.String(), `"total_members":12`) || !strings.Contains(authorized.Body.String(), `"cfx_name":"SOT - Kenji"`) {
 		t.Fatalf("authorized response = %d %s, member = %d", authorized.Code, authorized.Body.String(), dashboards.memberID)
 	}
 }
@@ -397,12 +402,24 @@ func TestSettingsUpdateRejectsNonAdmin(t *testing.T) {
 func TestUpdateMyProfileUsesAuthenticatedMember(t *testing.T) {
 	members := &stubMembers{}
 	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, &stubAttendance{}, testLogger())
-	request := httptest.NewRequest(http.MethodPatch, "/api/v1/me/profile", strings.NewReader(`{"character_name":"  Kenji Nakamura  "}`))
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/me/profile", strings.NewReader(`{"character_name":"  Kenji Nakamura  ","cfx_name":"  SOT - Kenji  "}`))
 	request.Header.Set("Authorization", "Bearer app-token")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || members.updatedMemberID != 7 || members.updatedCharacterName != "Kenji Nakamura" {
-		t.Fatalf("response = %d %s, update = %d %q", response.Code, response.Body.String(), members.updatedMemberID, members.updatedCharacterName)
+	if response.Code != http.StatusOK || members.updatedMemberID != 7 || members.updatedCharacterName != "Kenji Nakamura" || members.updatedCFXName != "SOT - Kenji" {
+		t.Fatalf("response = %d %s, update = %d %q %q", response.Code, response.Body.String(), members.updatedMemberID, members.updatedCharacterName, members.updatedCFXName)
+	}
+}
+
+func TestGetMyProfileLoadsCurrentDatabaseValues(t *testing.T) {
+	members := &stubMembers{found: member.Member{ID: 7, UserID: "123", CharacterName: "Kenji Nakamura", CFXName: "SOT - Kenji"}}
+	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger())
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/me/profile", nil)
+	request.Header.Set("Authorization", "Bearer app-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cfx_name":"SOT - Kenji"`) || members.userID != "123" {
+		t.Fatalf("response = %d %s, user = %q", response.Code, response.Body.String(), members.userID)
 	}
 }
 

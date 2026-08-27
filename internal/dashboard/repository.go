@@ -11,13 +11,15 @@ import (
 )
 
 type Player struct {
-	MemberID             int64      `json:"member_id"`
-	Username             string     `json:"username"`
-	DisplayName          string     `json:"display_name"`
-	CharacterName        string     `json:"character_name"`
-	StartedAt            *time.Time `json:"started_at"`
-	Status               string     `json:"status"`
-	TotalPlaytimeSeconds int64      `json:"total_playtime_seconds"`
+	MemberID               int64      `json:"member_id"`
+	Username               string     `json:"username"`
+	DisplayName            string     `json:"display_name"`
+	CharacterName          string     `json:"character_name"`
+	CFXName                string     `json:"cfx_name"`
+	StartedAt              *time.Time `json:"started_at"`
+	Status                 string     `json:"status"`
+	CurrentPlaytimeSeconds int64      `json:"current_playtime_seconds"`
+	TotalPlaytimeSeconds   int64      `json:"total_playtime_seconds"`
 }
 
 type Snapshot struct {
@@ -110,10 +112,16 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 			m.username,
 			m.display_name,
 			COALESCE(m.character_name, ''),
+			COALESCE(m.cfx_name, ''),
 			latest.started_at,
 			CASE
 				WHEN latest.status IN ('connecting', 'connected') THEN latest.status
 				ELSE 'offline'
+			END,
+			CASE
+				WHEN latest.status IN ('connecting', 'connected') AND latest.started_at IS NOT NULL
+				THEN GREATEST(EXTRACT(EPOCH FROM (NOW() - latest.started_at))::bigint, 0)
+				ELSE 0
 			END,
 			COALESCE((
 				SELECT SUM(EXTRACT(EPOCH FROM logs.playtime))::bigint
@@ -135,7 +143,7 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 	result.DiscordPlayers = make([]Player, 0)
 	for rows.Next() {
 		var player Player
-		if err := rows.Scan(&player.MemberID, &player.Username, &player.DisplayName, &player.CharacterName, &player.StartedAt, &player.Status, &player.TotalPlaytimeSeconds); err != nil {
+		if err := rows.Scan(&player.MemberID, &player.Username, &player.DisplayName, &player.CharacterName, &player.CFXName, &player.StartedAt, &player.Status, &player.CurrentPlaytimeSeconds, &player.TotalPlaytimeSeconds); err != nil {
 			return Snapshot{}, fmt.Errorf("scan Discord player: %w", err)
 		}
 		result.DiscordPlayers = append(result.DiscordPlayers, player)

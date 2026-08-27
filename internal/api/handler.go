@@ -29,7 +29,7 @@ type memberFinder interface {
 	FindByUserID(context.Context, string) (member.Member, error)
 }
 type memberProfileUpdater interface {
-	UpdateCharacterName(context.Context, int64, string) (member.Member, error)
+	UpdateProfile(context.Context, int64, string, string) (member.Member, error)
 }
 
 type tokenIssuer interface {
@@ -81,6 +81,7 @@ func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer t
 	mux.HandleFunc("POST /api/v1/auth/discord", handler.discordLogin)
 	mux.HandleFunc("GET /api/v1/dashboard", handler.dashboardSnapshot)
 	mux.HandleFunc("GET /api/v1/me/records", handler.memberRecords)
+	mux.HandleFunc("GET /api/v1/me/profile", handler.getMyProfile)
 	mux.HandleFunc("GET /api/v1/attendance", handler.monthlyAttendance)
 	mux.HandleFunc("GET /api/v1/attendance/me", handler.myMonthlyAttendance)
 	mux.HandleFunc("GET /api/v1/payslips", handler.monthlyPayslips)
@@ -135,6 +136,7 @@ func (h *Handler) updateMyProfile(response http.ResponseWriter, request *http.Re
 	decoder.DisallowUnknownFields()
 	var payload struct {
 		CharacterName string `json:"character_name"`
+		CFXName       string `json:"cfx_name"`
 	}
 	if err := decoder.Decode(&payload); err != nil {
 		writeError(response, http.StatusBadRequest, "INVALID_PROFILE", "Profile payload is invalid")
@@ -145,18 +147,42 @@ func (h *Handler) updateMyProfile(response http.ResponseWriter, request *http.Re
 		return
 	}
 	payload.CharacterName = strings.TrimSpace(payload.CharacterName)
+	payload.CFXName = strings.TrimSpace(payload.CFXName)
 	if payload.CharacterName == "" || len([]rune(payload.CharacterName)) > 80 || strings.ContainsAny(payload.CharacterName, "\r\n\x00") {
 		writeError(response, http.StatusUnprocessableEntity, "INVALID_CHARACTER_NAME", "Character name must contain 1 to 80 characters on one line")
 		return
 	}
-	updated, err := updater.UpdateCharacterName(request.Context(), claims.MemberID, payload.CharacterName)
+	if len([]rune(payload.CFXName)) > 80 || strings.ContainsAny(payload.CFXName, "\r\n\x00") {
+		writeError(response, http.StatusUnprocessableEntity, "INVALID_CFX_NAME", "CFX name must contain at most 80 characters on one line")
+		return
+	}
+	updated, err := updater.UpdateProfile(request.Context(), claims.MemberID, payload.CharacterName, payload.CFXName)
 	if err != nil {
 		h.logger.Error("update member profile", "member_id", claims.MemberID, "error", err)
 		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Profile could not be updated")
 		return
 	}
 	h.logger.Info("member profile updated", "member_id", claims.MemberID)
-	writeJSON(response, http.StatusOK, map[string]string{"character_name": updated.CharacterName})
+	writeJSON(response, http.StatusOK, map[string]string{"character_name": updated.CharacterName, "cfx_name": updated.CFXName})
+}
+
+func (h *Handler) getMyProfile(response http.ResponseWriter, request *http.Request) {
+	claims, ok := h.authenticated(response, request)
+	if !ok {
+		return
+	}
+	found, err := h.members.FindByUserID(request.Context(), claims.DiscordUserID)
+	if err != nil {
+		h.logger.Error("load member profile", "member_id", claims.MemberID, "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Profile could not be loaded")
+		return
+	}
+	if found.ID != claims.MemberID {
+		h.logger.Error("member profile identity mismatch", "member_id", claims.MemberID, "found_member_id", found.ID)
+		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Member bearer token is invalid")
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]string{"character_name": found.CharacterName, "cfx_name": found.CFXName})
 }
 
 func (h *Handler) authenticated(response http.ResponseWriter, request *http.Request) (appauth.Claims, bool) {

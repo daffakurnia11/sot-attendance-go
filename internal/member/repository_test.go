@@ -128,13 +128,13 @@ func TestFindByUserIDWrapsDatabaseError(t *testing.T) {
 	}
 }
 
-func TestUpdateCharacterNameIsScopedByMemberID(t *testing.T) {
-	database := &recordingExecutor{row: memberRow{member: Member{ID: 7, UserID: "123", Username: "delta", DisplayName: "Delta", CharacterName: "Kenji"}}}
-	updated, err := NewRepository(database).UpdateCharacterName(context.Background(), 7, "Kenji")
+func TestUpdateProfileIsScopedByMemberID(t *testing.T) {
+	database := &recordingExecutor{row: memberRow{member: Member{ID: 7, UserID: "123", Username: "delta", DisplayName: "Delta", CharacterName: "Kenji", CFXName: "SOT - Kenji"}}}
+	updated, err := NewRepository(database).UpdateProfile(context.Background(), 7, "Kenji", "SOT - Kenji")
 	if err != nil {
-		t.Fatalf("UpdateCharacterName() error = %v", err)
+		t.Fatalf("UpdateProfile() error = %v", err)
 	}
-	if updated.CharacterName != "Kenji" || len(database.args) != 2 || database.args[0] != int64(7) || !strings.Contains(database.query, "WHERE id = $1") {
+	if updated.CharacterName != "Kenji" || updated.CFXName != "SOT - Kenji" || len(database.args) != 3 || database.args[0] != int64(7) || !strings.Contains(database.query, "WHERE id = $1") {
 		t.Fatalf("update = %#v, query = %s, args = %#v", updated, database.query, database.args)
 	}
 }
@@ -148,7 +148,10 @@ func (r memberRow) Scan(destinations ...any) error {
 	*destinations[3].(*string) = r.member.DisplayName
 	*destinations[4].(*string) = r.member.CharacterName
 	if len(destinations) > 5 {
-		*destinations[5].(*bool) = r.member.IsAdmin
+		*destinations[5].(*string) = r.member.CFXName
+	}
+	if len(destinations) > 6 {
+		*destinations[6].(*bool) = r.member.IsAdmin
 	}
 	return nil
 }

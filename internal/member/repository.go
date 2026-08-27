@@ -41,6 +41,7 @@ type Member struct {
 	Username      string `json:"username"`
 	DisplayName   string `json:"display_name"`
 	CharacterName string `json:"character_name"`
+	CFXName       string `json:"cfx_name"`
 	IsAdmin       bool   `json:"is_admin"`
 }
 
@@ -233,7 +234,7 @@ func (r *Repository) UpsertGuildMembers(ctx context.Context, players []Player, o
 
 func (r *Repository) FindByUserID(ctx context.Context, userID string) (Member, error) {
 	const query = `
-		SELECT id, user_id, username, display_name, COALESCE(character_name, ''), is_admin
+		SELECT id, user_id, username, display_name, COALESCE(character_name, ''), COALESCE(cfx_name, ''), is_admin
 		FROM members
 		WHERE user_id = $1`
 
@@ -244,6 +245,7 @@ func (r *Repository) FindByUserID(ctx context.Context, userID string) (Member, e
 		&found.Username,
 		&found.DisplayName,
 		&found.CharacterName,
+		&found.CFXName,
 		&found.IsAdmin,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -255,18 +257,18 @@ func (r *Repository) FindByUserID(ctx context.Context, userID string) (Member, e
 	return found, nil
 }
 
-func (r *Repository) UpdateCharacterName(ctx context.Context, memberID int64, characterName string) (Member, error) {
+func (r *Repository) UpdateProfile(ctx context.Context, memberID int64, characterName, cfxName string) (Member, error) {
 	const query = `
-		UPDATE members SET character_name = $2, updated_at = NOW()
+		UPDATE members SET character_name = $2, cfx_name = NULLIF($3, ''), updated_at = NOW()
 		WHERE id = $1
-		RETURNING id, user_id, username, display_name, character_name`
+		RETURNING id, user_id, username, display_name, character_name, COALESCE(cfx_name, '')`
 	var updated Member
-	err := r.database.QueryRow(ctx, query, memberID, characterName).Scan(&updated.ID, &updated.UserID, &updated.Username, &updated.DisplayName, &updated.CharacterName)
+	err := r.database.QueryRow(ctx, query, memberID, characterName, cfxName).Scan(&updated.ID, &updated.UserID, &updated.Username, &updated.DisplayName, &updated.CharacterName, &updated.CFXName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Member{}, ErrNotFound
 	}
 	if err != nil {
-		return Member{}, fmt.Errorf("update member character name: %w", err)
+		return Member{}, fmt.Errorf("update member profile: %w", err)
 	}
 	return updated, nil
 }

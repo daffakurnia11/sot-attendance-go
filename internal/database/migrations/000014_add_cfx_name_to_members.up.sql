@@ -1,0 +1,2 @@
+ALTER TABLE members
+    ADD COLUMN IF NOT EXISTS cfx_name TEXT;
