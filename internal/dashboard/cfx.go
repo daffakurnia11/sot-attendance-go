@@ -38,18 +38,25 @@ func NewCFXClient(client *http.Client, cfxServerID, playerID string) *CFXClient 
 }
 
 func (c *CFXClient) Players(ctx context.Context) ([]CFXPlayer, error) {
+	filtered, _, err := c.Rosters(ctx)
+	return filtered, err
+}
+
+// Rosters returns both configured-family players and complete live server roster
+// from one upstream request.
+func (c *CFXClient) Rosters(ctx context.Context) ([]CFXPlayer, []CFXPlayer, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create CFX players request: %w", err)
+		return nil, nil, fmt.Errorf("create CFX players request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
 	response, err := c.client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("fetch CFX players: %w", err)
+		return nil, nil, fmt.Errorf("fetch CFX players: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch CFX players: unexpected HTTP status %d", response.StatusCode)
+		return nil, nil, fmt.Errorf("fetch CFX players: unexpected HTTP status %d", response.StatusCode)
 	}
 	// A full server can list a thousand players, and this response is not one we
 	// control, so the read is bounded.
@@ -59,7 +66,7 @@ func (c *CFXClient) Players(ctx context.Context) ([]CFXPlayer, error) {
 		} `json:"Data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("decode CFX players: %w", err)
+		return nil, nil, fmt.Errorf("decode CFX players: %w", err)
 	}
 	filtered := make([]CFXPlayer, 0)
 	for _, player := range payload.Data.Players {
@@ -67,5 +74,5 @@ func (c *CFXClient) Players(ctx context.Context) ([]CFXPlayer, error) {
 			filtered = append(filtered, player)
 		}
 	}
-	return filtered, nil
+	return filtered, payload.Data.Players, nil
 }

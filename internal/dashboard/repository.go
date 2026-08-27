@@ -30,6 +30,7 @@ type Snapshot struct {
 	TotalAttended        int         `json:"total_attended"`
 	TotalAttendances     int         `json:"total_attendances"`
 	CFXPlayers           []CFXPlayer `json:"cfx_players"`
+	AllCFXPlayers        []CFXPlayer `json:"all_cfx_players"`
 	CFXAvailable         bool        `json:"cfx_available"`
 }
 
@@ -59,7 +60,7 @@ type MemberRecords struct {
 }
 
 type cfxPlayerReader interface {
-	Players(context.Context) ([]CFXPlayer, error)
+	Rosters(context.Context) ([]CFXPlayer, []CFXPlayer, error)
 }
 type Repository struct {
 	database *pgxpool.Pool
@@ -151,10 +152,11 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 	if err := rows.Err(); err != nil {
 		return Snapshot{}, fmt.Errorf("iterate current Discord players: %w", err)
 	}
-	result.CFXPlayers, err = r.cfx.Players(ctx)
+	result.CFXPlayers, result.AllCFXPlayers, err = r.cfx.Rosters(ctx)
 	if err != nil {
 		r.logger.Warn("CFX players unavailable", "error", err)
 		result.CFXPlayers = make([]CFXPlayer, 0)
+		result.AllCFXPlayers = make([]CFXPlayer, 0)
 		return result, nil
 	}
 	result.CFXAvailable = true

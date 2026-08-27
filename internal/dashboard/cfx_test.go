@@ -35,6 +35,23 @@ func TestCFXClientFiltersPlayerNamesCaseInsensitively(t *testing.T) {
 	}
 }
 
+func TestCFXClientReturnsCompleteRosterWithoutPlayerFilter(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"Data":{"players":[
+			{"id":12,"name":"SOT - Paw","ping":48},
+			{"id":7,"name":"Unrelated","ping":20}
+		]}}`)), Header: make(http.Header)}, nil
+	})}
+
+	filtered, all, err := NewCFXClient(client, "kr7k7d", "SOT").Rosters(context.Background())
+	if err != nil {
+		t.Fatalf("Rosters() error = %v", err)
+	}
+	if len(filtered) != 1 || len(all) != 2 || all[1].Name != "Unrelated" {
+		t.Fatalf("Rosters() filtered = %#v, all = %#v", filtered, all)
+	}
+}
+
 func TestCFXClientReturnsEmptyRosterWhenServerIsOffline(t *testing.T) {
 	// An offline server still resolves in the directory but reports no roster.
 	// That is an empty list, not a failure, so the dashboard keeps showing CFX
