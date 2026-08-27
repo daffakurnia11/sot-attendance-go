@@ -126,11 +126,21 @@ jobs:
     timeout-minutes: 15
     environment: production
     steps:
+      - uses: actions/checkout@v4
+
+      # The droplet's copy of compose.production.yaml is what actually runs, so
+      # it has to travel with the deploy. Encoded rather than scp'd to avoid a
+      # second action and to keep quoting out of the shell.
+      - name: Encode the compose file
+        id: compose
+        run: echo "b64=$(base64 -w0 compose.production.yaml)" >> "$GITHUB_OUTPUT"
+
       - name: Pull and restart production images
         uses: appleboy/ssh-action@v1.2.2
         env:
           API_IMAGE: ${{ needs.build-app.outputs.api-image }}
           BOT_IMAGE: ${{ needs.build-app.outputs.bot-image }}
+          COMPOSE_B64: ${{ steps.compose.outputs.b64 }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           APP_DIR: ${{ secrets.DO_APP_DIR }}
@@ -138,7 +148,7 @@ jobs:
           host: ${{ secrets.DO_HOST }}
           username: ${{ secrets.DO_USER }}
           key: ${{ secrets.DO_SSH_PRIVATE_KEY }}
-          envs: API_IMAGE,BOT_IMAGE,GHCR_USERNAME,GHCR_TOKEN,APP_DIR
+          envs: API_IMAGE,BOT_IMAGE,COMPOSE_B64,GHCR_USERNAME,GHCR_TOKEN,APP_DIR
           script: |
             set -eu
             cd "$APP_DIR"
@@ -158,6 +168,18 @@ jobs:
                 exit 1
               fi
             done
+
+            # Install the committed compose file. Validated with the real env
+            # before it replaces the running one, and swapped by rename so a
+            # failure here cannot leave a half-written file behind.
+            printf '%s' "$COMPOSE_B64" | base64 -d > compose.production.yaml.next
+            if ! API_IMAGE="$API_IMAGE" BOT_IMAGE="$BOT_IMAGE" \
+                docker compose --env-file .env.production -f compose.production.yaml.next config -q; then
+              echo "the committed compose.production.yaml is not valid against this .env.production"
+              rm -f compose.production.yaml.next
+              exit 1
+            fi
+            mv -f compose.production.yaml.next compose.production.yaml
 
             COMPOSE="docker compose --env-file .env.production -f compose.production.yaml"
 
