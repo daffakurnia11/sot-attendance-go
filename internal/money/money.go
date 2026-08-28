@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -40,13 +41,67 @@ type Transaction struct {
 	ActorMemberID int64
 }
 
+type LedgerEntry struct {
+	ID            int64     `json:"id"`
+	Account       Account   `json:"account"`
+	Type          string    `json:"type"`
+	Direction     string    `json:"direction"`
+	Amount        int64     `json:"amount"`
+	BalanceBefore int64     `json:"balance_before"`
+	BalanceAfter  int64     `json:"balance_after"`
+	Reason        string    `json:"reason"`
+	ActorMemberID int64     `json:"actor_member_id"`
+	ActorName     string    `json:"actor_name"`
+	ActorUsername string    `json:"actor_username"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
 type queryRower interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
+	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
 type Repository struct{ database queryRower }
 
 func NewRepository(database queryRower) *Repository { return &Repository{database: database} }
+
+func (r *Repository) List(ctx context.Context, account Account) ([]LedgerEntry, error) {
+	if _, err := settingFor(account); err != nil {
+		return nil, err
+	}
+	const query = `
+		SELECT
+			t.id, t.account_type, t.transaction_type, t.direction,
+			t.amount, t.balance_before, t.balance_after, t.reason,
+			t.actor_member_id,
+			COALESCE(NULLIF(m.character_name, ''), m.display_name),
+			m.username, t.created_at
+		FROM money_transactions t
+		JOIN members m ON m.id = t.actor_member_id
+		WHERE t.account_type = $1
+		ORDER BY t.created_at DESC, t.id DESC`
+	rows, err := r.database.Query(ctx, query, account)
+	if err != nil {
+		return nil, fmt.Errorf("list %s money transactions: %w", account, err)
+	}
+	defer rows.Close()
+	entries := make([]LedgerEntry, 0)
+	for rows.Next() {
+		var entry LedgerEntry
+		if err := rows.Scan(
+			&entry.ID, &entry.Account, &entry.Type, &entry.Direction,
+			&entry.Amount, &entry.BalanceBefore, &entry.BalanceAfter, &entry.Reason,
+			&entry.ActorMemberID, &entry.ActorName, &entry.ActorUsername, &entry.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan %s money transaction: %w", account, err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate %s money transactions: %w", account, err)
+	}
+	return entries, nil
+}
 
 func (r *Repository) Balance(ctx context.Context, account Account) (int64, error) {
 	setting, err := settingFor(account)

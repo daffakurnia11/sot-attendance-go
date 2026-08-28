@@ -17,6 +17,7 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/crafting"
 	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
+	moneydomain "github.com/daffakurniawan/sot-discord-bot/internal/money"
 	"github.com/daffakurniawan/sot-discord-bot/internal/payslip"
 	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
 )
@@ -50,6 +51,10 @@ type settingsStore interface {
 	Load(context.Context) (dbsettings.Values, error)
 	Update(context.Context, dbsettings.Values) (dbsettings.Values, error)
 }
+type moneyLedgerReader interface {
+	List(context.Context, moneydomain.Account) ([]moneydomain.LedgerEntry, error)
+	Balance(context.Context, moneydomain.Account) (int64, error)
+}
 type Handler struct {
 	verifier   discordIdentityVerifier
 	members    memberFinder
@@ -59,6 +64,7 @@ type Handler struct {
 	attendance attendanceReader
 	settings   settingsStore
 	crafting   crafting.Store
+	money      moneyLedgerReader
 	logger     *slog.Logger
 }
 
@@ -67,15 +73,19 @@ func NewHandler(verifier discordIdentityVerifier, members memberFinder, issuer t
 	if len(stores) > 0 {
 		settings = stores[0]
 	}
-	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, nil)
+	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, nil, nil)
 }
 
-func NewHandlerWithCrafting(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store) http.Handler {
-	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes)
+func NewHandlerWithCrafting(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledgers ...moneyLedgerReader) http.Handler {
+	var ledger moneyLedgerReader
+	if len(ledgers) > 0 {
+		ledger = ledgers[0]
+	}
+	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes, ledger)
 }
 
-func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store) http.Handler {
-	handler := &Handler{verifier: verifier, members: members, issuer: issuer, tokens: tokens, dashboard: dashboard, attendance: attendance, settings: settings, crafting: recipes, logger: logger}
+func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledger moneyLedgerReader) http.Handler {
+	handler := &Handler{verifier: verifier, members: members, issuer: issuer, tokens: tokens, dashboard: dashboard, attendance: attendance, settings: settings, crafting: recipes, money: ledger, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handler.health)
 	mux.HandleFunc("POST /api/v1/auth/discord", handler.discordLogin)
@@ -91,7 +101,51 @@ func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer t
 	mux.HandleFunc("GET /api/v1/crafting/recipes", handler.craftingRecipes)
 	mux.HandleFunc("POST /api/v1/crafting/calculate", handler.calculateCrafting)
 	mux.HandleFunc("POST /api/v1/crafting/calculate-batch", handler.calculateCraftingBatch)
+	mux.HandleFunc("GET /api/v1/money-transactions/{account}", handler.moneyTransactions)
 	return handler.logging(mux)
+}
+
+func (h *Handler) moneyTransactions(response http.ResponseWriter, request *http.Request) {
+	claims, ok := h.admin(response, request, "money transactions")
+	if !ok {
+		return
+	}
+	if h.money == nil {
+		writeError(response, http.StatusServiceUnavailable, "MONEY_TRANSACTIONS_UNAVAILABLE", "Money transactions are unavailable")
+		return
+	}
+	account := moneydomain.Account(request.PathValue("account"))
+	if account != moneydomain.AccountOffice && account != moneydomain.AccountDirty {
+		writeError(response, http.StatusNotFound, "MONEY_ACCOUNT_NOT_FOUND", "Money account was not found")
+		return
+	}
+	entries, err := h.money.List(request.Context(), account)
+	if err != nil {
+		h.logger.Error("load money transactions", "member_id", claims.MemberID, "account", account, "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Money transactions could not be loaded")
+		return
+	}
+	officeBalance, err := h.money.Balance(request.Context(), moneydomain.AccountOffice)
+	if err != nil {
+		h.logger.Error("load current money balance", "member_id", claims.MemberID, "account", moneydomain.AccountOffice, "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Money balance could not be loaded")
+		return
+	}
+	dirtyBalance, err := h.money.Balance(request.Context(), moneydomain.AccountDirty)
+	if err != nil {
+		h.logger.Error("load current money balance", "member_id", claims.MemberID, "account", moneydomain.AccountDirty, "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Money balance could not be loaded")
+		return
+	}
+	currentBalance := officeBalance
+	if account == moneydomain.AccountDirty {
+		currentBalance = dirtyBalance
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"account": account, "current_balance": currentBalance,
+		"balances":     map[string]int64{"office": officeBalance, "dirty": dirtyBalance},
+		"transactions": entries,
+	})
 }
 
 func (h *Handler) monthlyPayslips(response http.ResponseWriter, request *http.Request) {

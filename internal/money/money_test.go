@@ -3,6 +3,7 @@ package money
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -31,6 +32,9 @@ func (r fakeRow) Scan(destinations ...any) error {
 type fakeDatabase struct{ row pgx.Row }
 
 func (database fakeDatabase) QueryRow(context.Context, string, ...any) pgx.Row { return database.row }
+func (database fakeDatabase) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	return nil, errors.New("query unavailable")
+}
 
 func TestBalance(t *testing.T) {
 	t.Parallel()
@@ -73,5 +77,16 @@ func TestTransactNoRows(t *testing.T) {
 	_, err = repository.Transact(context.Background(), Transaction{Account: AccountOffice, Action: ActionDeposit, Amount: 2, Reason: "x"})
 	if !errors.Is(err, ErrBalanceOverflow) {
 		t.Fatalf("deposit error = %v", err)
+	}
+}
+
+func TestListValidatesAccountAndWrapsQueryError(t *testing.T) {
+	t.Parallel()
+	repository := NewRepository(fakeDatabase{})
+	if _, err := repository.List(context.Background(), Account("invalid")); !errors.Is(err, ErrInvalidAccount) {
+		t.Fatalf("invalid account error = %v", err)
+	}
+	if _, err := repository.List(context.Background(), AccountOffice); err == nil || !strings.Contains(err.Error(), "list office money transactions") {
+		t.Fatalf("List() error = %v", err)
 	}
 }

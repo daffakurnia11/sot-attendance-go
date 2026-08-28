@@ -34,7 +34,7 @@ API verifies token against Discord `/users/@me`, then looks up verified Discord 
 
 Generate `APP_JWT_SECRET` with a cryptographically secure generator, for example `openssl rand -base64 48`. Do not reuse `AUTH_SECRET` or Discord client secret. `APP_JWT_TTL` defaults to `15m` and cannot exceed `24h`.
 
-Login lifetime is adjustable through `APP_JWT_TTL`. Keep it equivalent to frontend `AUTH_SESSION_MAX_AGE_SECONDS` (for example `1h` and `3600`). Effective lifetime is whichever expires first.
+`APP_JWT_TTL` is the single control for login lifetime across both repositories. The frontend holds its Auth.js cookie at a fixed 24h ceiling and clears the session as soon as this token's `expires_at` passes, so changing the value here is sufficient; there is no second value to keep in sync. Maximum `24h`.
 
 Health endpoint: `GET /healthz`.
 

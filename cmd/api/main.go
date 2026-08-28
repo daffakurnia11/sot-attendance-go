@@ -22,6 +22,7 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/database"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
+	"github.com/daffakurniawan/sot-discord-bot/internal/money"
 	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
 )
 
@@ -70,7 +71,7 @@ func main() {
 		os.Exit(1)
 	}
 	settingsRepository := dbsettings.NewRepository(pool)
-	handler := api.NewHandlerWithCrafting(api.NewDiscordVerifier(client), member.NewRepository(pool), issuer, issuer, dashboard.NewRepository(pool, cfxClient, logger), attendancehistory.NewReportRepository(pool, location), logger, settingsRepository, crafting.NewRepository(pool))
+	handler := api.NewHandlerWithCrafting(api.NewDiscordVerifier(client), member.NewRepository(pool), issuer, issuer, dashboard.NewRepository(pool, cfxClient, logger), attendancehistory.NewReportRepository(pool, location), logger, settingsRepository, crafting.NewRepository(pool), money.NewRepository(pool))
 	server := &http.Server{
 		Addr:              config.Address,
 		Handler:           handler,

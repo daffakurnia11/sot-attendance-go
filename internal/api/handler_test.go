@@ -16,6 +16,7 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/crafting"
 	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
+	moneydomain "github.com/daffakurniawan/sot-discord-bot/internal/money"
 	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
 )
 
@@ -89,6 +90,22 @@ type stubCrafting struct {
 	recipe     crafting.Recipe
 	err        error
 	weaponCode string
+}
+
+type stubMoneyLedger struct {
+	entries  []moneydomain.LedgerEntry
+	balances map[moneydomain.Account]int64
+	account  moneydomain.Account
+	err      error
+}
+
+func (s *stubMoneyLedger) Balance(_ context.Context, account moneydomain.Account) (int64, error) {
+	return s.balances[account], s.err
+}
+
+func (s *stubMoneyLedger) List(_ context.Context, account moneydomain.Account) ([]moneydomain.LedgerEntry, error) {
+	s.account = account
+	return s.entries, s.err
 }
 
 func (s *stubCrafting) List(context.Context) ([]crafting.RecipeSummary, error) {
@@ -283,6 +300,23 @@ func TestDashboardRequiresValidMemberToken(t *testing.T) {
 	authorized := request(handler, http.MethodGet, "/api/v1/dashboard", "Bearer app-token")
 	if authorized.Code != http.StatusOK || dashboards.memberID != 7 || !strings.Contains(authorized.Body.String(), `"total_members":12`) || !strings.Contains(authorized.Body.String(), `"cfx_name":"SOT - Kenji"`) {
 		t.Fatalf("authorized response = %d %s, member = %d", authorized.Code, authorized.Body.String(), dashboards.memberID)
+	}
+}
+
+func TestMoneyTransactionsRequireAdminAndUseRequestedAccount(t *testing.T) {
+	ledger := &stubMoneyLedger{balances: map[moneydomain.Account]int64{moneydomain.AccountOffice: 1012500, moneydomain.AccountDirty: 18000}, entries: []moneydomain.LedgerEntry{{ID: 9, Account: moneydomain.AccountDirty, Type: "deposit", Amount: 18000, ActorName: "Kenji"}}}
+	members := &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: true}}
+	handler := NewHandlerWithCrafting(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, nil, ledger)
+
+	response := request(handler, http.MethodGet, "/api/v1/money-transactions/dirty", "Bearer app-token")
+	if response.Code != http.StatusOK || ledger.account != moneydomain.AccountDirty || !strings.Contains(response.Body.String(), `"actor_name":"Kenji"`) || !strings.Contains(response.Body.String(), `"current_balance":18000`) || !strings.Contains(response.Body.String(), `"office":1012500`) {
+		t.Fatalf("response = %d %s, account = %q", response.Code, response.Body.String(), ledger.account)
+	}
+
+	members.found.IsAdmin = false
+	response = request(handler, http.MethodGet, "/api/v1/money-transactions/office", "Bearer app-token")
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("non-admin response = %d %s", response.Code, response.Body.String())
 	}
 }
 
