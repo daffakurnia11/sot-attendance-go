@@ -327,7 +327,7 @@ func TestPlayerLogEmbed(t *testing.T) {
 			t.Error("player log must not contain IC name")
 		}
 	}
-	if embed.Footer == nil || embed.Footer.Text != "SOT Players: 0" {
+	if embed.Footer == nil || embed.Footer.Text != "SOT Players: 0 • Discord Activity" {
 		t.Errorf("unexpected footer: %#v", embed.Footer)
 	}
 	if embed.Timestamp != end.Format(time.RFC3339) {

@@ -26,6 +26,7 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
 	moneydomain "github.com/daffakurniawan/sot-discord-bot/internal/money"
 	"github.com/daffakurniawan/sot-discord-bot/internal/presence"
+	"github.com/daffakurniawan/sot-discord-bot/internal/serverlog"
 	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -56,6 +57,9 @@ type Bot struct {
 	memberRoleID         string
 	officeMoneyChannelID string
 	dirtyMoneyChannelID  string
+	playerLogChannelID   string
+	serverLogs           *serverlog.Repository
+	serverLogCursor      int64
 	adminSync            sync.Mutex
 	ready                atomic.Bool
 	cfxCount             atomic.Int64
@@ -151,6 +155,8 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		guildID:              cfg.GuildID,
 		adminRoleIDs:         cfg.DiscordAdminRoleIDs,
 		memberRoleID:         cfg.DiscordMemberRoleID,
+		playerLogChannelID:   cfg.PlayerLogChannelID,
+		serverLogs:           serverlog.NewRepository(pool),
 		officeMoneyChannelID: cfg.OfficeMoneyChannelID,
 		dirtyMoneyChannelID:  cfg.DirtyMoneyChannelID,
 	}
@@ -189,6 +195,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	b.logger.Info("bot connected")
 	go b.attendance.Run(ctx, b.session)
 	go b.runCFXPoller(ctx)
+	go b.runServerLogPoller(ctx)
 
 	discordTicker := time.NewTicker(b.pollInterval)
 	defer discordTicker.Stop()
@@ -213,6 +220,81 @@ shutdown:
 	}
 	b.database.Close()
 	return nil
+}
+
+// serverLogPollInterval is how often the bot looks for new FiveM webhook
+// events to announce. The webhook writes to server_logs from cmd/api, which
+// holds no Discord session, so the bot polls rather than being pushed to.
+const serverLogPollInterval = 10 * time.Second
+
+// serverLogAnnounceLimit caps one pass so a backlog cannot flood the channel
+// in a single tick.
+const serverLogAnnounceLimit = 20
+
+// runServerLogPoller announces FiveM webhook events in the player log channel.
+//
+// The cursor starts at the newest stored row, so a first run - or a run after
+// the table has been filling while the bot was down - announces nothing rather
+// than replaying history into the channel. Events that arrive while the bot is
+// offline are therefore not announced; server_logs remains the record.
+func (b *Bot) runServerLogPoller(ctx context.Context) {
+	seedContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	latest, err := b.serverLogs.LatestEventID(seedContext)
+	cancel()
+	if err != nil {
+		b.logger.Error("seed server log cursor", "error", err)
+		return
+	}
+	b.serverLogCursor = latest
+	b.logger.Info("server log announcer started", "channel_id", b.playerLogChannelID, "cursor", latest)
+
+	ticker := time.NewTicker(serverLogPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.announceServerLogs(ctx)
+		}
+	}
+}
+
+func (b *Bot) announceServerLogs(ctx context.Context) {
+	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	announcements, err := b.serverLogs.AnnouncementsAfter(requestContext, b.serverLogCursor, serverLogAnnounceLimit)
+	if err != nil {
+		b.logger.Error("read server log announcements", "cursor", b.serverLogCursor, "error", err)
+		return
+	}
+	if len(announcements) == 0 {
+		return
+	}
+	playerCount, err := b.serverLogs.OpenVisitCount(requestContext)
+	if err != nil {
+		b.logger.Error("count open server visits", "error", err)
+		return
+	}
+
+	for _, announcement := range announcements {
+		event := presence.ServerLogEvent{
+			PlayerName: announcement.PlayerName,
+			Username:   announcement.Username,
+			Status:     announcement.Status,
+			OccurredAt: announcement.OccurredAt,
+			StartedAt:  announcement.StartedAt,
+		}
+		if _, err := b.session.ChannelMessageSendEmbed(b.playerLogChannelID, presence.ServerLogEmbed(event, playerCount)); err != nil {
+			// Stop at the first failure and leave the cursor behind it, so the
+			// next tick retries this event instead of skipping past it.
+			b.logger.Error("send server log", "channel_id", b.playerLogChannelID, "event_id", announcement.ID, "error", err)
+			return
+		}
+		b.serverLogCursor = announcement.ID
+	}
+	b.logger.Info("server logs announced", "count", len(announcements), "cursor", b.serverLogCursor, "players", playerCount)
 }
 
 func (b *Bot) runCFXPoller(ctx context.Context) {

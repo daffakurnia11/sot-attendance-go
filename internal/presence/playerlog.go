@@ -306,6 +306,16 @@ func activityStart(activity *discordgo.Activity, now time.Time) time.Time {
 	return startedAt
 }
 
+// sourceDiscordActivity labels the footer so a reader can tell which signal
+// produced the entry. These logs come from Discord rich-presence polling, not
+// from the FiveM server, and the two disagree often enough that the difference
+// is the point: a player on FiveM but invisible on Discord shows up in one and
+// not the other. Anything rendered from server_logs must carry its own label.
+//
+// Discord always renders the embed timestamp last in a footer, so this sits
+// before it: "SOT Players: 0 • Discord Activity • Today at 09.55".
+const sourceDiscordActivity = "Discord Activity"
+
 func playerLogEmbed(event playerEvent, playerCount int) *discordgo.MessageEmbed {
 	name := strings.TrimSpace(event.characterName)
 	if name == "" {
@@ -323,7 +333,8 @@ func playerLogEmbed(event playerEvent, playerCount int) *discordgo.MessageEmbed 
 			Field("Status", string(event.phase), true)
 	}
 
-	return builder.Footer(fmt.Sprintf("SOT Players: %d", playerCount), "").Timestamp(event.occurredAt).Build()
+	footer := fmt.Sprintf("SOT Players: %d • %s", playerCount, sourceDiscordActivity)
+	return builder.Footer(footer, "").Timestamp(event.occurredAt).Build()
 }
 
 func playerPhaseColor(phase playerPhase) int {
