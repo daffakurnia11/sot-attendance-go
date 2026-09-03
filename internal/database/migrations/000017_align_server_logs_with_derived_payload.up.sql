@@ -1,12 +1,10 @@
 -- Align server_logs with the payload the FiveM script actually sends.
 --
 -- The sender no longer supplies a server object, a session id, or an event id:
--- the backend derives the last two and there is one server. Three consequences
--- for this table.
+-- the backend derives the last two and there is one server.
 --
 -- Every statement is idempotent because the startup runner re-executes every
--- *.up.sql on every boot. ALTER TABLE ADD CONSTRAINT has no IF NOT EXISTS, so
--- the check below is guarded by a catalogue lookup instead.
+-- *.up.sql on every boot.
 
 -- 1. Session correlation is now on the hot path. resolveSession asks "which
 --    session of this player has no disconnected event yet" for every connected
@@ -20,22 +18,12 @@ CREATE INDEX IF NOT EXISTS server_logs_disconnected_session_idx
 --    server object, so it could never vary, and no query filtered on it.
 ALTER TABLE server_logs DROP COLUMN IF EXISTS server_key;
 
--- 3. event_id is now the SHA-256 of the request body, so it is always 64
---    lowercase hex characters. Enforcing that shape catches a regression where
---    the id stops being derived from the body, which would silently break
---    idempotency rather than fail loudly.
+-- A third statement here once added a CHECK constraining event_id to a 64-hex
+-- body hash. It is gone: 000019 drops both that constraint and the event_id
+-- column, and the startup runner re-executes every up file on every boot, so
+-- on the next boot the guard saw no constraint, tried to add it, and failed
+-- with "column event_id does not exist".
 --
---    NOT VALID so the rows written before this change are left alone; new and
---    updated rows are checked.
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'server_logs_event_id_is_body_hash'
-          AND conrelid = 'server_logs'::regclass
-    ) THEN
-        ALTER TABLE server_logs
-            ADD CONSTRAINT server_logs_event_id_is_body_hash
-            CHECK (event_id ~ '^[0-9a-f]{64}$') NOT VALID;
-    END IF;
-END $$;
+-- The lesson for anything added later: a migration must be idempotent AND
+-- survive a later migration removing what it references. Guard on the thing
+-- you are about to touch, not only on the thing you are about to create.
