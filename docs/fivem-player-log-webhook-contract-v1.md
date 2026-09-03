@@ -9,10 +9,12 @@ Send player lifecycle events from FiveM server-side code to SOT Attendance. Neve
 ## 1. Endpoint
 
 ```text
-POST https://sot.dafkur.com/api/v1/webhooks/server-logs
+POST https://sot-api.dafkur.com/api/v1/webhooks/server-logs
 Content-Type: application/json
 Maximum body: 16 KiB
 ```
+
+Note the host: **`sot-api.dafkur.com`**, not `sot.dafkur.com`. The latter serves the member web app, which answers `307` and redirects to its login page for anything it does not recognise — including this path. A `307` means you have the wrong host.
 
 Use a 5 second client-side timeout. SOT targets a p99 response under 500 ms, so a request still running at 5 seconds is a failure, not a slow success.
 
@@ -217,7 +219,7 @@ Replace player values before testing. Export the secret rather than pasting it i
 
 ```bash
 read -rs -p 'shared secret: ' SOT_SECRET; echo
-BASE='https://sot.dafkur.com/api/v1/webhooks/server-logs'
+BASE='https://sot-api.dafkur.com/api/v1/webhooks/server-logs'
 
 send_event() {
   curl --request POST "${BASE}" \
@@ -258,7 +260,7 @@ Send any of the above twice. The second returns `202` with `"duplicate": true` a
 ## 11. Lua sketch
 
 ```lua
-local ENDPOINT = 'https://sot.dafkur.com/api/v1/webhooks/server-logs'
+local ENDPOINT = 'https://sot-api.dafkur.com/api/v1/webhooks/server-logs'
 local SECRET   = GetConvar('sot_webhook_secret', '')   -- server.cfg, never a client file
 
 local function identifiers(src)
