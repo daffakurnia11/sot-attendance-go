@@ -65,6 +65,7 @@ type Handler struct {
 	settings   settingsStore
 	crafting   crafting.Store
 	money      moneyLedgerReader
+	serverLogs *ServerLogWebhook
 	logger     *slog.Logger
 }
 
@@ -73,7 +74,7 @@ func NewHandler(verifier discordIdentityVerifier, members memberFinder, issuer t
 	if len(stores) > 0 {
 		settings = stores[0]
 	}
-	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, nil, nil)
+	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, nil, nil, nil)
 }
 
 func NewHandlerWithCrafting(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledgers ...moneyLedgerReader) http.Handler {
@@ -81,11 +82,18 @@ func NewHandlerWithCrafting(verifier discordIdentityVerifier, members memberFind
 	if len(ledgers) > 0 {
 		ledger = ledgers[0]
 	}
-	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes, ledger)
+	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes, ledger, nil)
 }
 
-func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledger moneyLedgerReader) http.Handler {
-	handler := &Handler{verifier: verifier, members: members, issuer: issuer, tokens: tokens, dashboard: dashboard, attendance: attendance, settings: settings, crafting: recipes, money: ledger, logger: logger}
+// NewHandlerWithWebhook is NewHandlerWithCrafting plus the CR Roleplay player
+// log webhook. Pass a nil webhook to leave the route registered but reporting
+// 503, which is what the other constructors do.
+func NewHandlerWithWebhook(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledger moneyLedgerReader, webhook *ServerLogWebhook) http.Handler {
+	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes, ledger, webhook)
+}
+
+func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledger moneyLedgerReader, webhook *ServerLogWebhook) http.Handler {
+	handler := &Handler{verifier: verifier, members: members, issuer: issuer, tokens: tokens, dashboard: dashboard, attendance: attendance, settings: settings, crafting: recipes, money: ledger, serverLogs: webhook, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handler.health)
 	mux.HandleFunc("POST /api/v1/auth/discord", handler.discordLogin)
@@ -102,6 +110,9 @@ func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer t
 	mux.HandleFunc("POST /api/v1/crafting/calculate", handler.calculateCrafting)
 	mux.HandleFunc("POST /api/v1/crafting/calculate-batch", handler.calculateCraftingBatch)
 	mux.HandleFunc("GET /api/v1/money-transactions/{account}", handler.moneyTransactions)
+	// Authenticated by HMAC, not by member JWT, so it must stay outside the
+	// bearer-token handlers above.
+	mux.HandleFunc("POST /api/v1/webhooks/server-logs", handler.serverLogWebhook)
 	return handler.logging(mux)
 }
 

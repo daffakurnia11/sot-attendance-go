@@ -162,7 +162,7 @@ jobs:
               exit 1
             fi
 
-            for required in DATABASE_URL APP_JWT_SECRET DISCORD_BOT_TOKEN; do
+            for required in DATABASE_URL APP_JWT_SECRET DISCORD_BOT_TOKEN FIVEM_WEBHOOK_SECRET; do
               if ! grep -Eq "^${required}=.+$" .env.production; then
                 echo "$required is missing in $APP_DIR/.env.production"
                 exit 1

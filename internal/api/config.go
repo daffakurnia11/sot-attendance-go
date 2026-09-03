@@ -13,6 +13,9 @@ type Config struct {
 	JWTTTL        time.Duration
 	FiveMCFXID    string
 	FiveMPlayerID string
+	// FiveMWebhookSecret is the shared HMAC secret the CR Roleplay server signs
+	// its player log webhook requests with.
+	FiveMWebhookSecret string
 }
 
 func LoadConfig() (Config, error) {
@@ -22,10 +25,11 @@ func LoadConfig() (Config, error) {
 		os.Getenv("APP_JWT_TTL"),
 		os.Getenv("FIVEM_SERVER_CFX_ID"),
 		os.Getenv("FIVEM_PLAYER_ID"),
+		os.Getenv("FIVEM_WEBHOOK_SECRET"),
 	)
 }
 
-func ConfigFromValues(address, jwtSecret, jwtTTL, fiveMCFXID, fiveMPlayerID string) (Config, error) {
+func ConfigFromValues(address, jwtSecret, jwtTTL, fiveMCFXID, fiveMPlayerID, fiveMWebhookSecret string) (Config, error) {
 	address = strings.TrimSpace(address)
 	if address == "" {
 		address = ":8080"
@@ -56,7 +60,14 @@ func ConfigFromValues(address, jwtSecret, jwtTTL, fiveMCFXID, fiveMPlayerID stri
 	if fiveMPlayerID == "" {
 		return Config{}, errors.New("FIVEM_PLAYER_ID is required")
 	}
-	return Config{Address: address, JWTSecret: jwtSecret, JWTTTL: ttl, FiveMCFXID: fiveMCFXID, FiveMPlayerID: fiveMPlayerID}, nil
+	fiveMWebhookSecret = strings.TrimSpace(fiveMWebhookSecret)
+	if len(fiveMWebhookSecret) < 32 {
+		return Config{}, errors.New("FIVEM_WEBHOOK_SECRET must contain at least 32 characters")
+	}
+	if fiveMWebhookSecret == "replace-with-at-least-32-random-characters" {
+		return Config{}, errors.New("FIVEM_WEBHOOK_SECRET must not use the example value")
+	}
+	return Config{Address: address, JWTSecret: jwtSecret, JWTTTL: ttl, FiveMCFXID: fiveMCFXID, FiveMPlayerID: fiveMPlayerID, FiveMWebhookSecret: fiveMWebhookSecret}, nil
 }
 
 func isCFXServerID(value string) bool {
