@@ -86,8 +86,9 @@ type Player struct {
 	Ping        *int        `json:"ping,omitempty"`
 }
 
-// Identifiers are all required. A JSON null or a missing key decodes to the
-// empty string, which validation rejects.
+// Identifiers carries the player's stable ids. license, discord and steamhex
+// are required; a JSON null or a missing key decodes to the empty string, which
+// validation rejects. fivem is optional and unvalidated beyond text safety.
 type Identifiers struct {
 	License  string `json:"license"`
 	Discord  string `json:"discord"`
@@ -110,9 +111,12 @@ type ValidEvent struct {
 	Username   string
 	CID        string
 
-	License  string
-	Discord  string
-	FiveM    string
+	License string
+	Discord string
+	// FiveM is a pointer because it is optional: nil means the event carried
+	// none, which the upsert's COALESCE reads as "keep whatever is stored"
+	// rather than blanking a value an earlier event supplied.
+	FiveM    *string
 	SteamHex string
 }
 

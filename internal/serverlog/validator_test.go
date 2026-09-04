@@ -54,15 +54,13 @@ func TestValidateAcceptsEachStatus(t *testing.T) {
 // empty string and must be refused the same way.
 func TestValidateRequiresEveryIdentifier(t *testing.T) {
 	for _, blank := range []string{"", "   "} {
-		for _, field := range []string{"license", "discord", "fivem", "steamhex"} {
+		for _, field := range []string{"license", "discord", "steamhex"} {
 			event := validEvent()
 			switch field {
 			case "license":
 				event.Player.Identifiers.License = blank
 			case "discord":
 				event.Player.Identifiers.Discord = blank
-			case "fivem":
-				event.Player.Identifiers.FiveM = blank
 			case "steamhex":
 				event.Player.Identifiers.SteamHex = blank
 			}
@@ -116,7 +114,6 @@ func TestValidateRejects(t *testing.T) {
 		{"license without prefix", func(e *Event) { e.Player.Identifiers.License = "abcdefghij" }},
 		{"short discord", func(e *Event) { e.Player.Identifiers.Discord = "1234" }},
 		{"non numeric discord", func(e *Event) { e.Player.Identifiers.Discord = "12345678901234567x" }},
-		{"fivem without prefix", func(e *Event) { e.Player.Identifiers.FiveM = "abcdefg" }},
 		{"steam without prefix", func(e *Event) { e.Player.Identifiers.SteamHex = "abcdefg" }},
 		{"control character in name", func(e *Event) { e.Player.Name = "SOT\x00Ayvix" }},
 		{"invalid utf8 in cid", func(e *Event) { e.Player.CID = string([]byte{0xff, 0xfe}) }},
@@ -158,5 +155,39 @@ func TestValidateIgnoresUnstoredFields(t *testing.T) {
 
 	if _, err := Validate(testPayload, event); err != nil {
 		t.Fatalf("Validate() rejected a field it no longer stores: %v", err)
+	}
+}
+
+// fivem is stored but not validated: absent, blank and an arbitrary value are
+// all accepted, and absent normalises to nil so the upsert's COALESCE keeps
+// whatever an earlier event supplied.
+func TestValidateAcceptsAnyFiveM(t *testing.T) {
+	for _, value := range []string{"", "   ", "fivem:123", "not-a-fivem-identifier", "12345"} {
+		event := validEvent()
+		event.Player.Identifiers.FiveM = value
+		valid, err := Validate(testPayload, event)
+		if err != nil {
+			t.Fatalf("Validate() with fivem %q error = %v", value, err)
+		}
+		if strings.TrimSpace(value) == "" {
+			if valid.FiveM != nil {
+				t.Fatalf("blank fivem %q kept as %q, want nil", value, *valid.FiveM)
+			}
+			continue
+		}
+		if valid.FiveM == nil || *valid.FiveM != strings.TrimSpace(value) {
+			t.Fatalf("fivem %q stored as %v", value, valid.FiveM)
+		}
+	}
+}
+
+// Text safety still applies even though the format does not.
+func TestValidateRejectsUnsafeFiveM(t *testing.T) {
+	for _, value := range []string{"fivem:\x00abc", strings.Repeat("f", MaxFiveMID+1)} {
+		event := validEvent()
+		event.Player.Identifiers.FiveM = value
+		if _, err := Validate(testPayload, event); err == nil {
+			t.Fatalf("Validate() accepted unsafe fivem %q", value)
+		}
 	}
 }

@@ -75,25 +75,27 @@ Unknown fields are rejected. There is no `contract_version` in the body — the 
 | `name` | string | yes | 1-128 characters. Current FiveM display name |
 | `username` | string | yes | 1-128 characters. Passport or character name |
 | `cid` | string | yes | 1-64 characters. Character ID. **Must be stable for the life of a character** |
-| `identifiers` | object | yes | All four fields below are required |
+| `identifiers` | object | yes | See below. Three of the four fields are required |
 | `ping` | integer | yes | Accepted as sent. Send it on every status, including `disconnected` |
 
 `cid` is half of the identity SOT stores: a player is identified by `license` **and** `cid`, so one account with several framework characters is tracked as several players, each with its own visits and playtime. Send the framework's real character identifier, never a per-session or per-slot value that changes between logins - a changed `cid` reads as a different character.
 
 ### `player.identifiers`
 
-**All four are required.** A missing key, a JSON `null`, and `""` are rejected identically.
+`license`, `discord` and `steamhex` are **required**: a missing key, a JSON `null`, and `""` are rejected identically. `fivem` is **optional**.
 
-| Field | Rule |
-|---|---|
-| `license` | 9-128 characters, must start with `license:` |
-| `discord` | 17-20 digits. A `discord:` prefix is stripped if you send it |
-| `fivem` | 7-64 characters, must start with `fivem:` |
-| `steamhex` | 7-64 characters, must start with `steam:` |
+| Field | Required | Rule |
+|---|---:|---|
+| `license` | yes | 9-128 characters, must start with `license:` |
+| `discord` | yes | 17-20 digits. A `discord:` prefix is stripped if you send it |
+| `steamhex` | yes | 7-64 characters, must start with `steam:` |
+| `fivem` | no | Stored as sent, up to 64 characters. No format rule. Absent, `null` and `""` are all treated as "not supplied" |
 
-> The resource must **abort the call** when `GetPlayerIdentifiers` does not yield all four, rather than send a partial payload. A partial payload returns `422` and the event is not stored at all — the player will not appear in attendance in any form.
+> The resource must **abort the call** when `GetPlayerIdentifiers` does not yield `license`, `discord` and `steamhex`, rather than send a partial payload. A partial payload returns `422` and the event is not stored at all — the player will not appear in attendance in any form.
 >
-> In practice `discord:` requires the Discord desktop app to be running, and `steam:` requires Steam. Players on the Rockstar or Epic launcher, or with Discord closed, produce no such identifier.
+> `fivem` is exempt: send it when you have it and omit it otherwise. It is absent whenever the player has no CFX account attached, and it is decorative — nothing matches on it — so refusing the event over it would lose the player for no gain.
+>
+> In practice `discord:` requires the Discord desktop app to be running, and `steam:` requires Steam. Players on the Rockstar or Epic launcher, or with Discord closed, produce no such identifier and cannot be reported.
 
 ### `event`
 
@@ -272,8 +274,9 @@ local function identifiers(src)
         elseif id:sub(1, 6) == 'steam:'   then out.steamhex = id
         end
     end
-    -- All four are required; a partial payload is refused with 422.
-    if out.license and out.discord and out.fivem and out.steamhex then return out end
+    -- license, discord and steamhex are required; a partial payload is refused
+    -- with 422. fivem is optional and simply omitted when absent.
+    if out.license and out.discord and out.steamhex then return out end
     return nil
 end
 
@@ -321,7 +324,7 @@ No HMAC library, no UUID generation, no session table. The resource holds no sta
 - [ ] All requests originate from a server-side resource.
 - [ ] Endpoint is HTTPS.
 - [ ] Secret is read from server-only configuration, never from a file in version control or a client resource.
-- [ ] All four identifiers are present, or the call is skipped.
+- [ ] `license`, `discord` and `steamhex` are present, or the call is skipped. `fivem` is sent when available.
 - [ ] `event.timestamp` is UTC (`os.date` with the leading `!`).
 - [ ] A new event is sent for each of the three statuses.
 - [ ] Retries resend the original body unchanged, including its timestamp.

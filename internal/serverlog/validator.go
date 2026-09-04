@@ -59,7 +59,11 @@ func Validate(payload []byte, event Event) (ValidEvent, error) {
 	if err != nil {
 		return ValidEvent{}, err
 	}
-	fivem, err := requiredPrefixed("player.identifiers.fivem", event.Player.Identifiers.FiveM, "fivem:", MaxFiveMID)
+	// fivem is stored but not validated: it is absent whenever the player has
+	// no CFX account attached, and refusing the whole event over a decorative
+	// identifier lost the player from attendance entirely. Only text safety is
+	// still enforced, so nothing hostile reaches the database.
+	fivem, err := optionalRaw("player.identifiers.fivem", event.Player.Identifiers.FiveM, MaxFiveMID)
 	if err != nil {
 		return ValidEvent{}, err
 	}
@@ -114,6 +118,20 @@ func requiredDiscord(value string) (string, error) {
 		}
 	}
 	return trimmed, nil
+}
+
+// optionalRaw accepts any text, normalising absent, null and blank to nil. It
+// still rejects invalid UTF-8, control characters and over-long values, which
+// is hygiene rather than format validation.
+func optionalRaw(field, value string, max int) (*string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil, nil
+	}
+	if err := checkText(field, trimmed, 1, max); err != nil {
+		return nil, err
+	}
+	return &trimmed, nil
 }
 
 func requiredPrefixed(field, value, prefix string, max int) (string, error) {

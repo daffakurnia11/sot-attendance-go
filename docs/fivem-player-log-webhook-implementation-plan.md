@@ -35,7 +35,7 @@ Everything below was chosen against one constraint: **the FiveM Lua resource mus
 | Idempotency key is the payload | The sender generates no event id. `UNIQUE (payload)` on `jsonb` compares canonicalised content, so a retry dedupes even when the encoder reorders keys — which a hash of raw bytes could not do |
 | Shared secret in a header, not an HMAC | Owner decision. FiveM has no built-in HMAC-SHA256, so signing meant bundling a pure-Lua SHA-2 implementation. Traded for TLS-only transport; see section 5 |
 | Whole request body stored in `payload` | Debugging and logging, and it means dropping a column never loses data |
-| All four identifiers required | Owner decision. Consequence in section 4 |
+| `license`, `discord` and `steamhex` required; `fivem` optional | Owner decision. `fivem` is absent whenever the player has no CFX account and nothing matches on it, so refusing the event over it lost the player for no gain. Consequence of the other three in section 4 |
 | Identity conflicts never reject | A non-retryable 422 the sender could not fix would lose the event. Conflicts log at warn and store anyway |
 
 ## 3. Data model
@@ -232,7 +232,7 @@ Never match a player by `player_name`, `username`, `cid`, `player.server_id`, or
 - **A visit splits when `disconnected` overtakes `connecting`.** No open visit exists, so a second visit opens. Events are never lost; that visit's duration is wrong.
 - **A visit stays open forever if its `disconnected` never arrives** (server crash, lost sender queue). The next `connected` for that player attaches to the stale visit. A sweep that force-closes visits idle for more than 24 hours is not built.
 - **A `cid` change creates a new identity row.** `cid` is part of the key, so a framework rename or a reused character slot produces a second row rather than updating the first. Both link to the same member and both sets of visits still count, but the two read as different characters.
-- **All four identifiers required means incomplete players are not stored at all.** No `discord:` identifier without the Discord app running, no `steam:` without Steam. Those players return `422` and appear in no state — not even "Mismatched", which is the state section 1 exists to surface. Requiring `license` + `discord` only, or storing the event with an incompleteness flag, are the two ways to close that blind spot.
+- **The three required identifiers mean incomplete players are not stored at all.** No `discord:` identifier without the Discord app running, no `steam:` without Steam. Those players return `422` and appear in no state — not even "Mismatched", which is the state section 1 exists to surface. Requiring `license` + `discord` only, or storing the event with an incompleteness flag, are the two ways to close that blind spot.
 
 ## 5. Configuration and authentication
 
@@ -379,7 +379,7 @@ Covered by unit tests:
 
 - Secret accepted, plus wrong, empty, blank, truncated, extended, and case-changed variants; the authenticator copies the secret so a later mutation cannot widen what is accepted.
 - Freshness at both boundaries and outside them.
-- Every identifier required, for both absent and blank.
+- `license`, `discord` and `steamhex` required, for both absent and blank; `fivem` accepted in any form, normalising blank to nil so the upsert keeps a stored value.
 - `discord:` prefix stripping; all accepted timestamp layouts; `event.type` aliases.
 - Every length, charset, and prefix limit at its boundary, checked against the contract tables.
 - Control characters and invalid UTF-8.
