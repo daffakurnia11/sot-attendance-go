@@ -25,8 +25,15 @@ CREATE TABLE IF NOT EXISTS server_members (
     CONSTRAINT server_members_license_id_unique UNIQUE (license_id)
 );
 
-CREATE INDEX IF NOT EXISTS server_members_member_id_idx
-    ON server_members (member_id);
+-- An index on member_id lived here. 000024 drops that column, and the startup
+-- runner re-executes every up file on every boot, so this statement failed with
+-- "column member_id does not exist" the moment the column went. The column
+-- itself is still declared above, inside CREATE TABLE IF NOT EXISTS, which is a
+-- no-op on an existing table and gets dropped by 000024 on a fresh one.
+--
+-- Same rule as the note in 000017: a migration must be idempotent AND survive a
+-- later migration removing what it references. Anything standing alone here has
+-- to guard on the object it touches.
 CREATE INDEX IF NOT EXISTS server_members_discord_user_id_idx
     ON server_members (discord_user_id);
 
