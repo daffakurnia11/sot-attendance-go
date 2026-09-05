@@ -39,8 +39,44 @@ jobs:
       # poll loop, so the race detector is the check that matters most here.
       - run: make race
 
+  # Migrate keeps no version table: it re-executes every up file on every
+  # process start. A migration must therefore be idempotent AND survive a later
+  # migration removing what it references. Two outages shipped because nothing
+  # checked that, and neither is visible on a first run - only on the replay
+  # that every restart performs.
+  #
+  # This gates the deploy rather than only pull requests, because a push
+  # straight to main previously reached production without running any test.
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: sot_test
+          POSTGRES_USER: sot
+          POSTGRES_PASSWORD: sot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sot -d sot_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://sot:sot@127.0.0.1:5432/sot_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./internal/database/ -run TestMigrate -v
+
   build-app:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: migrations
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

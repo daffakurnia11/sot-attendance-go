@@ -59,6 +59,10 @@ Migrations, in order:
 
 `internal/database/database.go` embeds `migrations/*.up.sql` and `Migrate` executes **every** `.up.sql` file, in filename order, on every process start. There is no `schema_migrations` table and no version tracking. Two consequences:
 
+**This is enforced, not just documented.** `internal/database.TestMigrateAppliesTwiceOnAFreshDatabase` drops the schema, applies every up file, then applies them all again. The second pass is what every restart actually does, and it is where both shipped failures surfaced. The `migrations` job in CI runs it against a throwaway Postgres and `build-app` depends on it, so a broken chain blocks the deploy rather than reaching production. The test skips without `TEST_DATABASE_URL` and refuses any database whose name does not contain `test`, since it drops the public schema.
+
+Two rules follow:
+
 1. **Every statement must be safely re-runnable.** `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `ALTER TABLE ... DROP COLUMN IF EXISTS`, `DROP CONSTRAINT IF EXISTS`. `ALTER TABLE ADD CONSTRAINT` has no `IF NOT EXISTS`, so `000017` guards it with a `pg_constraint` lookup inside a `DO $$` block.
 2. **`.down.sql` is never executed.** Only `*.up.sql` is embedded. Down files are manual-rollback documentation.
 
@@ -385,7 +389,7 @@ Verified manually against production data: all three statuses, one derived sessi
 **Outstanding:**
 
 1. **Per-member aggregation is not built.** One member now owns a row per character and per license. The read queries in section 9 are sketches; a naive join would double-count playtime or silently pick one row. Solve this before attendance reads go live.
-2. **No repository tests against a real database.** `Store` has no DB-backed coverage; only query strings are asserted. The order-independence claims in section 4 — all six arrival orders converging, split visits, stale open visits — are untested.
+2. **No repository tests against a real database.** `Store` has no DB-backed coverage; only query strings are asserted. CI now has a Postgres service for the migration gate, so the harness this needs already exists. The order-independence claims in section 4 — all six arrival orders converging, split visits, stale open visits — are untested.
 3. **`internal/metrics` not built** (section 10).
 4. **CI deploy preflight.** `.github/workflows/ci.yml` now checks `FIVEM_WEBHOOK_SECRET`, but `.env.production` on the droplet is hand-maintained; confirm the value is present before the next deploy or the api container crash-loops and `bot` never starts.
 5. **Nothing committed.** Six migrations and the whole feature are uncommitted on `main`.
