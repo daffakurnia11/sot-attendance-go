@@ -38,20 +38,15 @@ const announcementsAfter = `
 	ORDER BY sl.id
 	LIMIT $2`
 
-// openVisits counts visits with no disconnected event yet, which is the number
-// of players the FiveM server currently reports. It is deliberately not the
-// Discord presence count: the two disagreeing is the signal this feature
-// exists to surface, so each log source shows its own tally.
-const openVisits = `
-	SELECT count(*) FROM (
-		SELECT sl.session_id
-		FROM server_logs sl
-		WHERE NOT EXISTS (
-			SELECT 1 FROM server_logs d
-			WHERE d.session_id = sl.session_id AND d.status = 'disconnected'
-		)
-		GROUP BY sl.session_id
-	) open_visits`
+// connectedPlayers counts players whose latest event was connected.
+//
+// It replaced a count of visits with no disconnected event, which overcounted:
+// a visit whose disconnected event never arrived stayed open forever and kept
+// being counted. This is deliberately not the Discord presence count - the two
+// disagreeing is the signal this feature exists to surface, so each log source
+// shows its own tally.
+const connectedPlayers = `
+	SELECT count(*) FROM server_members WHERE last_status = 'connected'`
 
 // LatestEventID is the cursor seed. Starting from the newest row means a first
 // run announces nothing rather than replaying the whole table into the channel.
@@ -86,11 +81,12 @@ func (r *Repository) AnnouncementsAfter(ctx context.Context, afterID int64, limi
 	return announcements, nil
 }
 
-// OpenVisitCount reports how many players the FiveM server currently has on.
-func (r *Repository) OpenVisitCount(ctx context.Context) (int, error) {
+// ConnectedPlayerCount reports how many players the FiveM server currently has
+// on, meaning those whose latest event was connected.
+func (r *Repository) ConnectedPlayerCount(ctx context.Context) (int, error) {
 	var count int
-	if err := r.pool.QueryRow(ctx, openVisits).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count open server visits: %w", err)
+	if err := r.pool.QueryRow(ctx, connectedPlayers).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count connected server players: %w", err)
 	}
 	return count, nil
 }

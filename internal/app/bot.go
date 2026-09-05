@@ -272,9 +272,9 @@ func (b *Bot) announceServerLogs(ctx context.Context) {
 	if len(announcements) == 0 {
 		return
 	}
-	playerCount, err := b.serverLogs.OpenVisitCount(requestContext)
+	playerCount, err := b.serverLogs.ConnectedPlayerCount(requestContext)
 	if err != nil {
-		b.logger.Error("count open server visits", "error", err)
+		b.logger.Error("count connected server players", "error", err)
 		return
 	}
 

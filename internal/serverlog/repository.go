@@ -98,6 +98,26 @@ const findOpenSession = `
 	ORDER BY sl.occurred_at DESC, sl.id DESC
 	LIMIT 1`
 
+// refreshLastStatus recomputes the player's latest status from what is stored,
+// rather than taking it from the event just ingested.
+//
+// Ingestion is order-independent: a delayed connecting can arrive after its own
+// connected. Writing the incoming status would let that stale event mark a
+// connected player as connecting, and the footer count would be wrong until
+// their next event. Reading the newest row instead is correct whatever the
+// arrival order, and rides the existing (server_member_id, occurred_at DESC)
+// index.
+const refreshLastStatus = `
+	UPDATE server_members sm
+	SET last_status = (
+		SELECT sl.status
+		FROM server_logs sl
+		WHERE sl.server_member_id = sm.id
+		ORDER BY sl.occurred_at DESC, sl.id DESC
+		LIMIT 1
+	), updated_at = NOW()
+	WHERE sm.id = $1`
+
 const insertLog = `
 	INSERT INTO server_logs (payload, server_member_id, session_id, status, occurred_at)
 	VALUES ($1::jsonb, $2, $3, $4, $5)
@@ -184,6 +204,13 @@ func (r *Repository) Store(ctx context.Context, event ValidEvent) (AcceptedResul
 		duplicate = true
 	case err != nil:
 		return AcceptedResult{}, fmt.Errorf("insert server log: %w", err)
+	}
+
+	// After the insert, so the newest row is the one just stored.
+	if !duplicate {
+		if _, err := transaction.Exec(ctx, refreshLastStatus, serverMemberID); err != nil {
+			return AcceptedResult{}, fmt.Errorf("refresh server member status: %w", err)
+		}
 	}
 
 	if err := transaction.Commit(ctx); err != nil {

@@ -18,7 +18,7 @@ func TestServerLogEmbedFooterMarksDirectServer(t *testing.T) {
 	if embed.Title != "SOT - Ayvix (Kenji Nakamura)" {
 		t.Fatalf("Title = %q", embed.Title)
 	}
-	if embed.Footer == nil || embed.Footer.Text != "SOT Players: 3 • Direct Server" {
+	if embed.Footer == nil || embed.Footer.Text != "SOT Players: 3 • CR Roleplay" {
 		t.Fatalf("Footer = %#v", embed.Footer)
 	}
 	if embed.Timestamp != start.Format(time.RFC3339) {
@@ -29,7 +29,7 @@ func TestServerLogEmbedFooterMarksDirectServer(t *testing.T) {
 // The two feeds must be distinguishable by footer alone, since they share a
 // channel.
 func TestServerLogEmbedFooterDiffersFromDiscordActivity(t *testing.T) {
-	if sourceDirectServer == sourceDiscordActivity {
+	if sourceCRRoleplay == sourceDiscordActivity {
 		t.Fatal("both feeds carry the same source label")
 	}
 }

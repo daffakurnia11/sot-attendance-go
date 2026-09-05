@@ -8,12 +8,12 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/discord/embed"
 )
 
-// sourceDirectServer labels entries the FiveM server reported over the webhook,
+// sourceCRRoleplay labels entries the FiveM server reported over the webhook,
 // as opposed to [sourceDiscordActivity], which are inferred from Discord rich
 // presence. Both feeds land in the same channel, so the footer is the only way
 // a reader can tell which signal produced a line - and the two disagreeing is
 // exactly what the operator needs to notice.
-const sourceDirectServer = "Direct Server"
+const sourceCRRoleplay = "CR Roleplay"
 
 // ServerLogEvent is one webhook event, flattened for rendering.
 //
@@ -60,6 +60,6 @@ func ServerLogEmbed(event ServerLogEvent, playerCount int) *discordgo.MessageEmb
 			Field("Status", string(phase), true)
 	}
 
-	footer := fmt.Sprintf("SOT Players: %d • %s", playerCount, sourceDirectServer)
+	footer := fmt.Sprintf("SOT Players: %d • %s", playerCount, sourceCRRoleplay)
 	return builder.Footer(footer, "").Timestamp(event.OccurredAt).Build()
 }

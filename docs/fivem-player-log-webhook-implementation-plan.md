@@ -51,6 +51,7 @@ Migrations, in order:
 000020_key_server_members_by_license_and_cid
 000023_key_server_members_by_cid_and_steamhex
 000024_drop_server_members_member_id
+000025_add_server_members_last_status
 ```
 
 `000016`-`000019` each narrow the schema as the payload settled. A fresh database gets the same end state by applying them in order.
@@ -84,6 +85,7 @@ One row per stable player identity.
 | `player_name` | `TEXT` | Latest FiveM display name |
 | `username` | `TEXT` | Latest passport/character name |
 | `cid` | `TEXT` | Required. Half of the identity key. Never overwritten |
+| `last_status` | `TEXT` | Latest event status. Nullable until the player's first event |
 | `created_at` | `TIMESTAMPTZ` | Default `NOW()` |
 | `updated_at` | `TIMESTAMPTZ` | Default `NOW()`. Doubles as "last seen" |
 
@@ -98,7 +100,8 @@ JOIN members m ON m.user_id = server_members.discord_user_id
 - A license arriving that differs from the one on file for the same `(cid, steamhex)` is stored and flagged as an identity mismatch. Legitimate after a reinstall, worth a look otherwise.
 - Session correlation follows from this: `findOpenSession` keys on `server_member_id`, so a visit belongs to a character rather than an account. Two characters on one account get separate visits.
 - No unique index on `discord_user_id`, `fivem_id`, or `steamhex`. **One member legitimately owns many rows** - several characters, and several licenses over time if they use more than one Steam or Rockstar account. Any per-member aggregation must sum across those rows.
-- Index `(discord_user_id)`, which is what the members join runs on.
+- Index `(discord_user_id)`, which is what the members join runs on, and `(last_status) WHERE last_status = 'connected'` for the online count.
+- `last_status` is written from the **newest stored event**, not from the event being ingested. Ingestion is order-independent, so a delayed `connecting` can arrive after its own `connected`; taking the incoming status would let a stale event mark a connected player as connecting until their next event.
 
 ### `server_logs`
 
