@@ -5,12 +5,18 @@ import (
 	"testing"
 )
 
-func TestUpsertMemberResolvesMemberOnInitialInsert(t *testing.T) {
-	if !strings.Contains(upsertMember, "INSERT INTO server_members (license_id, member_id") {
-		t.Fatal("initial insert does not populate member_id")
+func TestUpsertMemberDerivesTheMatchedMember(t *testing.T) {
+	// server_members stores no link to members. The match is derived from the
+	// row's discord_user_id so it cannot go stale, and the column it replaced
+	// must not come back.
+	if strings.Contains(upsertMember, "member_id") {
+		t.Fatal("upsert still references a member_id column")
 	}
-	if !strings.Contains(upsertMember, "SELECT m.id FROM members m WHERE m.user_id = $2") {
-		t.Fatal("initial insert does not resolve the Discord user")
+	if !strings.Contains(upsertMember, "SELECT m.id FROM members m WHERE m.user_id = u.discord_user_id") {
+		t.Fatal("upsert does not derive the matched member from discord_user_id")
+	}
+	if !strings.Contains(findEvent, "SELECT m.id FROM members m WHERE m.user_id = sm.discord_user_id") {
+		t.Fatal("duplicate lookup does not derive the matched member")
 	}
 	// Identity is the character plus the Steam account it played from. Discord
 	// id and license are mutable, so neither can be part of the key.

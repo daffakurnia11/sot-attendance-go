@@ -1,0 +1,22 @@
+-- Drop server_members.member_id.
+--
+-- 000023 removed the foreign key, which left the column as a cached copy of a
+-- link that could rot: deleting a member left a member_id pointing at nothing,
+-- and nothing cleaned it up.
+--
+-- The link is now derived instead of stored. discord_user_id is already on the
+-- row and already indexed, so a reader joins members on
+-- members.user_id = server_members.discord_user_id and always sees the current
+-- answer. Ingestion already ran that exact lookup to populate the column, so it
+-- costs no extra round trip - it returns a value instead of writing one.
+--
+-- This also retires the 15-minute relink sweep, whose only job was refilling
+-- this column for rows unmatched at ingest, and the operator unlink path it
+-- would have needed.
+--
+-- Dropping the column drops server_members_member_id_idx with it.
+--
+-- DROP COLUMN IF EXISTS is idempotent, which the startup runner requires: it
+-- re-executes every *.up.sql on every boot.
+
+ALTER TABLE server_members DROP COLUMN IF EXISTS member_id;

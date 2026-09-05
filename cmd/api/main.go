@@ -86,7 +86,6 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go runServerMemberRelinker(ctx, serverLogRepository, logger)
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.ListenAndServe() }()
 	logger.Info("web API listening", "address", config.Address)
@@ -107,37 +106,4 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("web API stopped")
-}
-
-const serverMemberRelinkInterval = 15 * time.Minute
-
-type serverMemberRelinker interface {
-	Relink(context.Context) (int64, error)
-}
-
-func runServerMemberRelinker(ctx context.Context, relinker serverMemberRelinker, logger *slog.Logger) {
-	run := func() {
-		relinkContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		linked, err := relinker.Relink(relinkContext)
-		if err != nil {
-			logger.Error("relink server members", "error", err)
-			return
-		}
-		if linked > 0 {
-			logger.Info("server members relinked", "count", linked)
-		}
-	}
-
-	run()
-	ticker := time.NewTicker(serverMemberRelinkInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			run()
-		}
-	}
 }

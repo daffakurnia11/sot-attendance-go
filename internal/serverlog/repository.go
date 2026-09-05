@@ -26,9 +26,10 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 // person legitimately holds several rows under one Discord id, and a license
 // changes on reinstall - so both are treated as mutable data instead.
 //
-// server_members carries no foreign key to members. It records who the game
-// server saw, registered or not; member_id is a soft link resolved from the
-// Discord id when one matches.
+// server_members stores no link to members at all. It records who the game
+// server saw, registered or not. The matched member is derived here from the
+// row's discord_user_id, so the answer is always current and cannot rot the way
+// a stored column did.
 //
 // The previous CTE reads the pre-insert row, because a CTE sees the snapshot
 // taken when the statement started. That gives the caller the identifier
@@ -44,25 +45,20 @@ const upsertMember = `
 		FROM server_members
 		WHERE cid = $7 AND steamhex = $4
 	), upserted AS (
-		INSERT INTO server_members (license_id, member_id, discord_user_id, fivem_id, steamhex,
+		INSERT INTO server_members (license_id, discord_user_id, fivem_id, steamhex,
 		                            player_name, username, cid)
-		VALUES ($1, (SELECT m.id FROM members m WHERE m.user_id = $2), $2, $3, $4, $5, $6, $7)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (cid, steamhex) DO UPDATE SET
 			license_id      = EXCLUDED.license_id,
 			discord_user_id = COALESCE(EXCLUDED.discord_user_id, server_members.discord_user_id),
 			fivem_id        = COALESCE(EXCLUDED.fivem_id, server_members.fivem_id),
 			player_name     = EXCLUDED.player_name,
 			username        = EXCLUDED.username,
-			member_id       = COALESCE(
-				server_members.member_id,
-				(SELECT m.id FROM members m
-				 WHERE m.user_id = COALESCE(EXCLUDED.discord_user_id, server_members.discord_user_id))
-			),
 			updated_at      = NOW()
-		RETURNING id, member_id
+		RETURNING id, discord_user_id
 	)
 	SELECT u.id,
-	       u.member_id,
+	       (SELECT m.id FROM members m WHERE m.user_id = u.discord_user_id),
 	       COALESCE(p.discord_user_id IS NOT NULL AND $2 IS NOT NULL AND p.discord_user_id <> $2, false),
 	       COALESCE(p.fivem_id        IS NOT NULL AND $3 IS NOT NULL AND p.fivem_id        <> $3, false),
 	       COALESCE(p.license_id      <> $1, false)
@@ -75,7 +71,9 @@ const upsertMember = `
 const lockEvent = `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`
 
 const findEvent = `
-	SELECT sl.session_id, sl.server_member_id, sm.member_id
+	SELECT sl.session_id,
+	       sl.server_member_id,
+	       (SELECT m.id FROM members m WHERE m.user_id = sm.discord_user_id)
 	FROM server_logs sl
 	JOIN server_members sm ON sm.id = sl.server_member_id
 	WHERE sl.payload = $1::jsonb`

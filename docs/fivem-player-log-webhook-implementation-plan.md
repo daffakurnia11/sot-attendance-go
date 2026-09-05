@@ -50,6 +50,7 @@ Migrations, in order:
 000019_store_payload_drop_event_id
 000020_key_server_members_by_license_and_cid
 000023_key_server_members_by_cid_and_steamhex
+000024_drop_server_members_member_id
 ```
 
 `000016`-`000019` each narrow the schema as the payload settled. A fresh database gets the same end state by applying them in order.
@@ -72,7 +73,6 @@ One row per stable player identity.
 | Column | Type | Rule |
 |---|---|---|
 | `id` | `BIGINT IDENTITY` | Primary key |
-| `member_id` | `BIGINT` | Nullable soft link to `members.id`. **No foreign key** |
 | `license_id` | `TEXT` | Required. Mutable: follows the latest event |
 | `discord_user_id` | `TEXT` | The only matching key besides `license_id` |
 | `fivem_id` | `TEXT` | Operator reference, never matched on |
@@ -84,11 +84,17 @@ One row per stable player identity.
 | `updated_at` | `TIMESTAMPTZ` | Default `NOW()`. Doubles as "last seen" |
 
 - **`UNIQUE (cid, steamhex)` is the identity key: one row per character per Steam account.** Neither `discord_user_id` nor `license_id` is stable enough to key on - one person legitimately holds several rows under one Discord id, and a license changes on reinstall - so both are mutable data that follow the latest event. `steamhex` is `NOT NULL` precisely because it is half the key: left nullable, two rows with a NULL would not collide and duplicates would accumulate silently.
-- **No foreign key on `member_id`.** `server_members` is standalone: it records who the game server saw, whether or not that person is a registered SOT member. `member_id` is a soft link resolved from the Discord id when one matches; deleting a member no longer reaches into this table, so a stale `member_id` is possible and readers must tolerate it.
+- **No link to `members` is stored at all.** `server_members` is standalone: it records who the game server saw, registered or not. The matched member is derived from `discord_user_id` at the point of use:
+
+```sql
+JOIN members m ON m.user_id = server_members.discord_user_id
+```
+
+  Storing it as a column meant a cached answer that rotted once the foreign key was gone, and needed a sweep to refill. Deriving it is always current, costs one join on an indexed column, and retired both the sweep and the operator unlink path.
 - A license arriving that differs from the one on file for the same `(cid, steamhex)` is stored and flagged as an identity mismatch. Legitimate after a reinstall, worth a look otherwise.
 - Session correlation follows from this: `findOpenSession` keys on `server_member_id`, so a visit belongs to a character rather than an account. Two characters on one account get separate visits.
-- No unique index on `member_id`, `discord_user_id`, `fivem_id`, or `steamhex`. **One member legitimately owns many rows** - several characters, and several licenses over time if they use more than one Steam or Rockstar account. Any per-member aggregation must sum across those rows.
-- Index `(member_id)` for the join and `(discord_user_id)` for the relink sweep.
+- No unique index on `discord_user_id`, `fivem_id`, or `steamhex`. **One member legitimately owns many rows** - several characters, and several licenses over time if they use more than one Steam or Rockstar account. Any per-member aggregation must sum across those rows.
+- Index `(discord_user_id)`, which is what the members join runs on.
 
 ### `server_logs`
 
@@ -151,7 +157,9 @@ SELECT pg_advisory_xact_lock(hashtextextended($1, 0))
 **Step 2 - duplicate check.**
 
 ```sql
-SELECT sl.session_id, sl.server_member_id, sm.member_id
+SELECT sl.session_id,
+       sl.server_member_id,
+       (SELECT m.id FROM members m WHERE m.user_id = sm.discord_user_id)
 FROM server_logs sl
 JOIN server_members sm ON sm.id = sl.server_member_id
 WHERE sl.payload = $1::jsonb
@@ -166,24 +174,20 @@ WITH previous AS (
     SELECT license_id, discord_user_id, fivem_id
     FROM server_members WHERE cid = $7 AND steamhex = $4
 ), upserted AS (
-    INSERT INTO server_members (license_id, member_id, discord_user_id, fivem_id, steamhex,
+    INSERT INTO server_members (license_id, discord_user_id, fivem_id, steamhex,
                                 player_name, username, cid)
-    VALUES ($1, (SELECT m.id FROM members m WHERE m.user_id = $2), $2, $3, $4, $5, $6, $7)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     ON CONFLICT (cid, steamhex) DO UPDATE SET
         license_id      = EXCLUDED.license_id,
         discord_user_id = COALESCE(EXCLUDED.discord_user_id, server_members.discord_user_id),
         fivem_id        = COALESCE(EXCLUDED.fivem_id, server_members.fivem_id),
         player_name     = EXCLUDED.player_name,
         username        = EXCLUDED.username,
-        member_id       = COALESCE(
-            server_members.member_id,
-            (SELECT m.id FROM members m
-             WHERE m.user_id = COALESCE(EXCLUDED.discord_user_id, server_members.discord_user_id))
-        ),
         updated_at      = NOW()
-    RETURNING id, member_id
+    RETURNING id, discord_user_id
 )
-SELECT u.id, u.member_id,
+SELECT u.id,
+       (SELECT m.id FROM members m WHERE m.user_id = u.discord_user_id),
        COALESCE(p.discord_user_id IS NOT NULL AND $2 IS NOT NULL AND p.discord_user_id <> $2, false),
        COALESCE(p.fivem_id        IS NOT NULL AND $3 IS NOT NULL AND p.fivem_id        <> $3, false),
        COALESCE(p.license_id      <> $1, false)
@@ -193,8 +197,7 @@ FROM upserted u LEFT JOIN previous p ON true
 Member matching is folded in, so there is no separate lookup. Three details carry weight:
 
 - The `previous` CTE reads the pre-insert row, because a CTE sees the snapshot taken when the statement started. That yields the identifier disagreements without a second round trip.
-- `COALESCE` on `member_id` means an existing link is never replaced by a different member.
-- The `member_id` subquery matches on `COALESCE(EXCLUDED.discord_user_id, server_members.discord_user_id)`, not `EXCLUDED` alone. Otherwise an event that omitted `discord` would fail to link a row that already held a usable one.
+- The matched member is derived from the upserted row's `discord_user_id`, never stored. It is the same lookup the column used to be populated by, returning a value instead of writing one, so it costs no extra round trip and cannot go stale.
 
 Profile fields overwrite unconditionally. A retry arriving out of order can briefly write a display name a few seconds stale; the next event corrects it. Guarding that was not worth an extra column and three `CASE` expressions.
 
@@ -261,7 +264,6 @@ internal/serverlog/model.go            request and stored types, contract limits
 internal/serverlog/validator.go        every contract section 3 rule
 internal/serverlog/auth.go             shared-secret compare and freshness
 internal/serverlog/repository.go       the four-statement transaction
-internal/serverlog/relink.go           the relink sweep
 internal/serverlog/{validator,auth,repository}_test.go
 ```
 
@@ -328,52 +330,34 @@ Token bucket for the route: 100 requests per second, burst 500, matching the pub
 
 Target p99 under 500 ms against the sender's 5 second timeout. Watch the `MaxConns = 5` pool ceiling under load; raise it in `internal/database.Open` only with evidence.
 
-## 8. Automatic relink
-
-The contract promises an event stored with `matched_member: false` is linked later without a resend. `cmd/api` runs an immediate sweep at startup and repeats it every 15 minutes:
-
-```sql
-UPDATE server_members sm
-SET member_id = m.id, updated_at = NOW()
-FROM members m
-WHERE sm.member_id IS NULL
-  AND sm.discord_user_id IS NOT NULL
-  AND m.user_id = sm.discord_user_id
-```
-
-There is deliberately no per-user hook. `members` rows are created in bulk by the Discord guild sync (`member.Repository.UpsertGuildMembers`) and by `RecordLog`, not at a single registration call site, so a per-user relink would have no clean home and would fire once per player inside a bulk sync. Worst-case wait is 15 minutes.
-
-Log rows linked per sweep. A steadily rising unmatched count means players are connecting without a Discord identifier — a sender-side or onboarding problem, not an ingestion bug.
-
-Provide an operator unlink path that clears `member_id`, so a mislinked identity can be corrected without editing rows by hand.
-
-## 9. Existing read model integration
+## 8. Existing read model integration
 
 Keep `dashboard.Repository` CFX polling unchanged for the first delivery. Webhook ingestion must not silently alter attendance totals.
 
 Read queries for future consumers:
 
 - Latest FiveM status per player, from the `DISTINCT ON (session_id)` query in section 3 joined through `server_members`.
-- Unmatched players from `server_members WHERE member_id IS NULL`, ordered by `updated_at DESC`.
-- Discord latest status from existing `player_logs`, joined via `server_members.member_id = members.id`, producing the state table in section 1.
+- Registered players by joining `members` on `discord_user_id`; unregistered ones are the rows with no match.
+- Unmatched players: `server_members` rows whose `discord_user_id` matches no `members.user_id`, ordered by `updated_at DESC`.
+- Discord latest status from existing `player_logs`, joined via `members.user_id = server_members.discord_user_id`, producing the state table in section 1.
 
 Do not replace the current dashboard, attendance, or payslip queries until webhook ingestion has production data and parity monitoring.
 
-## 10. Observability
+## 9. Observability
 
-No metrics package exists in this repository: no Prometheus client, no `expvar`, no `/metrics`. **Not yet built.** The intent is `internal/metrics` backed by stdlib `expvar` on the existing bot health address, with counters for accepted, duplicate, unmatched, identity-flagged, invalid-secret, expired-timestamp, invalid-payload, rate-limited, database failure, and relinked.
+No metrics package exists in this repository: no Prometheus client, no `expvar`, no `/metrics`. **Not yet built.** The intent is `internal/metrics` backed by stdlib `expvar` on the existing bot health address, with counters for accepted, duplicate, unmatched, identity-flagged, invalid-secret, expired-timestamp, invalid-payload, rate-limited, and database failure.
 
 Structured logging is in place. Per request: `request_id`, `session_id`, `status`, `duplicate`, `matched_member`, `member_id` when matched, HTTP status, duration. An identifier disagreement logs at warn with the field name and `server_members.id`.
 
 Never log the secret, a full license identifier, a Steam identifier, or the raw body.
 
-## 11. Retention
+## 10. Retention
 
 Keep everything. One RP server produces roughly three rows per visit — thousands a day, not millions.
 
 `payload` roughly triples row width, so revisit sooner than the previous estimate: at roughly 10 million rows, either introduce a retention window or partition monthly by `occurred_at`. Neither needs a schema change now.
 
-## 12. Tests and outstanding work
+## 11. Tests and outstanding work
 
 Passing today: build, `go vet`, `gofmt`, the full test suite, and `-race`.
 
@@ -401,12 +385,11 @@ Verified manually against production data: all three statuses, one derived sessi
 **Outstanding:**
 
 1. **Per-member aggregation is not built.** One member now owns a row per character and per license. The read queries in section 9 are sketches; a naive join would double-count playtime or silently pick one row. Solve this before attendance reads go live.
-2. **No repository tests against a real database.** `Store` and `Relink` have no DB-backed coverage; only query strings are asserted. The order-independence claims in section 4 — all six arrival orders converging, split visits, stale open visits — are untested.
+2. **No repository tests against a real database.** `Store` has no DB-backed coverage; only query strings are asserted. The order-independence claims in section 4 — all six arrival orders converging, split visits, stale open visits — are untested.
 3. **`internal/metrics` not built** (section 10).
 4. **CI deploy preflight.** `.github/workflows/ci.yml` now checks `FIVEM_WEBHOOK_SECRET`, but `.env.production` on the droplet is hand-maintained; confirm the value is present before the next deploy or the api container crash-loops and `bot` never starts.
 5. **Nothing committed.** Six migrations and the whole feature are uncommitted on `main`.
 6. **Stale-visit sweep** not built (section 4).
-7. **Operator unlink path** not built (section 8).
 
 Regression checks:
 
@@ -417,7 +400,7 @@ GOCACHE=/tmp/sot-attendance-go-cache go vet ./...
 GOCACHE=/tmp/sot-attendance-go-cache go build ./cmd/api ./cmd/bot
 ```
 
-## 13. Rollout
+## 12. Rollout
 
 1. Rotate the secret exposed in the first contract revision.
 2. Confirm `FIVEM_WEBHOOK_SECRET` is set in `.env.production` on the droplet.
@@ -429,13 +412,13 @@ GOCACHE=/tmp/sot-attendance-go-cache go build ./cmd/api ./cmd/bot
 8. Compare webhook events against current CFX polling and Discord presence.
 9. Enable reporting integration only after parity is acceptable.
 
-## 14. Completion criteria
+## 13. Completion criteria
 
 - Every migration applies cleanly twice in a row under the existing startup runner.
 - Every authenticated, well-formed event is stored exactly once.
 - No event is lost to arrival order, a missing sibling event, a repeated status, or an identity disagreement.
 - Every log row links to a `server_members` row; every matched row links to a real `members` row.
-- Unmatched identities and their logs remain stored and queryable, and link automatically within 15 minutes of the member registering.
+- Unregistered players are stored and become matched the moment they register, with no resend and no sweep.
 - Anything not stored as a column is recoverable from `payload`.
 - Existing Discord `player_logs`, attendance, and payslip results are unchanged.
 - Duplicate requests create no extra rows.
