@@ -74,11 +74,15 @@ Unknown fields are rejected. There is no `contract_version` in the body — the 
 | `server_id` | integer | yes | FiveM source/server ID. Accepted as sent |
 | `name` | string | yes | 1-128 characters. Current FiveM display name |
 | `username` | string | yes | 1-128 characters. Passport or character name |
-| `cid` | string | yes | 1-64 characters. Character ID. **Must be stable for the life of a character** |
+| `cid` | string | yes | 1-64 characters. Character ID. **Must be stable for the life of a character** - half the identity key |
 | `identifiers` | object | yes | See below. Three of the four fields are required |
 | `ping` | integer | yes | Accepted as sent. Send it on every status, including `disconnected` |
 
-`cid` is half of the identity SOT stores: a player is identified by `license` **and** `cid`, so one account with several framework characters is tracked as several players, each with its own visits and playtime. Send the framework's real character identifier, never a per-session or per-slot value that changes between logins - a changed `cid` reads as a different character.
+`cid` and `steamhex` together are the identity SOT stores: a player is one **character on one Steam account**, so an account with several framework characters is tracked as several players, each with its own visits and playtime.
+
+Both must be stable. Send the framework's real character identifier for `cid`, never a per-session or per-slot value that changes between logins. A change to either reads as a different player and starts a fresh history.
+
+`license` is deliberately *not* part of the identity - it changes on a reinstall - so it is stored as data and follows the latest event. A license that differs from the one on file for the same character is accepted and flagged for review on our side; you need do nothing.
 
 ### `player.identifiers`
 
@@ -88,7 +92,7 @@ Unknown fields are rejected. There is no `contract_version` in the body — the 
 |---|---:|---|
 | `license` | yes | 9-128 characters, must start with `license:` |
 | `discord` | yes | 17-20 digits. A `discord:` prefix is stripped if you send it |
-| `steamhex` | yes | 7-64 characters, must start with `steam:` |
+| `steamhex` | yes | 7-64 characters, must start with `steam:`. **The other half of the identity key**, so it must be stable |
 | `fivem` | no | Stored as sent, up to 64 characters. No format rule. Absent, `null` and `""` are all treated as "not supplied" |
 
 > The resource must **abort the call** when `GetPlayerIdentifiers` does not yield `license`, `discord` and `steamhex`, rather than send a partial payload. A partial payload returns `422` and the event is not stored at all — the player will not appear in attendance in any form.

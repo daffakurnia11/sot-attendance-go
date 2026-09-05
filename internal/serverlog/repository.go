@@ -21,9 +21,14 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 // upsertMember writes the identity and resolves the SOT member in one
 // statement.
 //
-// Identity is (license_id, cid): one row per framework character, since one
-// Rockstar account can hold several. cid is therefore part of the key and is
-// never overwritten.
+// Identity is (cid, steamhex): the character plus the Steam account it played
+// from. Neither discord_user_id nor license_id is stable enough to key on - one
+// person legitimately holds several rows under one Discord id, and a license
+// changes on reinstall - so both are treated as mutable data instead.
+//
+// server_members carries no foreign key to members. It records who the game
+// server saw, registered or not; member_id is a soft link resolved from the
+// Discord id when one matches.
 //
 // The previous CTE reads the pre-insert row, because a CTE sees the snapshot
 // taken when the statement started. That gives the caller the identifier
@@ -35,17 +40,17 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 // name a few seconds stale and the next event corrects it.
 const upsertMember = `
 	WITH previous AS (
-		SELECT discord_user_id, fivem_id, steamhex
+		SELECT license_id, discord_user_id, fivem_id
 		FROM server_members
-		WHERE license_id = $1 AND cid = $7
+		WHERE cid = $7 AND steamhex = $4
 	), upserted AS (
 		INSERT INTO server_members (license_id, member_id, discord_user_id, fivem_id, steamhex,
 		                            player_name, username, cid)
 		VALUES ($1, (SELECT m.id FROM members m WHERE m.user_id = $2), $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (license_id, cid) DO UPDATE SET
+		ON CONFLICT (cid, steamhex) DO UPDATE SET
+			license_id      = EXCLUDED.license_id,
 			discord_user_id = COALESCE(EXCLUDED.discord_user_id, server_members.discord_user_id),
 			fivem_id        = COALESCE(EXCLUDED.fivem_id, server_members.fivem_id),
-			steamhex        = COALESCE(EXCLUDED.steamhex, server_members.steamhex),
 			player_name     = EXCLUDED.player_name,
 			username        = EXCLUDED.username,
 			member_id       = COALESCE(
@@ -60,7 +65,7 @@ const upsertMember = `
 	       u.member_id,
 	       COALESCE(p.discord_user_id IS NOT NULL AND $2 IS NOT NULL AND p.discord_user_id <> $2, false),
 	       COALESCE(p.fivem_id        IS NOT NULL AND $3 IS NOT NULL AND p.fivem_id        <> $3, false),
-	       COALESCE(p.steamhex        IS NOT NULL AND $4 IS NOT NULL AND p.steamhex        <> $4, false)
+	       COALESCE(p.license_id      <> $1, false)
 	FROM upserted u
 	LEFT JOIN previous p ON true`
 
@@ -150,14 +155,14 @@ func (r *Repository) Store(ctx context.Context, event ValidEvent) (AcceptedResul
 	}
 
 	var (
-		serverMemberID                             int64
-		memberID                                   *int64
-		discordDiffers, fivemDiffers, steamDiffers bool
+		serverMemberID                               int64
+		memberID                                     *int64
+		discordDiffers, fivemDiffers, licenseDiffers bool
 	)
 	err = transaction.QueryRow(ctx, upsertMember,
 		event.License, event.Discord, event.FiveM, event.SteamHex,
 		event.PlayerName, event.Username, event.CID,
-	).Scan(&serverMemberID, &memberID, &discordDiffers, &fivemDiffers, &steamDiffers)
+	).Scan(&serverMemberID, &memberID, &discordDiffers, &fivemDiffers, &licenseDiffers)
 	if err != nil {
 		return AcceptedResult{}, fmt.Errorf("upsert server member: %w", err)
 	}
@@ -194,8 +199,10 @@ func (r *Repository) Store(ctx context.Context, event ValidEvent) (AcceptedResul
 	if fivemDiffers {
 		mismatched = append(mismatched, "fivem")
 	}
-	if steamDiffers {
-		mismatched = append(mismatched, "steamhex")
+	if licenseDiffers {
+		// Same character on the same Steam account, reporting a different
+		// Rockstar license. Legitimate after a reinstall, worth a look if not.
+		mismatched = append(mismatched, "license")
 	}
 
 	return AcceptedResult{

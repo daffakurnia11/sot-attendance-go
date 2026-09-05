@@ -27,7 +27,7 @@ Everything below was chosen against one constraint: **the FiveM Lua resource mus
 
 | Decision | Reason |
 |---|---|
-| Identity keyed on `(license_id, cid)` | One Rockstar account holds several framework characters. Keyed on license alone they collapsed into one row and the earlier character was lost |
+| Identity keyed on `(cid, steamhex)`, no foreign key to `members` | The character plus the Steam account it played from. Discord id is not unique per player and a license changes on reinstall, so both are mutable data. `server_members` is standalone reference data: it records who the game server saw, registered or not |
 | Two tables, not three | An earlier revision added `server_sessions`. Removed: session state and playtime derive from `server_logs` at read time, which needs no extra table, no status update, and no view |
 | Ingestion is append-only and order-independent | The sender delivers asynchronously with independent retries, so reordering is routine. Rejecting a reordered event returned a non-retryable 422 and lost it permanently |
 | No locks beyond one advisory lock per body | Order-independence removed the need. The pool is capped at `MaxConns = 5`, so lock contention during a restart burst was a real risk |
@@ -49,6 +49,7 @@ Migrations, in order:
 000018_reduce_server_logs_to_six_columns
 000019_store_payload_drop_event_id
 000020_key_server_members_by_license_and_cid
+000023_key_server_members_by_cid_and_steamhex
 ```
 
 `000016`-`000019` each narrow the schema as the payload settled. A fresh database gets the same end state by applying them in order.
@@ -71,19 +72,20 @@ One row per stable player identity.
 | Column | Type | Rule |
 |---|---|---|
 | `id` | `BIGINT IDENTITY` | Primary key |
-| `member_id` | `BIGINT` | Nullable foreign key to `members.id` |
-| `license_id` | `TEXT` | Required. Half of the identity key |
+| `member_id` | `BIGINT` | Nullable soft link to `members.id`. **No foreign key** |
+| `license_id` | `TEXT` | Required. Mutable: follows the latest event |
 | `discord_user_id` | `TEXT` | The only matching key besides `license_id` |
 | `fivem_id` | `TEXT` | Operator reference, never matched on |
-| `steamhex` | `TEXT` | Operator reference, never matched on |
+| `steamhex` | `TEXT` | Required, `NOT NULL`. The other half of the identity key. Never overwritten |
 | `player_name` | `TEXT` | Latest FiveM display name |
 | `username` | `TEXT` | Latest passport/character name |
-| `cid` | `TEXT` | Required. The other half of the identity key. Never overwritten |
+| `cid` | `TEXT` | Required. Half of the identity key. Never overwritten |
 | `created_at` | `TIMESTAMPTZ` | Default `NOW()` |
 | `updated_at` | `TIMESTAMPTZ` | Default `NOW()`. Doubles as "last seen" |
 
-- `member_id REFERENCES members(id) ON DELETE SET NULL` preserves server history if a member is deleted.
-- **`UNIQUE (license_id, cid)` is the identity key: one row per framework character.** One Rockstar account can hold several characters - same license, same Steam, different `cid`. Keyed on `license_id` alone they collapsed into one row whose `cid` and `username` were overwritten by whichever event arrived last, so the earlier character vanished. `cid` is `NOT NULL`, so the composite key cannot be defeated by NULLs failing to collide.
+- **`UNIQUE (cid, steamhex)` is the identity key: one row per character per Steam account.** Neither `discord_user_id` nor `license_id` is stable enough to key on - one person legitimately holds several rows under one Discord id, and a license changes on reinstall - so both are mutable data that follow the latest event. `steamhex` is `NOT NULL` precisely because it is half the key: left nullable, two rows with a NULL would not collide and duplicates would accumulate silently.
+- **No foreign key on `member_id`.** `server_members` is standalone: it records who the game server saw, whether or not that person is a registered SOT member. `member_id` is a soft link resolved from the Discord id when one matches; deleting a member no longer reaches into this table, so a stale `member_id` is possible and readers must tolerate it.
+- A license arriving that differs from the one on file for the same `(cid, steamhex)` is stored and flagged as an identity mismatch. Legitimate after a reinstall, worth a look otherwise.
 - Session correlation follows from this: `findOpenSession` keys on `server_member_id`, so a visit belongs to a character rather than an account. Two characters on one account get separate visits.
 - No unique index on `member_id`, `discord_user_id`, `fivem_id`, or `steamhex`. **One member legitimately owns many rows** - several characters, and several licenses over time if they use more than one Steam or Rockstar account. Any per-member aggregation must sum across those rows.
 - Index `(member_id)` for the join and `(discord_user_id)` for the relink sweep.
@@ -161,16 +163,16 @@ A hit returns `duplicate: true` with the original visit's match state and touche
 
 ```sql
 WITH previous AS (
-    SELECT discord_user_id, fivem_id, steamhex
-    FROM server_members WHERE license_id = $1 AND cid = $7
+    SELECT license_id, discord_user_id, fivem_id
+    FROM server_members WHERE cid = $7 AND steamhex = $4
 ), upserted AS (
     INSERT INTO server_members (license_id, member_id, discord_user_id, fivem_id, steamhex,
                                 player_name, username, cid)
     VALUES ($1, (SELECT m.id FROM members m WHERE m.user_id = $2), $2, $3, $4, $5, $6, $7)
-    ON CONFLICT (license_id, cid) DO UPDATE SET
+    ON CONFLICT (cid, steamhex) DO UPDATE SET
+        license_id      = EXCLUDED.license_id,
         discord_user_id = COALESCE(EXCLUDED.discord_user_id, server_members.discord_user_id),
         fivem_id        = COALESCE(EXCLUDED.fivem_id, server_members.fivem_id),
-        steamhex        = COALESCE(EXCLUDED.steamhex, server_members.steamhex),
         player_name     = EXCLUDED.player_name,
         username        = EXCLUDED.username,
         member_id       = COALESCE(
@@ -184,7 +186,7 @@ WITH previous AS (
 SELECT u.id, u.member_id,
        COALESCE(p.discord_user_id IS NOT NULL AND $2 IS NOT NULL AND p.discord_user_id <> $2, false),
        COALESCE(p.fivem_id        IS NOT NULL AND $3 IS NOT NULL AND p.fivem_id        <> $3, false),
-       COALESCE(p.steamhex        IS NOT NULL AND $4 IS NOT NULL AND p.steamhex        <> $4, false)
+       COALESCE(p.license_id      <> $1, false)
 FROM upserted u LEFT JOIN previous p ON true
 ```
 
