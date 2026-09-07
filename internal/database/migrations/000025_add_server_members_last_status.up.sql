@@ -1,24 +1,12 @@
--- Track each player's latest status on their identity row.
+-- Historical: this added server_members.last_status and an index on it.
 --
--- The footer count was open visits: sessions with no disconnected event. That
--- overcounts, because a visit whose disconnected event never arrives - server
--- crash, lost sender queue - stays open forever and keeps being counted. Asking
--- how many players are currently connected is both the question being answered
--- and immune to that.
+-- The column cached each player's newest status so the server log embed footer
+-- could count connected players. The footer was removed, taking its only
+-- reader with it, and 000031 dropped the column.
 --
--- last_status is written from the newest stored event for the player, not from
--- the event being ingested, so an out-of-order connecting cannot overwrite a
--- later connected. Ingestion is order-independent by design and this has to
--- stay that way.
+-- The statements are gone rather than guarded. The startup runner replays every
+-- up file on every boot: ADD COLUMN IF NOT EXISTS is not a no-op once a column
+-- has been dropped, and the standalone CREATE INDEX on last_status would fail
+-- outright - the same failure 000015's index on member_id shipped.
 --
--- Nullable: rows written before this migration have no status until their next
--- event, and a NULL simply is not counted.
---
--- ADD COLUMN IF NOT EXISTS is idempotent, which the startup runner requires:
--- it re-executes every *.up.sql on every boot.
-
-ALTER TABLE server_members ADD COLUMN IF NOT EXISTS last_status TEXT;
-
-CREATE INDEX IF NOT EXISTS server_members_connected_idx
-    ON server_members (last_status)
-    WHERE last_status = 'connected';
+-- Kept as a file so the sequence has no hole and the history stays readable.
