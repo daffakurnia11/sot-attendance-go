@@ -279,7 +279,9 @@ func (b *Bot) announceServerLogs(ctx context.Context) {
 			PlayerName: announcement.PlayerName,
 			Username:   announcement.Username,
 			Status:     announcement.Status,
-			OccurredAt: announcement.OccurredAt,
+			// The footer time is plain text, so it is rendered in the
+			// location the channel's readers are in rather than left in UTC.
+			OccurredAt: announcement.OccurredAt.In(b.location),
 			ServerID:   announcement.ServerID,
 			Reason:     announcement.Reason,
 		}

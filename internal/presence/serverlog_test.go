@@ -21,18 +21,18 @@ func TestServerLogEmbedShape(t *testing.T) {
 	if embed.Title != "Kenji Nakamura" {
 		t.Errorf("Title = %q", embed.Title)
 	}
-	if embed.Footer != nil {
-		t.Errorf("Footer = %#v, want none", embed.Footer)
+	if embed.Footer == nil || embed.Footer.Text != "03 September 2026 at 09:00" {
+		t.Errorf("Footer = %#v", embed.Footer)
 	}
-	// The embed timestamp is what Discord renders as "Today at 08.03"; the body
-	// carries a dated Discord timestamp instead.
+	// The embed timestamp is what Discord renders as "Today at 08.03"; the
+	// footer carries a dated time instead.
 	if embed.Timestamp != "" {
 		t.Errorf("Timestamp = %q, want empty", embed.Timestamp)
 	}
 	if len(embed.Fields) != 0 {
 		t.Errorf("fields = %#v, want none", embed.Fields)
 	}
-	want := fmt.Sprintf("```\n[479] SOT - Ayvix is connected.\n```\n%s", discordTimestamp(occurred))
+	want := "```\n[479] SOT - Ayvix is connected.\n```"
 	if embed.Description != want {
 		t.Errorf("Description = %q, want %q", embed.Description, want)
 	}
@@ -95,7 +95,7 @@ func TestServerLogEmbedPerStatus(t *testing.T) {
 			if e.Color != test.wantColor {
 				t.Errorf("Color = %#x, want %#x", e.Color, test.wantColor)
 			}
-			want := fmt.Sprintf("```\n%s\n```\n%s", test.wantLine, discordTimestamp(occurred))
+			want := fmt.Sprintf("```\n%s\n```", test.wantLine)
 			if e.Description != want {
 				t.Errorf("Description = %q, want %q", e.Description, want)
 			}

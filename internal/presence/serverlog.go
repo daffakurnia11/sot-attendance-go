@@ -42,19 +42,26 @@ func serverLogPhase(status string) playerPhase {
 	}
 }
 
+// serverLogTime is the footer format. Footer text is plain: Discord renders no
+// markdown and no <t:> timestamp there, so the time is formatted here rather
+// than handed over as markup. The embed timestamp is not used either - Discord
+// renders that as "Today at 08.03", which loses the date.
+//
+// OccurredAt is expected in the location the reader thinks in; the caller
+// converts.
+const serverLogTime = "02 January 2006 at 15:04"
+
 // ServerLogEmbed renders one webhook event for the server log channel.
 //
 // The line lives in a code block rather than an embed field: the feed is read
 // as a scrollback of what the game server reported, and a monospaced sentence
-// stays scannable where a Status/Time field grid does not. The occurrence time
-// is a Discord timestamp in the body instead of the embed timestamp, which
-// Discord renders as "Today at 08.03" and loses the date.
+// stays scannable where a Status/Time field grid does not.
 func ServerLogEmbed(event ServerLogEvent) *discordgo.MessageEmbed {
 	phase := serverLogPhase(event.Status)
-	description := fmt.Sprintf("```\n%s\n```\n%s", serverLogLine(event, phase), discordTimestamp(event.OccurredAt))
 	return embed.New(event.PlayerName).
 		Color(playerPhaseColor(phase)).
-		Description(description).
+		Description(fmt.Sprintf("```\n%s\n```", serverLogLine(event, phase))).
+		Footer(event.OccurredAt.Format(serverLogTime), "").
 		Build()
 }
 
