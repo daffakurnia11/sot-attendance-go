@@ -76,6 +76,10 @@ jobs:
       # Session resolution is a property of the stored rows, so its tests need
       # a database and skip without one. This is the only job that has one.
       - run: go test ./internal/serverlog/ -run TestSession -v
+      # Attendance playtime is arithmetic over stored rows, and needs one too.
+      - run: go test ./internal/member/ -run TestPlaytimeRecap -v
+      # Member records split two feeds at a per-member handover; same reason.
+      - run: go test ./internal/dashboard/ -run TestGetMemberRecords -v
 
   build-app:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

@@ -74,7 +74,7 @@ func main() {
 	settingsRepository := dbsettings.NewRepository(pool)
 	serverLogRepository := serverlog.NewRepository(pool)
 	webhook := api.NewServerLogWebhook(serverLogRepository, serverlog.NewAuthenticator(config.FiveMWebhookSecret, nil))
-	handler := api.NewHandlerWithWebhook(api.NewDiscordVerifier(client), member.NewRepository(pool), issuer, issuer, dashboard.NewRepository(pool, cfxClient, logger), attendancehistory.NewReportRepository(pool, location), logger, settingsRepository, crafting.NewRepository(pool), money.NewRepository(pool), webhook)
+	handler := api.NewHandlerWithWebhook(api.NewDiscordVerifier(client), member.NewRepository(pool), issuer, issuer, dashboard.NewRepository(pool, cfxClient, logger).WithPresence(dashboard.NewPresenceClient(&http.Client{Timeout: 3 * time.Second}, os.Getenv("BOT_PRESENCE_URL"))), attendancehistory.NewReportRepository(pool, location), logger, settingsRepository, crafting.NewRepository(pool), money.NewRepository(pool), webhook)
 	server := &http.Server{
 		Addr:              config.Address,
 		Handler:           handler,

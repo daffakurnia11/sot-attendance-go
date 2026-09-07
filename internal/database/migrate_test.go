@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -44,6 +45,8 @@ func TestMigrateAppliesTwiceOnAFreshDatabase(t *testing.T) {
 		t.Fatalf("ping test database: %v", err)
 	}
 
+	lockTestSchema(t, databaseURL)
+
 	// Start from nothing, so the run reflects a brand new deployment rather
 	// than whatever a previous test left behind.
 	if _, err := pool.Exec(ctx, "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"); err != nil {
@@ -73,4 +76,31 @@ func requireDisposable(t *testing.T, databaseURL string) {
 	if !strings.Contains(strings.ToLower(name), "test") {
 		t.Fatalf("refusing to drop the schema of database %q: TEST_DATABASE_URL must name a database containing \"test\"", name)
 	}
+}
+
+// lockTestSchema serialises the database-backed tests across packages. Each
+// resets the schema, `go test ./...` runs packages in parallel, and without
+// this they drop each other's tables mid-run.
+//
+// The lock is held on its own connection rather than one borrowed from the
+// pool: an advisory lock lives for the life of a session, so the session has to
+// stay open, and a pool cannot close while a connection is checked out - the
+// first version of this deadlocked against pool.Close.
+func lockTestSchema(t *testing.T, databaseURL string) {
+	t.Helper()
+	ctx := context.Background()
+	connection, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect for test schema lock: %v", err)
+	}
+	if _, err := connection.Exec(ctx, "SELECT pg_advisory_lock(hashtext('sot-test-schema'))"); err != nil {
+		connection.Close(ctx)
+		t.Fatalf("take test schema lock: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := connection.Exec(ctx, "SELECT pg_advisory_unlock(hashtext('sot-test-schema'))"); err != nil {
+			t.Logf("release test schema lock: %v", err)
+		}
+		connection.Close(ctx)
+	})
 }

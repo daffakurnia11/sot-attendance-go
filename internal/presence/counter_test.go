@@ -4,7 +4,6 @@ import (
 	"io"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -39,7 +38,7 @@ func TestCountMatchingMembers(t *testing.T) {
 
 func TestCounterCountStartsUnavailable(t *testing.T) {
 	t.Parallel()
-	counter := NewCounter("guild", "CR Roleplay", "channel", "", time.Second, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	counter := NewCounter("guild", "CR Roleplay", "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if count, available := counter.Count(); available || count != -1 {
 		t.Fatalf("Count() = %d, %v; want -1, false", count, available)
 	}

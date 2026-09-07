@@ -23,9 +23,7 @@ type Config struct {
 	CFXPollInterval      time.Duration
 	StatusPollInterval   time.Duration
 	CommandPrefix        string
-	PlayerLogChannelID   string
 	ServerLogChannelID   string
-	BlacklistedUserIDs   []string
 	PlayerChatChannelID  string
 	PlayerRecapChannelID string
 	OfficeMoneyChannelID string
@@ -40,8 +38,6 @@ func Load() (Config, error) {
 		os.Getenv("FIVEM_SERVER_NAME"),
 		os.Getenv("DISCORD_POLL_INTERVAL"),
 		os.Getenv("DISCORD_COMMAND_PREFIX"),
-		os.Getenv("DISCORD_PLAYER_LOG_CHANNEL_ID"),
-		os.Getenv("BLACKLISTED_USERS"),
 		os.Getenv("DISCORD_PLAYER_CHAT_CHANNEL_ID"),
 		os.Getenv("DISCORD_PLAYER_RECAP_CHANNEL_ID"),
 		os.Getenv("DATABASE_URL"),
@@ -80,17 +76,15 @@ func withMoneyChannels(config Config, officeChannelID, dirtyChannelID string) (C
 	return config, nil
 }
 
-// withServerLogChannel takes the FiveM server log out of the Discord activity
-// channel. The two carry different feeds - one is presence seen through
-// Discord, the other is what the game server reported - so they must not share
-// a channel.
+// withServerLogChannel validates the channel the FiveM server log posts to.
+//
+// It used to also refuse to share a channel with the Discord activity log. That
+// log is gone - the game server reports the same events over the webhook - so
+// there is no second feed left to collide with.
 func withServerLogChannel(config Config, serverLogChannelID string) (Config, error) {
 	serverLogChannelID = strings.TrimSpace(serverLogChannelID)
 	if err := validateDiscordID(serverLogChannelID); err != nil {
 		return Config{}, fmt.Errorf("DISCORD_SERVER_LOG_CHANNEL_ID: %w", err)
-	}
-	if serverLogChannelID == config.PlayerLogChannelID {
-		return Config{}, errors.New("DISCORD_SERVER_LOG_CHANNEL_ID and DISCORD_PLAYER_LOG_CHANNEL_ID must be different")
 	}
 	config.ServerLogChannelID = serverLogChannelID
 	return config, nil
@@ -136,7 +130,7 @@ func parseMilliseconds(name, value string) (time.Duration, error) {
 	return time.Duration(milliseconds) * time.Millisecond, nil
 }
 
-func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerLogChannelID, blacklistedUsers, playerChatChannelID, playerRecapChannelID, databaseURL, appEnv, discordRoleID, discordAdminIDs string) (Config, error) {
+func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerChatChannelID, playerRecapChannelID, databaseURL, appEnv, discordRoleID, discordAdminIDs string) (Config, error) {
 	appEnv = strings.ToLower(strings.TrimSpace(appEnv))
 	if appEnv != "local" && appEnv != "production" {
 		return Config{}, errors.New("APP_ENV must be local or production")
@@ -192,20 +186,6 @@ func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerL
 		return Config{}, errors.New("DISCORD_COMMAND_PREFIX cannot contain whitespace")
 	}
 
-	playerLogChannelID = strings.TrimSpace(playerLogChannelID)
-	if playerLogChannelID == "" {
-		return Config{}, errors.New("DISCORD_PLAYER_LOG_CHANNEL_ID is required")
-	}
-	for _, char := range playerLogChannelID {
-		if char < '0' || char > '9' {
-			return Config{}, errors.New("DISCORD_PLAYER_LOG_CHANNEL_ID must contain digits only")
-		}
-	}
-
-	blacklistedUserIDs, err := parseDiscordIDs(blacklistedUsers)
-	if err != nil {
-		return Config{}, fmt.Errorf("BLACKLISTED_USERS: %w", err)
-	}
 	discordAdminRoleIDs, err := parseDiscordIDs(discordAdminIDs)
 	if err != nil {
 		return Config{}, fmt.Errorf("DISCORD_ADMIN_IDS: %w", err)
@@ -235,8 +215,6 @@ func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerL
 		ServerName:           serverName,
 		PollInterval:         time.Duration(pollMilliseconds) * time.Millisecond,
 		CommandPrefix:        commandPrefix,
-		PlayerLogChannelID:   playerLogChannelID,
-		BlacklistedUserIDs:   blacklistedUserIDs,
 		PlayerChatChannelID:  playerChatChannelID,
 		PlayerRecapChannelID: playerRecapChannelID,
 		DatabaseURL:          databaseURL,

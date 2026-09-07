@@ -1,6 +1,8 @@
 package presence
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -8,7 +10,6 @@ import (
 	"unicode"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/daffakurniawan/sot-discord-bot/internal/member"
 )
 
 type Counter struct {
@@ -16,23 +17,25 @@ type Counter struct {
 	serverName string
 	roleID     string
 	logger     *slog.Logger
-	playerLog  *playerLogger
 
 	mu        sync.Mutex
 	lastCount int
 }
 
-func NewCounter(guildID, serverName, playerLogChannelID, roleID string, pollInterval time.Duration, blacklistedUserIDs []string, members *member.Repository, logger *slog.Logger) *Counter {
-	disconnectGrace := 2 * pollInterval
-	if disconnectGrace < 15*time.Second {
-		disconnectGrace = 15 * time.Second
-	}
+// NewCounter builds the status counter.
+//
+// It no longer takes a log channel, a member repository or a blacklist: the
+// Discord activity log it fed - embeds to a channel plus a row per transition
+// in activity_logs - is gone. The game server reports the same events over the
+// webhook, and duplicating them from a guess about rich presence bought a
+// second, worse record. What remains reads the gateway cache and writes
+// nothing.
+func NewCounter(guildID, serverName, roleID string, logger *slog.Logger) *Counter {
 	return &Counter{
 		guildID:    guildID,
 		serverName: serverName,
 		roleID:     roleID,
 		logger:     logger,
-		playerLog:  newPlayerLogger(playerLogChannelID, serverName, roleID, disconnectGrace, blacklistedUserIDs, members, logger),
 		lastCount:  -1,
 	}
 }
@@ -48,9 +51,7 @@ func (c *Counter) Refresh(session *discordgo.Session) {
 		return
 	}
 
-	playing := matchingMemberIDs(guild, c.serverName, c.roleID)
-	count := len(playing)
-	c.playerLog.refresh(session, guild, count, time.Now())
+	count := len(matchingMemberIDs(guild, c.serverName, c.roleID))
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -139,4 +140,69 @@ func normalizeActivityText(value string) string {
 		}
 		return -1
 	}, value)
+}
+
+// MemberPresence is one member's live Discord state, as the gateway sees it
+// right now.
+//
+// It is read straight from the gateway cache and never stored. The activity log
+// that used to persist these transitions is gone: the game server reports the
+// same events over the webhook and reports them better, so presence is only
+// worth serving live.
+type MemberPresence struct {
+	DiscordUserID string     `json:"discord_user_id"`
+	Status        string     `json:"status"`
+	Playing       bool       `json:"playing"`
+	StartedAt     *time.Time `json:"started_at,omitempty"`
+}
+
+// Snapshot lists the live Discord presence of every eligible guild member.
+//
+// Members with no presence entry are omitted rather than reported offline: the
+// gateway simply has nothing to say about them, and inventing a status would
+// make an absent cache look like a real observation.
+func (c *Counter) Snapshot(session *discordgo.Session) ([]MemberPresence, error) {
+	guild, err := session.State.Guild(c.guildID)
+	if err != nil {
+		return nil, fmt.Errorf("guild unavailable for presence snapshot: %w", err)
+	}
+	if guild.Unavailable {
+		return nil, errors.New("guild unavailable for presence snapshot")
+	}
+
+	eligible := make(map[string]bool, len(guild.Members))
+	for _, member := range guild.Members {
+		if member != nil && member.User != nil {
+			eligible[member.User.ID] = !member.User.Bot && memberHasRole(member, c.roleID)
+		}
+	}
+
+	presences := make([]MemberPresence, 0, len(guild.Presences))
+	for _, presence := range guild.Presences {
+		if presence == nil || presence.User == nil || presence.User.Bot {
+			continue
+		}
+		isEligible, memberKnown := eligible[presence.User.ID]
+		if (c.roleID != "" && !isEligible) || (c.roleID == "" && memberKnown && !isEligible) {
+			continue
+		}
+
+		entry := MemberPresence{
+			DiscordUserID: presence.User.ID,
+			Status:        string(presence.Status),
+		}
+		// Offline and invisible are indistinguishable to a bot, and neither can
+		// be playing whatever the activity list says.
+		if presence.Status != discordgo.StatusOffline && presence.Status != discordgo.StatusInvisible {
+			if activity := MatchingActivity(presence.Activities, c.serverName); activity != nil {
+				entry.Playing = true
+				if activity.Timestamps.StartTimestamp != 0 {
+					startedAt := time.UnixMilli(activity.Timestamps.StartTimestamp).UTC()
+					entry.StartedAt = &startedAt
+				}
+			}
+		}
+		presences = append(presences, entry)
+	}
+	return presences, nil
 }

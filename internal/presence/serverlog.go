@@ -175,3 +175,17 @@ func codeBlockSafe(value string) string {
 	value = strings.ReplaceAll(value, "`", "'")
 	return strings.Join(strings.Fields(value), " ")
 }
+
+// elapsedPlaytime renders how long a visit lasted for the footer.
+func elapsedPlaytime(startedAt, endedAt time.Time) string {
+	if startedAt.IsZero() || endedAt.Before(startedAt) {
+		return "Unavailable"
+	}
+	duration := endedAt.Sub(startedAt).Truncate(time.Minute)
+	hours := int(duration / time.Hour)
+	minutes := int(duration%time.Hour) / int(time.Minute)
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+	return fmt.Sprintf("%dm", minutes)
+}

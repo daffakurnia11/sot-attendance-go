@@ -16,14 +16,6 @@ type Player struct {
 	DisplayName   string
 }
 
-type PlayerLog struct {
-	Player     Player
-	Status     string
-	StartedAt  *time.Time
-	OccurredAt time.Time
-	Playtime   *time.Duration
-}
-
 type PlaytimeRecap struct {
 	MemberID      int64
 	DiscordUserID string
@@ -67,37 +59,124 @@ type executor interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
+// visitMaxAge bounds how long a visit with no disconnected event is credited
+// for. It mirrors the bound session resolution uses in internal/serverlog: no
+// legitimate visit outlives the scheduled server restarts, so a visit whose
+// disconnect never arrived is credited to its last observed event plus this,
+// not to the end of time.
+const visitMaxAge = 12 * time.Hour
+
+// PlaytimeRecap totals each member's playtime inside an attendance window.
+//
+// Both feeds are read. server_logs - what the CR Roleplay server itself
+// reported over the webhook - is the truth wherever it exists, and Discord rich
+// presence is the fallback where it does not. Presence was only ever a guess at
+// whether someone was in the game, and it both under- and over-reports: it lost
+// one member's whole visit and cut another's short by an hour.
+//
+// The two are split at a per-member handover, that member's first webhook event
+// ever. Presence accounts for the part of the window before it, the webhook for
+// the part after. A member the game server has never reported has no handover
+// and is measured entirely from presence, which is the fallback the rule exists
+// for. Nothing is counted twice and nothing is dropped, which a plain
+// preference between the sources could not manage.
+//
+// Playtime is the union of a member's visits, never their sum. Two visits can
+// overlap - a member holding two characters, or a legacy session merged before
+// session resolution was bounded - and a player is only ever in one place, so
+// summing them credited one member 600 minutes inside a 300 minute window.
+//
+// A visit starts at its connected event, never at the connecting attempt, since
+// a loading screen is not playtime. It ends at its disconnected event or, absent
+// one, no later than visitMaxAge past its last event; an abandoned visit
+// therefore ages out instead of counting forever. Both ends are clamped to the
+// window.
 func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attendanceEnd time.Time) ([]PlaytimeRecap, error) {
 	const query = `
-		WITH closed_sessions AS (
-			SELECT member_id,
-				SUM(EXTRACT(EPOCH FROM (LEAST(occurred_at, $2) - GREATEST(started_at, $1)))) AS seconds
-			FROM activity_logs
-			WHERE status = 'disconnected'
-				AND started_at IS NOT NULL
-				AND occurred_at > $1
-				AND occurred_at <= $2
-				AND started_at < $2
-			GROUP BY member_id
-		), latest_logs AS (
-			SELECT DISTINCT ON (member_id) member_id, status, started_at
-			FROM activity_logs
-			WHERE occurred_at <= $2
-			ORDER BY member_id, occurred_at DESC, id DESC
-		), open_sessions AS (
-			SELECT member_id,
-				EXTRACT(EPOCH FROM ($2 - GREATEST(started_at, $1))) AS seconds
-			FROM latest_logs
-			WHERE status = 'connected'
-				AND started_at IS NOT NULL
-				AND started_at < $2
+		WITH handovers AS (
+			SELECT sm.discord_user_id, MIN(sl.occurred_at) AS at
+			FROM server_logs sl
+			JOIN server_members sm ON sm.id = sl.server_member_id
+			GROUP BY sm.discord_user_id
+		), bounds AS (
+			-- Where presence stops counting for this member. With no handover
+			-- it is the window end, so presence covers the whole window.
+			SELECT m.id AS member_id, m.discord_user_id,
+				LEAST($2::timestamptz, COALESCE(h.at, $2::timestamptz)) AS presence_end
+			FROM members m
+			LEFT JOIN handovers h ON h.discord_user_id = m.discord_user_id
+		), visits AS (
+			SELECT sm.discord_user_id,
+				MIN(sl.occurred_at) FILTER (WHERE sl.status = 'connected') AS connected_at,
+				MAX(sl.occurred_at) FILTER (WHERE sl.status = 'disconnected') AS disconnected_at,
+				MAX(sl.occurred_at) AS last_event_at
+			FROM server_logs sl
+			JOIN server_members sm ON sm.id = sl.server_member_id
+			GROUP BY sl.session_id, sm.discord_user_id
+		), bounded AS (
+			SELECT discord_user_id,
+				GREATEST(connected_at, $1) AS starts,
+				LEAST(COALESCE(disconnected_at, last_event_at + make_interval(secs => $3::double precision)), $2) AS ends
+			FROM visits
+			WHERE connected_at IS NOT NULL
+				AND connected_at < $2
+				AND COALESCE(disconnected_at, last_event_at + make_interval(secs => $3::double precision)) > $1
+		), ordered AS (
+			SELECT discord_user_id, starts, ends,
+				MAX(ends) OVER (
+					PARTITION BY discord_user_id ORDER BY starts, ends
+					ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+				) AS prior_end
+			FROM bounded
+			WHERE ends > starts
+		), islands AS (
+			SELECT discord_user_id, starts, ends,
+				SUM(CASE WHEN prior_end IS NULL OR starts > prior_end THEN 1 ELSE 0 END) OVER (
+					PARTITION BY discord_user_id ORDER BY starts, ends
+					ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+				) AS island
+			FROM ordered
+		), merged AS (
+			SELECT discord_user_id, MIN(starts) AS starts, MAX(ends) AS ends
+			FROM islands
+			GROUP BY discord_user_id, island
+		), server_seconds AS (
+			SELECT b.member_id, SUM(EXTRACT(EPOCH FROM (merged.ends - merged.starts))) AS seconds
+			FROM merged
+			JOIN bounds b ON b.discord_user_id = merged.discord_user_id
+			GROUP BY b.member_id
+		), presence_closed AS (
+			SELECT b.member_id,
+				SUM(EXTRACT(EPOCH FROM (LEAST(a.occurred_at, b.presence_end) - GREATEST(a.started_at, $1)))) AS seconds
+			FROM activity_logs a
+			JOIN bounds b ON b.member_id = a.member_id
+			WHERE a.status = 'disconnected'
+				AND a.started_at IS NOT NULL
+				AND LEAST(a.occurred_at, b.presence_end) > GREATEST(a.started_at, $1)
+			GROUP BY b.member_id
+		), presence_latest AS (
+			SELECT DISTINCT ON (a.member_id) a.member_id, a.status, a.started_at
+			FROM activity_logs a
+			JOIN bounds b ON b.member_id = a.member_id
+			WHERE a.occurred_at <= b.presence_end
+			ORDER BY a.member_id, a.occurred_at DESC, a.id DESC
+		), presence_open AS (
+			SELECT l.member_id,
+				EXTRACT(EPOCH FROM (b.presence_end - GREATEST(l.started_at, $1))) AS seconds
+			FROM presence_latest l
+			JOIN bounds b ON b.member_id = l.member_id
+			WHERE l.status = 'connected'
+				AND l.started_at IS NOT NULL
+				AND b.presence_end > GREATEST(l.started_at, $1)
 		), totals AS (
 			SELECT member_id, SUM(seconds) AS seconds
 			FROM (
-				SELECT * FROM closed_sessions
+				SELECT * FROM server_seconds
 				UNION ALL
-				SELECT * FROM open_sessions
-			) sessions
+				SELECT * FROM presence_closed
+				UNION ALL
+				SELECT * FROM presence_open
+			) sources
 			GROUP BY member_id
 		)
 		SELECT m.id,
@@ -110,7 +189,7 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 		WHERE t.seconds > 0
 		ORDER BY t.seconds DESC, m.display_name ASC`
 
-	rows, err := r.database.Query(ctx, query, attendanceStart, attendanceEnd)
+	rows, err := r.database.Query(ctx, query, attendanceStart, attendanceEnd, visitMaxAge.Seconds())
 	if err != nil {
 		return nil, fmt.Errorf("query playtime recap: %w", err)
 	}
@@ -182,51 +261,6 @@ func (r *Repository) SyncAdmins(ctx context.Context, adminUserIDs []string) erro
 	return nil
 }
 
-// CloseOrphanedSessions records a disconnect for every member whose most
-// recent log still reads connecting or connected but who is not in
-// activeUserIDs.
-//
-// The gateway takes a presence baseline on startup without writing logs, so it
-// cannot observe a disconnect that happened while the process was down. Without
-// this, that member's latest row reads connected indefinitely and the dashboard
-// keeps counting them as online.
-//
-// occurredAt stamps the reconciliation, not the real disconnect, which Discord
-// does not report. Playtime is measured against it, so a session left open
-// across a long outage is credited generously; across a deploy it is a matter
-// of seconds.
-func (r *Repository) CloseOrphanedSessions(ctx context.Context, activeUserIDs []string, occurredAt time.Time) (int64, error) {
-	const query = `
-		WITH latest AS (
-			SELECT DISTINCT ON (member_id) member_id, status, started_at
-			FROM activity_logs
-			ORDER BY member_id, occurred_at DESC, id DESC
-		), orphaned AS (
-			SELECT latest.member_id, latest.started_at
-			FROM latest
-			JOIN members ON members.id = latest.member_id
-			WHERE latest.status IN ('connecting', 'connected')
-				AND NOT (members.discord_user_id = ANY($1::text[]))
-		)
-		INSERT INTO activity_logs (member_id, status, started_at, occurred_at, playtime)
-		SELECT member_id, 'disconnected', started_at, $2,
-			CASE
-				WHEN started_at IS NOT NULL AND $2 > started_at THEN $2 - started_at
-				ELSE NULL
-			END
-		FROM orphaned`
-	tag, err := r.database.Exec(ctx, query, activeUserIDs, occurredAt)
-	if err != nil {
-		return 0, fmt.Errorf("close orphaned player sessions: %w", err)
-	}
-	return tag.RowsAffected(), nil
-}
-
-// UpsertGuildMembers records every guild member the gateway sees at startup.
-//
-// It no longer takes an observation time. That existed only to seed
-// first_connected_at, which nothing read and 000028 dropped; created_at already
-// records when a row appeared.
 func (r *Repository) UpsertGuildMembers(ctx context.Context, players []Player) error {
 	if len(players) == 0 {
 		return nil
@@ -279,42 +313,4 @@ func (r *Repository) FindByDiscordUserID(ctx context.Context, discordUserID stri
 		return Member{}, fmt.Errorf("find member by Discord user ID: %w", err)
 	}
 	return found, nil
-}
-
-func (r *Repository) RecordLog(ctx context.Context, log PlayerLog) error {
-	const query = `
-		WITH saved_member AS (
-			INSERT INTO members (
-			discord_user_id, username, display_name
-			) VALUES ($1, $2, $3)
-			ON CONFLICT (discord_user_id) DO UPDATE SET
-				username = EXCLUDED.username,
-				display_name = EXCLUDED.display_name,
-				updated_at = NOW()
-			RETURNING id
-		)
-		INSERT INTO activity_logs (
-			member_id, status, started_at, occurred_at, playtime
-		)
-		SELECT id, $4, $5, $6, $7::bigint * INTERVAL '1 second'
-		FROM saved_member`
-
-	var playtimeSeconds *int64
-	if log.Playtime != nil {
-		seconds := int64(*log.Playtime / time.Second)
-		playtimeSeconds = &seconds
-	}
-
-	if _, err := r.database.Exec(ctx, query,
-		log.Player.DiscordUserID,
-		log.Player.Username,
-		log.Player.DisplayName,
-		log.Status,
-		log.StartedAt,
-		log.OccurredAt,
-		playtimeSeconds,
-	); err != nil {
-		return fmt.Errorf("record player log: %w", err)
-	}
-	return nil
 }

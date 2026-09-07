@@ -60,40 +60,6 @@ func (e *recordingExecutor) Query(_ context.Context, query string, args ...any) 
 	return nil, e.err
 }
 
-func TestRecordLogUpsertsMemberAndInsertsLog(t *testing.T) {
-	database := &recordingExecutor{}
-	repository := NewRepository(database)
-	connectedAt := time.Date(2026, time.August, 13, 20, 0, 0, 0, time.UTC)
-	playtime := 5*time.Minute + 30*time.Second
-
-	err := repository.RecordLog(context.Background(), PlayerLog{
-		Player: Player{DiscordUserID: "user", Username: "delta", DisplayName: "DeltaKilo"},
-		Status: "disconnected", StartedAt: &connectedAt, OccurredAt: connectedAt.Add(playtime), Playtime: &playtime,
-	})
-	if err != nil {
-		t.Fatalf("RecordLog() error = %v", err)
-	}
-	if !strings.Contains(database.query, "ON CONFLICT (discord_user_id) DO UPDATE") || !strings.Contains(database.query, "INSERT INTO activity_logs") {
-		t.Fatalf("RecordLog() query does not atomically save member and log: %s", database.query)
-	}
-	if len(database.args) != 7 || database.args[0] != "user" || database.args[3] != "disconnected" {
-		t.Fatalf("RecordLog() args = %#v", database.args)
-	}
-	seconds, ok := database.args[6].(*int64)
-	if !ok || seconds == nil || *seconds != 330 {
-		t.Fatalf("RecordLog() playtime seconds = %#v", database.args[6])
-	}
-}
-
-func TestRecordLogWrapsDatabaseError(t *testing.T) {
-	repository := NewRepository(&recordingExecutor{err: errors.New("database unavailable")})
-
-	err := repository.RecordLog(context.Background(), PlayerLog{})
-	if err == nil || !strings.Contains(err.Error(), "record player log") {
-		t.Fatalf("RecordLog() error = %v", err)
-	}
-}
-
 func TestSyncAdminsUpdatesAndClearsRolesAtomically(t *testing.T) {
 	database := &recordingExecutor{}
 	err := NewRepository(database).SyncAdmins(context.Background(), []string{"100", "200"})

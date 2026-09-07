@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -57,7 +58,6 @@ type Bot struct {
 	memberRoleID         string
 	officeMoneyChannelID string
 	dirtyMoneyChannelID  string
-	playerLogChannelID   string
 	serverLogChannelID   string
 	serverLogs           *serverlog.Repository
 	serverLogCursor      int64
@@ -138,7 +138,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 
 	bot := &Bot{
 		session:              session,
-		status:               presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.PlayerLogChannelID, cfg.DiscordRoleID, cfg.PollInterval, cfg.BlacklistedUserIDs, members, logger),
+		status:               presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.DiscordRoleID, logger),
 		router:               router.NewRouter(cfg.CommandPrefix),
 		logger:               logger,
 		pollInterval:         cfg.PollInterval,
@@ -156,7 +156,6 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		guildID:              cfg.GuildID,
 		adminRoleIDs:         cfg.DiscordAdminRoleIDs,
 		memberRoleID:         cfg.DiscordMemberRoleID,
-		playerLogChannelID:   cfg.PlayerLogChannelID,
 		serverLogChannelID:   cfg.ServerLogChannelID,
 		serverLogs:           serverlog.NewRepository(pool),
 		officeMoneyChannelID: cfg.OfficeMoneyChannelID,
@@ -186,6 +185,39 @@ func (b *Bot) HealthHandler() http.Handler {
 			return
 		}
 		_, _ = response.Write([]byte(`{"status":"ok"}` + "\n"))
+	})
+
+	// Live Discord presence for the API, which has no gateway of its own.
+	//
+	// The API pulls this per dashboard request rather than the bot pushing
+	// snapshots: presence is only ever wanted as of now, so a pull needs no
+	// cache, no staleness rule and no shared secret. The port this serves on is
+	// not published outside the compose network.
+	//
+	// This replaced writing every transition to activity_logs. The game server
+	// reports the same events over the webhook and reports them better, so
+	// presence is worth serving live and not worth storing.
+	mux.HandleFunc("GET /presence", func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "application/json; charset=utf-8")
+		response.Header().Set("Cache-Control", "no-store")
+		if !b.ready.Load() {
+			response.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = response.Write([]byte(`{"error":"gateway_not_ready"}` + "\n"))
+			return
+		}
+		presences, err := b.status.Snapshot(b.session)
+		if err != nil {
+			b.logger.Warn("presence snapshot unavailable", "error", err)
+			response.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = response.Write([]byte(`{"error":"presence_unavailable"}` + "\n"))
+			return
+		}
+		if err := json.NewEncoder(response).Encode(map[string]any{
+			"observed_at": time.Now().UTC(),
+			"members":     presences,
+		}); err != nil {
+			b.logger.Error("encode presence snapshot", "error", err)
+		}
 	})
 	return mux
 }
