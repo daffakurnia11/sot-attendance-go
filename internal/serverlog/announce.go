@@ -18,9 +18,12 @@ type Announcement struct {
 	Username   string
 	Status     string
 	OccurredAt time.Time
-	// StartedAt is the first event time of the visit, so a disconnect can show
-	// how long the player was on. Equal to OccurredAt for the opening event.
-	StartedAt time.Time
+	// ServerID is the slot the game server assigned, and Reason the disconnect
+	// reason. Both live in payload only, and both are absent on events that
+	// carry no such value, so both are empty strings rather than pointers: the
+	// renderer omits what is empty.
+	ServerID string
+	Reason   string
 }
 
 const latestEventID = `SELECT COALESCE(MAX(id), 0) FROM server_logs`
@@ -31,22 +34,13 @@ const announcementsAfter = `
 	       COALESCE(sl.payload->'player'->>'username', sm.username),
 	       sl.status,
 	       sl.occurred_at,
-	       (SELECT MIN(s2.occurred_at) FROM server_logs s2 WHERE s2.session_id = sl.session_id)
+	       sl.payload->'player'->>'server_id',
+	       sl.payload->'event'->>'reason'
 	FROM server_logs sl
 	JOIN server_members sm ON sm.id = sl.server_member_id
 	WHERE sl.id > $1
 	ORDER BY sl.id
 	LIMIT $2`
-
-// connectedPlayers counts players whose latest event was connected.
-//
-// It replaced a count of visits with no disconnected event, which overcounted:
-// a visit whose disconnected event never arrived stayed open forever and kept
-// being counted. This is deliberately not the Discord presence count - the two
-// disagreeing is the signal this feature exists to surface, so each log source
-// shows its own tally.
-const connectedPlayers = `
-	SELECT count(*) FROM server_members WHERE last_status = 'connected'`
 
 // LatestEventID is the cursor seed. Starting from the newest row means a first
 // run announces nothing rather than replaying the whole table into the channel.
@@ -69,9 +63,19 @@ func (r *Repository) AnnouncementsAfter(ctx context.Context, afterID int64, limi
 
 	var announcements []Announcement
 	for rows.Next() {
-		var a Announcement
-		if err := rows.Scan(&a.ID, &a.PlayerName, &a.Username, &a.Status, &a.OccurredAt, &a.StartedAt); err != nil {
+		var (
+			a        Announcement
+			serverID *string
+			reason   *string
+		)
+		if err := rows.Scan(&a.ID, &a.PlayerName, &a.Username, &a.Status, &a.OccurredAt, &serverID, &reason); err != nil {
 			return nil, fmt.Errorf("scan server log announcement: %w", err)
+		}
+		if serverID != nil {
+			a.ServerID = *serverID
+		}
+		if reason != nil {
+			a.Reason = *reason
 		}
 		announcements = append(announcements, a)
 	}
@@ -79,14 +83,4 @@ func (r *Repository) AnnouncementsAfter(ctx context.Context, afterID int64, limi
 		return nil, fmt.Errorf("read server log announcements: %w", err)
 	}
 	return announcements, nil
-}
-
-// ConnectedPlayerCount reports how many players the FiveM server currently has
-// on, meaning those whose latest event was connected.
-func (r *Repository) ConnectedPlayerCount(ctx context.Context) (int, error) {
-	var count int
-	if err := r.pool.QueryRow(ctx, connectedPlayers).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count connected server players: %w", err)
-	}
-	return count, nil
 }

@@ -72,9 +72,10 @@ func Validate(payload []byte, event Event) (ValidEvent, error) {
 		return ValidEvent{}, err
 	}
 
-	// player.ping, player.server_id and event.reason are accepted on the wire so
-	// the sender need not strip them, but nothing stores them, so nothing
-	// validates them either.
+	// player.ping, player.server_id and event.reason get no column of their own
+	// and so no validation here. server_id and event.reason are still read back
+	// out of payload for the Discord server log line, where both are treated as
+	// untrusted text.
 
 	return ValidEvent{
 		Payload:    payload,

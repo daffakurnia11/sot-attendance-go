@@ -274,21 +274,16 @@ func (b *Bot) announceServerLogs(ctx context.Context) {
 	if len(announcements) == 0 {
 		return
 	}
-	playerCount, err := b.serverLogs.ConnectedPlayerCount(requestContext)
-	if err != nil {
-		b.logger.Error("count connected server players", "error", err)
-		return
-	}
-
 	for _, announcement := range announcements {
 		event := presence.ServerLogEvent{
 			PlayerName: announcement.PlayerName,
 			Username:   announcement.Username,
 			Status:     announcement.Status,
 			OccurredAt: announcement.OccurredAt,
-			StartedAt:  announcement.StartedAt,
+			ServerID:   announcement.ServerID,
+			Reason:     announcement.Reason,
 		}
-		if _, err := b.session.ChannelMessageSendEmbed(b.serverLogChannelID, presence.ServerLogEmbed(event, playerCount)); err != nil {
+		if _, err := b.session.ChannelMessageSendEmbed(b.serverLogChannelID, presence.ServerLogEmbed(event)); err != nil {
 			// Stop at the first failure and leave the cursor behind it, so the
 			// next tick retries this event instead of skipping past it.
 			b.logger.Error("send server log", "channel_id", b.serverLogChannelID, "event_id", announcement.ID, "error", err)
@@ -296,7 +291,7 @@ func (b *Bot) announceServerLogs(ctx context.Context) {
 		}
 		b.serverLogCursor = announcement.ID
 	}
-	b.logger.Info("server logs announced", "count", len(announcements), "cursor", b.serverLogCursor, "players", playerCount)
+	b.logger.Info("server logs announced", "count", len(announcements), "cursor", b.serverLogCursor)
 }
 
 func (b *Bot) runCFXPoller(ctx context.Context) {
