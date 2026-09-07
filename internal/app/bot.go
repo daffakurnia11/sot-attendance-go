@@ -37,23 +37,29 @@ type cfxPlayerReader interface {
 }
 
 type Bot struct {
-	session              *discordgo.Session
-	status               *presence.Counter
-	router               *router.Router
-	logger               *slog.Logger
-	pollInterval         time.Duration
-	cfxPollInterval      time.Duration
-	statusPollInterval   time.Duration
-	attendance           *attendancescheduler.Scheduler
-	cfx                  cfxPlayerReader
-	members              *member.Repository
-	settings             *dbsettings.Repository
-	crafting             craftingdomain.Store
-	money                *moneydomain.Repository
-	craftDrafts          *craftDraftStore
-	location             *time.Location
-	database             *pgxpool.Pool
-	guildID              string
+	session            *discordgo.Session
+	status             *presence.Counter
+	router             *router.Router
+	logger             *slog.Logger
+	pollInterval       time.Duration
+	cfxPollInterval    time.Duration
+	statusPollInterval time.Duration
+	attendance         *attendancescheduler.Scheduler
+	cfx                cfxPlayerReader
+	members            *member.Repository
+	settings           *dbsettings.Repository
+	crafting           craftingdomain.Store
+	money              *moneydomain.Repository
+	craftDrafts        *craftDraftStore
+	location           *time.Location
+	database           *pgxpool.Pool
+	guildID            string
+	// announces is true only in production. A local run holds the same token
+	// and usually the same database as the deployed bot, so anything it does is
+	// done twice: every announcement posted again, the roster sync fighting the
+	// deployed process over the same rows, the bot status written by both. A
+	// local bot reads the gateway, answers GET /presence, and acts on nothing.
+	announces            bool
 	adminRoleIDs         []string
 	memberRoleID         string
 	officeMoneyChannelID string
@@ -154,6 +160,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		location:             location,
 		database:             pool,
 		guildID:              cfg.GuildID,
+		announces:            cfg.Announces(),
 		adminRoleIDs:         cfg.DiscordAdminRoleIDs,
 		memberRoleID:         cfg.DiscordMemberRoleID,
 		serverLogChannelID:   cfg.ServerLogChannelID,
@@ -226,10 +233,12 @@ func (b *Bot) Run(ctx context.Context) error {
 	if err := b.session.Open(); err != nil {
 		return fmt.Errorf("open Discord gateway: %w", err)
 	}
-	b.logger.Info("bot connected")
-	go b.attendance.Run(ctx, b.session)
+	b.logger.Info("bot connected", "announces", b.announces)
 	go b.runCFXPoller(ctx)
-	go b.runServerLogPoller(ctx)
+	if b.announces {
+		go b.attendance.Run(ctx, b.session)
+		go b.runServerLogPoller(ctx)
+	}
 
 	discordTicker := time.NewTicker(b.pollInterval)
 	defer discordTicker.Stop()
@@ -362,6 +371,9 @@ func (b *Bot) refreshCFX(ctx context.Context) {
 }
 
 func (b *Bot) rotateStatus() {
+	if !b.announces {
+		return
+	}
 	discordCount, discordAvailable := b.status.Count()
 	cfxCount := b.cfxCount.Load()
 	status, nextCFX, ok := rotatingStatus(shortServerName(b.status.ServerName()), discordCount, discordAvailable, int(cfxCount), cfxCount >= 0, b.showCFXStatus)
@@ -399,7 +411,14 @@ func shortServerName(serverName string) string {
 
 func (b *Bot) onReady(session *discordgo.Session, event *discordgo.Ready) {
 	b.ready.Store(true)
-	b.logger.Info("Discord gateway ready", "bot_user_id", event.User.ID, "bot_username", event.User.Username)
+	b.logger.Info("Discord gateway ready", "bot_user_id", event.User.ID, "bot_username", event.User.Username, "announces", b.announces)
+	if !b.announces {
+		// Registering commands, upserting the roster and writing the bot status
+		// are all things the deployed bot is already doing with this same
+		// token. Doing them again from a laptop duplicates or fights them.
+		b.logger.Warn("APP_ENV is not production: this bot reads and serves presence only")
+		return
+	}
 	go b.registerSlashCommands(session, event.User.ID)
 	go b.syncGuildMembers(session)
 	b.status.Refresh(session)
@@ -437,7 +456,15 @@ func (b *Bot) syncGuildMembers(session *discordgo.Session) {
 		return
 	}
 	adminUserIDs := matchingRoleMemberIDs(members, b.adminRoleIDs)
-	if err := b.members.SyncAdmins(ctx, adminUserIDs); err != nil {
+	// An empty list is never an instruction to demote everyone. It means the
+	// admin roles are misconfigured, the member fetch came back thin, or this
+	// process is watching a guild that does not hold those roles - and the
+	// sync would otherwise clear is_admin for every member in the database,
+	// locking the whole roster out of the admin-only pages.
+	if len(adminUserIDs) == 0 {
+		b.logger.Warn("admin sync skipped: no member holds a configured admin role",
+			"guild_id", b.guildID, "admin_role_ids", len(b.adminRoleIDs))
+	} else if err := b.members.SyncAdmins(ctx, adminUserIDs); err != nil {
 		b.logger.Error("sync member admins", "guild_id", b.guildID, "error", err)
 		return
 	}
@@ -486,13 +513,19 @@ func matchingRoleMembers(members []*discordgo.Member, roleIDs []string) []*disco
 }
 
 func (b *Bot) onGuildCreate(session *discordgo.Session, event *discordgo.GuildCreate) {
-	if event.ID == b.status.GuildID() {
+	if b.announces && event.ID == b.status.GuildID() {
 		b.status.Refresh(session)
 	}
 }
 
 func (b *Bot) onMessageCreate(session *discordgo.Session, message *discordgo.MessageCreate) {
 	if message.Author == nil || message.Author.Bot || message.GuildID == "" {
+		return
+	}
+	// Slash commands were already scoped to the watched guild; prefix commands
+	// were not, so both the deployed bot and a local one answered the same
+	// message. A quiet bot answers nothing at all.
+	if !b.announces || message.GuildID != b.guildID {
 		return
 	}
 	commandName := b.router.Match(message.Content)

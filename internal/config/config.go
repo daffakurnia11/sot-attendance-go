@@ -31,6 +31,15 @@ type Config struct {
 	DatabaseURL          string
 }
 
+// Announces reports whether this process may act on Discord and on shared
+// rows: post announcements, sync the roster, set the bot status.
+//
+// Only production may. A local run points at the same token and, usually, the
+// same database as the deployed bot, so anything it does is done twice - every
+// announcement posted again, and the roster sync fighting the deployed process
+// over the same rows. A local bot therefore reads and serves and nothing else.
+func (c Config) Announces() bool { return c.AppEnv == "production" }
+
 func Load() (Config, error) {
 	config, err := FromValues(
 		os.Getenv("DISCORD_BOT_TOKEN"),

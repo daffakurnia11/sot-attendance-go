@@ -162,3 +162,14 @@ func TestWithServerLogChannel(t *testing.T) {
 		}
 	}
 }
+
+// A local run shares the production token, so it must not act on Discord.
+func TestAnnouncesOnlyInProduction(t *testing.T) {
+	t.Parallel()
+	if !(Config{AppEnv: "production"}).Announces() {
+		t.Error("production must announce")
+	}
+	if (Config{AppEnv: "local"}).Announces() {
+		t.Error("local must stay quiet")
+	}
+}
