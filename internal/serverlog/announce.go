@@ -24,6 +24,10 @@ type Announcement struct {
 	// renderer omits what is empty.
 	ServerID string
 	Reason   string
+	// StartedAt is the first event time of the visit, so a disconnect can
+	// report how long the player was on. Equal to OccurredAt for the opening
+	// event of a visit.
+	StartedAt time.Time
 }
 
 const latestEventID = `SELECT COALESCE(MAX(id), 0) FROM server_logs`
@@ -35,7 +39,8 @@ const announcementsAfter = `
 	       sl.status,
 	       sl.occurred_at,
 	       sl.payload->'player'->>'server_id',
-	       sl.payload->'event'->>'reason'
+	       sl.payload->'event'->>'reason',
+	       (SELECT MIN(s2.occurred_at) FROM server_logs s2 WHERE s2.session_id = sl.session_id)
 	FROM server_logs sl
 	JOIN server_members sm ON sm.id = sl.server_member_id
 	WHERE sl.id > $1
@@ -68,7 +73,7 @@ func (r *Repository) AnnouncementsAfter(ctx context.Context, afterID int64, limi
 			serverID *string
 			reason   *string
 		)
-		if err := rows.Scan(&a.ID, &a.PlayerName, &a.Username, &a.Status, &a.OccurredAt, &serverID, &reason); err != nil {
+		if err := rows.Scan(&a.ID, &a.PlayerName, &a.Username, &a.Status, &a.OccurredAt, &serverID, &reason, &a.StartedAt); err != nil {
 			return nil, fmt.Errorf("scan server log announcement: %w", err)
 		}
 		if serverID != nil {

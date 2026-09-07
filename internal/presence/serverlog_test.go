@@ -18,10 +18,10 @@ func TestServerLogEmbedShape(t *testing.T) {
 		ServerID:   "479",
 	})
 
-	if embed.Title != "Kenji Nakamura" {
-		t.Errorf("Title = %q", embed.Title)
+	if embed.Title != "" {
+		t.Errorf("Title = %q, want empty", embed.Title)
 	}
-	if embed.Footer == nil || embed.Footer.Text != "03 September 2026 at 09:00" {
+	if embed.Footer == nil || embed.Footer.Text != "Kenji Nakamura • 03 September 2026 at 09:00" {
 		t.Errorf("Footer = %#v", embed.Footer)
 	}
 	// The embed timestamp is what Discord renders as "Today at 08.03"; the
@@ -63,7 +63,7 @@ func TestServerLogEmbedPerStatus(t *testing.T) {
 		{
 			name:      "disconnected",
 			event:     ServerLogEvent{Username: "SOT - Ayvix", Status: "disconnected", ServerID: "479", Reason: "Exiting"},
-			wantLine:  "[479] SOT - Ayvix is exiting. Reason: Exiting",
+			wantLine:  "[479] SOT - Ayvix is exiting.\nReason: Exiting",
 			wantColor: colorDisconnected,
 		},
 		{
@@ -116,16 +116,60 @@ func TestServerLogEmbedFlattensHostileReason(t *testing.T) {
 		OccurredAt: time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC),
 	})
 
-	line := strings.Split(e.Description, "\n")[1]
-	if strings.Contains(line, "`") {
-		t.Errorf("line kept a backtick: %q", line)
+	// The reason keeps its own line and stays one line, however many the
+	// sender used.
+	lines := strings.Split(e.Description, "\n")
+	if strings.Contains(lines[2], "`") {
+		t.Errorf("reason kept a backtick: %q", lines[2])
 	}
-	want := "[479] SOT - Ayvix is exiting. Reason: Server->client connection timed out. Command list: '''QBCore:Player:SetPlayerData (2862 B)"
-	if line != want {
-		t.Errorf("line = %q, want %q", line, want)
+	want := "Reason: Server->client connection timed out. Command list: '''QBCore:Player:SetPlayerData (2862 B)"
+	if lines[2] != want {
+		t.Errorf("reason = %q, want %q", lines[2], want)
 	}
 	// Exactly one opening fence and one closing fence.
 	if got := strings.Count(e.Description, "```"); got != 2 {
 		t.Errorf("fences = %d, want 2", got)
+	}
+}
+
+// The footer reports how long the visit lasted, and only on a disconnect: the
+// other two statuses open a visit rather than close one.
+func TestServerLogEmbedFooterPlaytime(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC)
+
+	for _, test := range []struct {
+		name  string
+		event ServerLogEvent
+		want  string
+	}{
+		{
+			name:  "disconnect reports playtime",
+			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "disconnected", OccurredAt: start.Add(110 * time.Minute), StartedAt: start},
+			want:  "Prince Lim • 03 September 2026 at 10:50 • Playtime: 1h 50m",
+		},
+		{
+			name:  "disconnect without a known start",
+			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "disconnected", OccurredAt: start},
+			want:  "Prince Lim • 03 September 2026 at 09:00 • Playtime: Unavailable",
+		},
+		{
+			name:  "connected reports none",
+			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "connected", OccurredAt: start, StartedAt: start},
+			want:  "Prince Lim • 03 September 2026 at 09:00",
+		},
+		{
+			name:  "an unnamed player leaves the time alone in the footer",
+			event: ServerLogEvent{Status: "connecting", OccurredAt: start},
+			want:  "03 September 2026 at 09:00",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			e := ServerLogEmbed(test.event)
+			if e.Footer == nil || e.Footer.Text != test.want {
+				t.Errorf("Footer = %#v, want %q", e.Footer, test.want)
+			}
+		})
 	}
 }

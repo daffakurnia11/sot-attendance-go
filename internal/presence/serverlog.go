@@ -15,7 +15,7 @@ import (
 // free of that dependency; the bot does the mapping.
 type ServerLogEvent struct {
 	// PlayerName is the FiveM display name and Username the passport name.
-	// The title is the player name alone; the status line names the username.
+	// The footer names the player; the status line names the username.
 	PlayerName string
 	Username   string
 	// Status is the stored value: connecting, connected, or disconnected.
@@ -27,6 +27,9 @@ type ServerLogEvent struct {
 	ServerID string
 	// Reason is the disconnect reason. Empty for the other two statuses.
 	Reason string
+	// StartedAt is the first event of the visit, used for the play time a
+	// disconnect reports. Zero when unknown, which reads as unavailable.
+	StartedAt time.Time
 }
 
 // serverLogPhase maps a stored status onto the phase vocabulary the Discord
@@ -55,17 +58,21 @@ const serverLogTime = "02 January 2006 at 15:04"
 //
 // The line lives in a code block rather than an embed field: the feed is read
 // as a scrollback of what the game server reported, and a monospaced sentence
-// stays scannable where a Status/Time field grid does not.
+// stays scannable where a Status/Time field grid does not. Nothing carries a
+// title: the player name is identity, not a heading, so it sits in the footer
+// with the other metadata and leaves the reported line as the whole body.
 func ServerLogEmbed(event ServerLogEvent) *discordgo.MessageEmbed {
 	phase := serverLogPhase(event.Status)
-	return embed.New(event.PlayerName).
+	return embed.New("").
 		Color(playerPhaseColor(phase)).
 		Description(fmt.Sprintf("```\n%s\n```", serverLogLine(event, phase))).
-		Footer(event.OccurredAt.Format(serverLogTime), "").
+		Footer(serverLogFooter(event, phase), "").
 		Build()
 }
 
-// serverLogLine is the sentence inside the code block.
+// serverLogLine is what the code block holds. A disconnect reason goes on its
+// own line: reasons run long - FiveM sends whole command dumps - and appending
+// one to the sentence pushed the slot and username off the first line.
 func serverLogLine(event ServerLogEvent, phase playerPhase) string {
 	username := codeBlockSafe(event.Username)
 	slot := ""
@@ -79,12 +86,26 @@ func serverLogLine(event ServerLogEvent, phase playerPhase) string {
 	case phaseDisconnected:
 		line := fmt.Sprintf("%s%s is exiting.", slot, username)
 		if reason := codeBlockSafe(event.Reason); reason != "" {
-			line += fmt.Sprintf(" Reason: %s", reason)
+			line += fmt.Sprintf("\nReason: %s", reason)
 		}
 		return line
 	default:
 		return fmt.Sprintf("%s is connecting..", username)
 	}
+}
+
+// serverLogFooter carries the player name, the event time, and - on a
+// disconnect - how long the visit lasted.
+func serverLogFooter(event ServerLogEvent, phase playerPhase) string {
+	parts := make([]string, 0, 3)
+	if name := strings.TrimSpace(event.PlayerName); name != "" {
+		parts = append(parts, name)
+	}
+	parts = append(parts, event.OccurredAt.Format(serverLogTime))
+	if phase == phaseDisconnected {
+		parts = append(parts, fmt.Sprintf("Playtime: %s", elapsedPlaytime(event.StartedAt, event.OccurredAt)))
+	}
+	return strings.Join(parts, " • ")
 }
 
 // codeBlockSafe flattens a value for use inside a fenced block. Disconnect

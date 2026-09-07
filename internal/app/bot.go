@@ -284,6 +284,7 @@ func (b *Bot) announceServerLogs(ctx context.Context) {
 			OccurredAt: announcement.OccurredAt.In(b.location),
 			ServerID:   announcement.ServerID,
 			Reason:     announcement.Reason,
+			StartedAt:  announcement.StartedAt,
 		}
 		if _, err := b.session.ChannelMessageSendEmbed(b.serverLogChannelID, presence.ServerLogEmbed(event)); err != nil {
 			// Stop at the first failure and leave the cursor behind it, so the
