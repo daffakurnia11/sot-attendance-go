@@ -111,8 +111,10 @@ func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer t
 	return handler.logging(mux)
 }
 
+// Open to any member: the ledger is the family's shared money, and every
+// member is entitled to see what it did. Writing to it is a separate path.
 func (h *Handler) moneyTransactions(response http.ResponseWriter, request *http.Request) {
-	claims, ok := h.admin(response, request, "money transactions")
+	claims, ok := h.authenticated(response, request)
 	if !ok {
 		return
 	}
@@ -303,9 +305,10 @@ func (h *Handler) updateSettings(response http.ResponseWriter, request *http.Req
 
 // admin authenticates and then requires the administrator role.
 //
-// Guards the reports that cover the whole roster: every member's attendance
-// grid and everyone's payout. A member's own figures stay open to them through
-// /api/v1/attendance/me and /api/v1/me/records.
+// Guards what only an operator should read: everyone's payout, and the search
+// that reaches any member's record. A member's own figures stay open to them
+// through /api/v1/attendance/me and /api/v1/me/records, and the roster-wide
+// attendance grid and money ledger are open to the family.
 func (h *Handler) admin(response http.ResponseWriter, request *http.Request, action string) (appauth.Claims, bool) {
 	claims, ok := h.authenticated(response, request)
 	if !ok {
@@ -374,8 +377,10 @@ func (h *Handler) myMonthlyAttendance(response http.ResponseWriter, request *htt
 	writeJSON(response, http.StatusOK, report)
 }
 
+// Open to any member. The roster-wide grid used to be admin-only; the family
+// decided attendance is shared information, so it reads like the ledger does.
 func (h *Handler) monthlyAttendance(response http.ResponseWriter, request *http.Request) {
-	if _, ok := h.admin(response, request, "attendance"); !ok {
+	if _, ok := h.authenticated(response, request); !ok {
 		return
 	}
 	_, report, ok := h.loadMonthlyAttendance(response, request)

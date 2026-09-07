@@ -295,7 +295,7 @@ func TestDashboardRequiresValidMemberToken(t *testing.T) {
 	}
 }
 
-func TestMoneyTransactionsRequireAdminAndUseRequestedAccount(t *testing.T) {
+func TestMoneyTransactionsOpenToMembersAndUseRequestedAccount(t *testing.T) {
 	ledger := &stubMoneyLedger{balances: map[moneydomain.Account]int64{moneydomain.AccountOffice: 1012500, moneydomain.AccountDirty: 18000}, entries: []moneydomain.LedgerEntry{{ID: 9, Account: moneydomain.AccountDirty, Type: "deposit", Amount: 18000, ActorName: "Kenji"}}}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
 	handler := NewHandlerWithCrafting(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, nil, ledger)
@@ -305,10 +305,11 @@ func TestMoneyTransactionsRequireAdminAndUseRequestedAccount(t *testing.T) {
 		t.Fatalf("response = %d %s, account = %q", response.Code, response.Body.String(), ledger.account)
 	}
 
+	// The ledger is the family's shared money, so a member reads it too.
 	members.found.IsAdmin = false
 	response = request(handler, http.MethodGet, "/api/v1/money-transactions/office", "Bearer app-token")
-	if response.Code != http.StatusForbidden {
-		t.Fatalf("non-admin response = %d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK || ledger.account != moneydomain.AccountOffice {
+		t.Fatalf("non-admin response = %d %s, account = %q", response.Code, response.Body.String(), ledger.account)
 	}
 }
 
@@ -449,19 +450,23 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func TestRosterWideReportsRejectNonAdmin(t *testing.T) {
-	// The attendance grid covers every member and the payslip report covers
-	// everyone's payout, so both are administrator-only.
+func TestPayoutReportRejectsNonAdmin(t *testing.T) {
+	// Everyone's payout stays administrator-only. The roster-wide attendance
+	// grid does not: the family decided attendance is shared information, so it
+	// reads like the money ledger does.
 	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: false}}
 	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08"}}
 	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, reader, testLogger(), store)
 
-	for _, path := range []string{"/api/v1/attendance", "/api/v1/payslips"} {
-		response := request(handler, http.MethodGet, path, "Bearer app-token")
-		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "ADMIN_REQUIRED") {
-			t.Fatalf("%s response = %d %s, want 403 ADMIN_REQUIRED", path, response.Code, response.Body.String())
-		}
+	response := request(handler, http.MethodGet, "/api/v1/payslips", "Bearer app-token")
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "ADMIN_REQUIRED") {
+		t.Fatalf("/api/v1/payslips response = %d %s, want 403 ADMIN_REQUIRED", response.Code, response.Body.String())
+	}
+
+	response = request(handler, http.MethodGet, "/api/v1/attendance", "Bearer app-token")
+	if response.Code != http.StatusOK {
+		t.Fatalf("/api/v1/attendance response = %d %s, want 200 for a member", response.Code, response.Body.String())
 	}
 }
 
