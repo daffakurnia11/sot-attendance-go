@@ -87,6 +87,8 @@ On gateway startup, bot fetches every guild member. Members holding `DISCORD_ROL
 
 Player transitions are sent as embeds to `DISCORD_PLAYER_LOG_CHANNEL_ID`: `Connecting..` when activity name is `FiveM` and details contain `Connecting`, `Connected` when activity name matches `FIVEM_SERVER_NAME`, and `Disconnected` when neither signature exists or member becomes offline/invisible. Server text inside FiveM details/state does not count as connected. Repeated polls in same state do not duplicate logs. Embed titles use the saved character name, falling back to the Discord display name when no character name is saved. Embeds omit the server-name description, use Discord activity start timestamps, show `SOT Players: N` without a capacity suffix, and include Discord embed timestamp.
 
+`DISCORD_PLAYER_LOG_CHANNEL_ID` carries Discord activity only. Events the FiveM server reports over the webhook are announced separately to `DISCORD_SERVER_LOG_CHANNEL_ID`, which is required and must differ from the player log channel, so the two feeds never mix in one channel.
+
 A pending disconnect is delayed for at least 15 seconds (or two poll intervals when longer). If Discord replaces the `FiveM` activity with the server activity during that window, the pending disconnect is cancelled, preventing a false disconnect between `Connecting..` and `Connected`.
 
 `BLACKLISTED_USERS` accepts comma-separated Discord user IDs. Blacklisted users produce no player transition logs, but remain included in bot status count and can still use commands.
