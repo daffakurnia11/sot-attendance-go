@@ -72,7 +72,7 @@ func (r *ReportRepository) GetMonthly(ctx context.Context, year int, month time.
 			COALESCE(latest_character.character_name, '')
 		FROM members m
 		LEFT JOIN LATERAL (
-			SELECT COALESCE(NULLIF(sm.character_name, ''), sm.player_name) AS character_name
+			SELECT sm.player_name AS character_name
 			FROM server_members sm
 			WHERE sm.discord_user_id = m.discord_user_id
 			ORDER BY sm.updated_at DESC, sm.id DESC

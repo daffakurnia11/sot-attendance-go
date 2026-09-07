@@ -79,7 +79,7 @@ func (r *Repository) List(ctx context.Context, account Account) ([]LedgerEntry, 
 		FROM money_transactions t
 		JOIN members m ON m.id = t.actor_member_id
 		LEFT JOIN LATERAL (
-			SELECT COALESCE(NULLIF(sm.character_name, ''), sm.player_name) AS character_name
+			SELECT sm.player_name AS character_name
 			FROM server_members sm
 			WHERE sm.discord_user_id = m.discord_user_id
 			ORDER BY sm.updated_at DESC, sm.id DESC

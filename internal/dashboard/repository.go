@@ -136,8 +136,7 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 		FROM members m
 		LEFT JOIN latest ON latest.member_id = m.id
 		LEFT JOIN LATERAL (
-			SELECT COALESCE(NULLIF(sm.character_name, ''), sm.player_name) AS character_name,
-			       sm.username
+			SELECT sm.player_name AS character_name, sm.username
 			FROM server_members sm
 			WHERE sm.discord_user_id = m.discord_user_id
 			ORDER BY sm.updated_at DESC, sm.id DESC

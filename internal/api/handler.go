@@ -29,10 +29,6 @@ type discordIdentityVerifier interface {
 type memberFinder interface {
 	FindByDiscordUserID(context.Context, string) (member.Member, error)
 }
-type memberProfileUpdater interface {
-	UpdateProfile(context.Context, int64, string) (member.Member, error)
-}
-
 type tokenIssuer interface {
 	Issue(member.Member) (string, time.Time, error)
 }
@@ -105,7 +101,6 @@ func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer t
 	mux.HandleFunc("GET /api/v1/payslips", handler.monthlyPayslips)
 	mux.HandleFunc("GET /api/v1/settings", handler.getSettings)
 	mux.HandleFunc("PATCH /api/v1/settings", handler.updateSettings)
-	mux.HandleFunc("PATCH /api/v1/me/profile", handler.updateMyProfile)
 	mux.HandleFunc("GET /api/v1/crafting/recipes", handler.craftingRecipes)
 	mux.HandleFunc("POST /api/v1/crafting/calculate", handler.calculateCrafting)
 	mux.HandleFunc("POST /api/v1/crafting/calculate-batch", handler.calculateCraftingBatch)
@@ -186,63 +181,10 @@ func (h *Handler) monthlyPayslips(response http.ResponseWriter, request *http.Re
 	writeJSON(response, http.StatusOK, payslipReport)
 }
 
-func (h *Handler) updateMyProfile(response http.ResponseWriter, request *http.Request) {
-	claims, ok := h.authenticated(response, request)
-	if !ok {
-		return
-	}
-	updater, ok := h.members.(memberProfileUpdater)
-	if !ok {
-		writeError(response, http.StatusServiceUnavailable, "PROFILE_UNAVAILABLE", "Profile is unavailable")
-		return
-	}
-	request.Body = http.MaxBytesReader(response, request.Body, 1024)
-	decoder := json.NewDecoder(request.Body)
-	decoder.DisallowUnknownFields()
-	// cfx_name is still accepted and still validated, but no longer stored:
-	// the webhook reports that name as server_members.username, so there is
-	// nothing for a caller to set. Rejecting the field instead would fail every
-	// existing client on DisallowUnknownFields, and the response returns the
-	// reported name, so a caller sees what the value actually is.
-	var payload struct {
-		CharacterName string `json:"character_name"`
-		CFXName       string `json:"cfx_name"`
-	}
-	if err := decoder.Decode(&payload); err != nil {
-		writeError(response, http.StatusBadRequest, "INVALID_PROFILE", "Profile payload is invalid")
-		return
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		writeError(response, http.StatusBadRequest, "INVALID_PROFILE", "Profile payload must contain one JSON object")
-		return
-	}
-	payload.CharacterName = strings.TrimSpace(payload.CharacterName)
-	payload.CFXName = strings.TrimSpace(payload.CFXName)
-	if payload.CharacterName == "" || len([]rune(payload.CharacterName)) > 80 || strings.ContainsAny(payload.CharacterName, "\r\n\x00") {
-		writeError(response, http.StatusUnprocessableEntity, "INVALID_CHARACTER_NAME", "Character name must contain 1 to 80 characters on one line")
-		return
-	}
-	if len([]rune(payload.CFXName)) > 80 || strings.ContainsAny(payload.CFXName, "\r\n\x00") {
-		writeError(response, http.StatusUnprocessableEntity, "INVALID_CFX_NAME", "CFX name must contain at most 80 characters on one line")
-		return
-	}
-	updated, err := updater.UpdateProfile(request.Context(), claims.MemberID, payload.CharacterName)
-	if errors.Is(err, member.ErrNoCharacter) {
-		// The curated name lives on the character now, so a member the game
-		// server has never reported has nowhere to keep one.
-		h.logger.Info("profile update without a server character", "member_id", claims.MemberID)
-		writeError(response, http.StatusConflict, "NO_SERVER_CHARACTER", "Join the CR Roleplay server once before setting a character name")
-		return
-	}
-	if err != nil {
-		h.logger.Error("update member profile", "member_id", claims.MemberID, "error", err)
-		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Profile could not be updated")
-		return
-	}
-	h.logger.Info("member profile updated", "member_id", claims.MemberID)
-	writeJSON(response, http.StatusOK, map[string]string{"character_name": updated.CharacterName, "cfx_name": updated.CFXName})
-}
-
+// getMyProfile is read-only. Both names it returns are reported by the game
+// server - character_name from server_members.player_name, cfx_name from
+// server_members.username - so there is nothing here for a caller to set.
+// PATCH /api/v1/me/profile is gone with the curated column 000030 dropped.
 func (h *Handler) getMyProfile(response http.ResponseWriter, request *http.Request) {
 	claims, ok := h.authenticated(response, request)
 	if !ok {

@@ -34,11 +34,6 @@ type PlaytimeRecap struct {
 
 var ErrNotFound = errors.New("member not found")
 
-// ErrNoCharacter is returned when a profile write has no character row to land
-// on. The curated name lives on server_members now, so a member the game server
-// has never reported has nowhere to keep one.
-var ErrNoCharacter = errors.New("member has no server character")
-
 type Member struct {
 	ID            int64  `json:"id"`
 	DiscordUserID string `json:"discord_user_id"`
@@ -50,17 +45,16 @@ type Member struct {
 }
 
 // latestCharacter resolves the names that used to be members.character_name and
-// members.cfx_name. Both now live on server_members, one row per character, so
-// a member holding several has to be reduced to one: the most recently touched
-// row, which is the character the game server saw last.
+// members.cfx_name. Both come from server_members now, one row per character,
+// so a member holding several has to be reduced to one: the most recently
+// touched row, which is the character the game server saw last.
 //
-// The curated name falls back to the live player_name rather than to nothing. A
-// character the operator never renamed is still a character with a name, and
-// before the move there was no live name to fall back to.
+// Both names are the webhook's, not an operator's. A curated override lived
+// here briefly and was dropped in 000030: beside player_name, reported on every
+// event, it was the same value stored twice.
 const latestCharacter = `
 		LEFT JOIN LATERAL (
-			SELECT COALESCE(NULLIF(sm.character_name, ''), sm.player_name) AS character_name,
-			       sm.username
+			SELECT sm.player_name AS character_name, sm.username
 			FROM server_members sm
 			WHERE sm.discord_user_id = m.discord_user_id
 			ORDER BY sm.updated_at DESC, sm.id DESC
@@ -285,40 +279,6 @@ func (r *Repository) FindByDiscordUserID(ctx context.Context, discordUserID stri
 		return Member{}, fmt.Errorf("find member by Discord user ID: %w", err)
 	}
 	return found, nil
-}
-
-// UpdateProfile stores the curated character name on the member's character.
-//
-// The name moved to server_members in 000026, so this writes to the most
-// recently touched character row - the same one the reader resolves - and
-// reports ErrNoCharacter when the member has none. The CFX name is no longer
-// stored anywhere: the webhook reports it as server_members.username, so it is
-// read back rather than accepted.
-func (r *Repository) UpdateProfile(ctx context.Context, memberID int64, characterName string) (Member, error) {
-	const query = `
-		WITH target AS (
-			SELECT sm.id
-			FROM server_members sm
-			JOIN members m ON m.discord_user_id = sm.discord_user_id
-			WHERE m.id = $1
-			ORDER BY sm.updated_at DESC, sm.id DESC
-			LIMIT 1
-		)
-		UPDATE server_members sm
-		SET character_name = $2, updated_at = NOW()
-		FROM target
-		WHERE sm.id = target.id
-		RETURNING sm.discord_user_id`
-
-	var discordUserID string
-	err := r.database.QueryRow(ctx, query, memberID, characterName).Scan(&discordUserID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Member{}, ErrNoCharacter
-	}
-	if err != nil {
-		return Member{}, fmt.Errorf("update member profile: %w", err)
-	}
-	return r.FindByDiscordUserID(ctx, discordUserID)
 }
 
 func (r *Repository) RecordLog(ctx context.Context, log PlayerLog) error {

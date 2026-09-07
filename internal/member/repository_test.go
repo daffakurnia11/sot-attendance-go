@@ -151,56 +151,16 @@ func TestFindByDiscordUserIDReadsNamesFromTheCharacter(t *testing.T) {
 	if _, err := NewRepository(database).FindByDiscordUserID(context.Background(), "123"); err != nil {
 		t.Fatalf("FindByDiscordUserID() error = %v", err)
 	}
-	for _, fragment := range []string{"FROM server_members sm", "sm.discord_user_id = m.discord_user_id", "sm.character_name", "sm.player_name"} {
+	for _, fragment := range []string{"FROM server_members sm", "sm.discord_user_id = m.discord_user_id", "sm.player_name", "sm.username"} {
 		if !strings.Contains(database.query, fragment) {
 			t.Errorf("query missing %q: %s", fragment, database.query)
 		}
 	}
-	if strings.Contains(database.query, " m.character_name") || strings.Contains(database.query, "cfx_name") {
-		t.Errorf("query still reads the dropped columns: %s", database.query)
+	// character_name survives only as the alias the reader returns; no dropped
+	// column may be read.
+	if strings.Contains(database.query, "sm.character_name") || strings.Contains(database.query, " m.character_name") || strings.Contains(database.query, "cfx_name") {
+		t.Errorf("query still reads a dropped column: %s", database.query)
 	}
-}
-
-// The curated name is written to the member's character row, scoped by member
-// id, and never to members.
-func TestUpdateProfileWritesTheCharacterRow(t *testing.T) {
-	database := &recordingExecutor{rows: []pgx.Row{
-		discordUserIDRow{discordUserID: "123"},
-		memberRow{member: Member{ID: 7, DiscordUserID: "123", CharacterName: "Kenji", CFXName: "SOT - Kenji"}},
-	}}
-	updated, err := NewRepository(database).UpdateProfile(context.Background(), 7, "Kenji")
-	if err != nil {
-		t.Fatalf("UpdateProfile() error = %v", err)
-	}
-	if updated.CharacterName != "Kenji" || updated.CFXName != "SOT - Kenji" {
-		t.Fatalf("updated = %#v", updated)
-	}
-	write := database.queries[0]
-	if !strings.Contains(write, "UPDATE server_members") || !strings.Contains(write, "WHERE m.id = $1") {
-		t.Fatalf("write query = %s", write)
-	}
-	if strings.Contains(write, "UPDATE members") || strings.Contains(write, "cfx_name") {
-		t.Fatalf("write query still writes members: %s", write)
-	}
-	if args := database.argsByCall[0]; len(args) != 2 || args[0] != int64(7) || args[1] != "Kenji" {
-		t.Fatalf("args = %#v", args)
-	}
-}
-
-// A member the game server has never reported has no character row to hold a
-// curated name, which is a conflict rather than a missing member.
-func TestUpdateProfileWithoutACharacter(t *testing.T) {
-	_, err := NewRepository(&recordingExecutor{err: pgx.ErrNoRows}).UpdateProfile(context.Background(), 7, "Kenji")
-	if !errors.Is(err, ErrNoCharacter) {
-		t.Fatalf("UpdateProfile() error = %v, want ErrNoCharacter", err)
-	}
-}
-
-type discordUserIDRow struct{ discordUserID string }
-
-func (r discordUserIDRow) Scan(destinations ...any) error {
-	*destinations[0].(*string) = r.discordUserID
-	return nil
 }
 
 type memberRow struct{ member Member }

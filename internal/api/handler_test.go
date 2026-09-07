@@ -32,23 +32,14 @@ func (v *stubVerifier) Verify(_ context.Context, token string) (DiscordUser, err
 }
 
 type stubMembers struct {
-	found                member.Member
-	error                error
-	discordUserID        string
-	updatedMemberID      int64
-	updatedCharacterName string
+	found         member.Member
+	error         error
+	discordUserID string
 }
 
 func (m *stubMembers) FindByDiscordUserID(_ context.Context, discordUserID string) (member.Member, error) {
 	m.discordUserID = discordUserID
 	return m.found, m.error
-}
-
-func (m *stubMembers) UpdateProfile(_ context.Context, memberID int64, characterName string) (member.Member, error) {
-	m.updatedMemberID, m.updatedCharacterName = memberID, characterName
-	// The CFX name is reported by the webhook, so the write returns whatever is
-	// stored rather than anything the caller sent.
-	return member.Member{ID: memberID, CharacterName: characterName, CFXName: m.found.CFXName}, m.error
 }
 
 type stubIssuer struct {
@@ -434,20 +425,6 @@ func TestSettingsUpdateRejectsNonAdmin(t *testing.T) {
 	}
 }
 
-func TestUpdateMyProfileUsesAuthenticatedMember(t *testing.T) {
-	members := &stubMembers{}
-	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, &stubAttendance{}, testLogger())
-	// cfx_name is still accepted so existing clients do not fail on an unknown
-	// field, but it is not stored: the webhook reports that name.
-	request := httptest.NewRequest(http.MethodPatch, "/api/v1/me/profile", strings.NewReader(`{"character_name":"  Kenji Nakamura  ","cfx_name":"  SOT - Kenji  "}`))
-	request.Header.Set("Authorization", "Bearer app-token")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || members.updatedMemberID != 7 || members.updatedCharacterName != "Kenji Nakamura" {
-		t.Fatalf("response = %d %s, update = %d %q", response.Code, response.Body.String(), members.updatedMemberID, members.updatedCharacterName)
-	}
-}
-
 func TestGetMyProfileLoadsCurrentDatabaseValues(t *testing.T) {
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", CharacterName: "Kenji Nakamura", CFXName: "SOT - Kenji"}}
 	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger())
@@ -501,19 +478,5 @@ func TestMemberOwnReportsStayOpenToNonAdmin(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s response = %d %s, want 200", path, response.Code, response.Body.String())
 		}
-	}
-}
-
-// A member the game server has never reported has no character row to hold a
-// curated name. That is a conflict the caller can act on, not a 500.
-func TestUpdateMyProfileWithoutAServerCharacter(t *testing.T) {
-	members := &stubMembers{error: member.ErrNoCharacter}
-	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, &stubAttendance{}, testLogger())
-	request := httptest.NewRequest(http.MethodPatch, "/api/v1/me/profile", strings.NewReader(`{"character_name":"Kenji Nakamura","cfx_name":""}`))
-	request.Header.Set("Authorization", "Bearer app-token")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "NO_SERVER_CHARACTER") {
-		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 }
