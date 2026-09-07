@@ -152,3 +152,16 @@ func TestWithMoneyChannels(t *testing.T) {
 		}
 	}
 }
+
+func TestWithServerLogChannel(t *testing.T) {
+	t.Parallel()
+	configured, err := withServerLogChannel(Config{PlayerLogChannelID: "456"}, " 123 ")
+	if err != nil || configured.ServerLogChannelID != "123" {
+		t.Fatalf("withServerLogChannel() = %#v, %v", configured, err)
+	}
+	for _, channelID := range []string{"", "abc", "456"} {
+		if _, err := withServerLogChannel(Config{PlayerLogChannelID: "456"}, channelID); err == nil {
+			t.Errorf("withServerLogChannel(%q) error = nil", channelID)
+		}
+	}
+}

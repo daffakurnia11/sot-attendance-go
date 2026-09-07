@@ -58,6 +58,7 @@ type Bot struct {
 	officeMoneyChannelID string
 	dirtyMoneyChannelID  string
 	playerLogChannelID   string
+	serverLogChannelID   string
 	serverLogs           *serverlog.Repository
 	serverLogCursor      int64
 	adminSync            sync.Mutex
@@ -156,6 +157,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		adminRoleIDs:         cfg.DiscordAdminRoleIDs,
 		memberRoleID:         cfg.DiscordMemberRoleID,
 		playerLogChannelID:   cfg.PlayerLogChannelID,
+		serverLogChannelID:   cfg.ServerLogChannelID,
 		serverLogs:           serverlog.NewRepository(pool),
 		officeMoneyChannelID: cfg.OfficeMoneyChannelID,
 		dirtyMoneyChannelID:  cfg.DirtyMoneyChannelID,
@@ -246,7 +248,7 @@ func (b *Bot) runServerLogPoller(ctx context.Context) {
 		return
 	}
 	b.serverLogCursor = latest
-	b.logger.Info("server log announcer started", "channel_id", b.playerLogChannelID, "cursor", latest)
+	b.logger.Info("server log announcer started", "channel_id", b.serverLogChannelID, "cursor", latest)
 
 	ticker := time.NewTicker(serverLogPollInterval)
 	defer ticker.Stop()
@@ -286,10 +288,10 @@ func (b *Bot) announceServerLogs(ctx context.Context) {
 			OccurredAt: announcement.OccurredAt,
 			StartedAt:  announcement.StartedAt,
 		}
-		if _, err := b.session.ChannelMessageSendEmbed(b.playerLogChannelID, presence.ServerLogEmbed(event, playerCount)); err != nil {
+		if _, err := b.session.ChannelMessageSendEmbed(b.serverLogChannelID, presence.ServerLogEmbed(event, playerCount)); err != nil {
 			// Stop at the first failure and leave the cursor behind it, so the
 			// next tick retries this event instead of skipping past it.
-			b.logger.Error("send server log", "channel_id", b.playerLogChannelID, "event_id", announcement.ID, "error", err)
+			b.logger.Error("send server log", "channel_id", b.serverLogChannelID, "event_id", announcement.ID, "error", err)
 			return
 		}
 		b.serverLogCursor = announcement.ID

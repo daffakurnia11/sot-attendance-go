@@ -24,6 +24,7 @@ type Config struct {
 	StatusPollInterval   time.Duration
 	CommandPrefix        string
 	PlayerLogChannelID   string
+	ServerLogChannelID   string
 	BlacklistedUserIDs   []string
 	PlayerChatChannelID  string
 	PlayerRecapChannelID string
@@ -55,6 +56,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	config, err = withServerLogChannel(config, os.Getenv("DISCORD_SERVER_LOG_CHANNEL_ID"))
+	if err != nil {
+		return Config{}, err
+	}
 	return withStatusPolling(config, os.Getenv("FIVEM_SERVER_CFX_ID"), os.Getenv("FIVEM_PLAYER_ID"), os.Getenv("FIVEM_SERVER_CFX_POLL_INTERVAL"), os.Getenv("DISCORD_POLL_STATUS"))
 }
 
@@ -72,6 +77,22 @@ func withMoneyChannels(config Config, officeChannelID, dirtyChannelID string) (C
 	}
 	config.OfficeMoneyChannelID = officeChannelID
 	config.DirtyMoneyChannelID = dirtyChannelID
+	return config, nil
+}
+
+// withServerLogChannel takes the FiveM server log out of the Discord activity
+// channel. The two carry different feeds - one is presence seen through
+// Discord, the other is what the game server reported - so they must not share
+// a channel.
+func withServerLogChannel(config Config, serverLogChannelID string) (Config, error) {
+	serverLogChannelID = strings.TrimSpace(serverLogChannelID)
+	if err := validateDiscordID(serverLogChannelID); err != nil {
+		return Config{}, fmt.Errorf("DISCORD_SERVER_LOG_CHANNEL_ID: %w", err)
+	}
+	if serverLogChannelID == config.PlayerLogChannelID {
+		return Config{}, errors.New("DISCORD_SERVER_LOG_CHANNEL_ID and DISCORD_PLAYER_LOG_CHANNEL_ID must be different")
+	}
+	config.ServerLogChannelID = serverLogChannelID
 	return config, nil
 }
 
