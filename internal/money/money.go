@@ -74,10 +74,17 @@ func (r *Repository) List(ctx context.Context, account Account) ([]LedgerEntry, 
 			t.id, t.account_type, t.transaction_type, t.direction,
 			t.amount, t.balance_before, t.balance_after, t.reason,
 			t.actor_member_id,
-			COALESCE(NULLIF(m.character_name, ''), m.display_name),
+			COALESCE(NULLIF(latest_character.character_name, ''), m.display_name),
 			m.username, t.created_at
 		FROM money_transactions t
 		JOIN members m ON m.id = t.actor_member_id
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(NULLIF(sm.character_name, ''), sm.player_name) AS character_name
+			FROM server_members sm
+			WHERE sm.discord_user_id = m.discord_user_id
+			ORDER BY sm.updated_at DESC, sm.id DESC
+			LIMIT 1
+		) latest_character ON TRUE
 		WHERE t.account_type = $1
 		ORDER BY t.created_at DESC, t.id DESC`
 	rows, err := r.database.Query(ctx, query, account)

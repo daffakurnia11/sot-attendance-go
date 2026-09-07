@@ -58,7 +58,7 @@ const upsertMember = `
 		RETURNING id, discord_user_id
 	)
 	SELECT u.id,
-	       (SELECT m.id FROM members m WHERE m.user_id = u.discord_user_id),
+	       (SELECT m.id FROM members m WHERE m.discord_user_id = u.discord_user_id),
 	       COALESCE(p.discord_user_id IS NOT NULL AND $2 IS NOT NULL AND p.discord_user_id <> $2, false),
 	       COALESCE(p.fivem_id        IS NOT NULL AND $3 IS NOT NULL AND p.fivem_id        <> $3, false),
 	       COALESCE(p.license_id      <> $1, false)
@@ -73,7 +73,7 @@ const lockEvent = `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`
 const findEvent = `
 	SELECT sl.session_id,
 	       sl.server_member_id,
-	       (SELECT m.id FROM members m WHERE m.user_id = sm.discord_user_id)
+	       (SELECT m.id FROM members m WHERE m.discord_user_id = sm.discord_user_id)
 	FROM server_logs sl
 	JOIN server_members sm ON sm.id = sl.server_member_id
 	WHERE sl.payload = $1::jsonb`

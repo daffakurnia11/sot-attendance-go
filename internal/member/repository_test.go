@@ -16,11 +16,30 @@ type recordingExecutor struct {
 	args  []any
 	err   error
 	row   pgx.Row
+	// queries and argsByCall keep every call, not only the last. A write that
+	// reads the row back afterwards makes two, and the assertion is about the
+	// first.
+	queries    []string
+	argsByCall [][]any
+	// rows is consumed in order when set, so each call in a sequence can
+	// answer with its own shape.
+	rows []pgx.Row
+}
+
+func (e *recordingExecutor) record(query string, args []any) {
+	e.query = query
+	e.args = args
+	e.queries = append(e.queries, query)
+	e.argsByCall = append(e.argsByCall, args)
 }
 
 func (e *recordingExecutor) QueryRow(_ context.Context, query string, args ...any) pgx.Row {
-	e.query = query
-	e.args = args
+	e.record(query, args)
+	if len(e.rows) > 0 {
+		next := e.rows[0]
+		e.rows = e.rows[1:]
+		return next
+	}
 	if e.row != nil {
 		return e.row
 	}
@@ -32,14 +51,12 @@ type errorRow struct{ err error }
 func (r errorRow) Scan(...any) error { return r.err }
 
 func (e *recordingExecutor) Exec(_ context.Context, query string, args ...any) (pgconn.CommandTag, error) {
-	e.query = query
-	e.args = args
+	e.record(query, args)
 	return pgconn.CommandTag{}, e.err
 }
 
 func (e *recordingExecutor) Query(_ context.Context, query string, args ...any) (pgx.Rows, error) {
-	e.query = query
-	e.args = args
+	e.record(query, args)
 	return nil, e.err
 }
 
@@ -50,21 +67,21 @@ func TestRecordLogUpsertsMemberAndInsertsLog(t *testing.T) {
 	playtime := 5*time.Minute + 30*time.Second
 
 	err := repository.RecordLog(context.Background(), PlayerLog{
-		Player: Player{UserID: "user", Username: "delta", DisplayName: "DeltaKilo", FirstConnectedAt: connectedAt},
+		Player: Player{DiscordUserID: "user", Username: "delta", DisplayName: "DeltaKilo"},
 		Status: "disconnected", StartedAt: &connectedAt, OccurredAt: connectedAt.Add(playtime), Playtime: &playtime,
 	})
 	if err != nil {
 		t.Fatalf("RecordLog() error = %v", err)
 	}
-	if !strings.Contains(database.query, "ON CONFLICT (user_id) DO UPDATE") || !strings.Contains(database.query, "INSERT INTO player_logs") {
+	if !strings.Contains(database.query, "ON CONFLICT (discord_user_id) DO UPDATE") || !strings.Contains(database.query, "INSERT INTO activity_logs") {
 		t.Fatalf("RecordLog() query does not atomically save member and log: %s", database.query)
 	}
-	if len(database.args) != 8 || database.args[0] != "user" || database.args[4] != "disconnected" {
+	if len(database.args) != 7 || database.args[0] != "user" || database.args[3] != "disconnected" {
 		t.Fatalf("RecordLog() args = %#v", database.args)
 	}
-	seconds, ok := database.args[7].(*int64)
+	seconds, ok := database.args[6].(*int64)
 	if !ok || seconds == nil || *seconds != 330 {
-		t.Fatalf("RecordLog() playtime seconds = %#v", database.args[7])
+		t.Fatalf("RecordLog() playtime seconds = %#v", database.args[6])
 	}
 }
 
@@ -83,7 +100,7 @@ func TestSyncAdminsUpdatesAndClearsRolesAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(database.query, "is_admin = (user_id = ANY") || len(database.args) != 1 {
+	if !strings.Contains(database.query, "is_admin = (discord_user_id = ANY") || len(database.args) != 1 {
 		t.Fatalf("query = %s, args = %#v", database.query, database.args)
 	}
 	ids, ok := database.args[0].([]string)
@@ -92,58 +109,105 @@ func TestSyncAdminsUpdatesAndClearsRolesAtomically(t *testing.T) {
 	}
 }
 
-func TestUpsertGuildMembersBulkUpsertsWithoutReplacingFirstConnection(t *testing.T) {
+func TestUpsertGuildMembersBulkUpserts(t *testing.T) {
 	database := &recordingExecutor{}
-	observedAt := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	err := NewRepository(database).UpsertGuildMembers(context.Background(), []Player{
-		{UserID: "100", Username: "delta", DisplayName: "Delta"},
-		{UserID: "200", Username: "pupaw", DisplayName: "Pupaw"},
-	}, observedAt)
+		{DiscordUserID: "100", Username: "delta", DisplayName: "Delta"},
+		{DiscordUserID: "200", Username: "pupaw", DisplayName: "Pupaw"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(database.query, "FROM unnest") || !strings.Contains(database.query, "ON CONFLICT (user_id) DO UPDATE") || strings.Contains(database.query, "first_connected_at = EXCLUDED") {
+	if !strings.Contains(database.query, "FROM unnest") || !strings.Contains(database.query, "ON CONFLICT (discord_user_id) DO UPDATE") {
 		t.Fatalf("query = %s", database.query)
 	}
-	if len(database.args) != 4 || database.args[3] != observedAt {
-		t.Fatalf("args = %#v", database.args)
+	// The observation time went with first_connected_at, which nothing read.
+	if strings.Contains(database.query, "first_connected_at") || len(database.args) != 3 {
+		t.Fatalf("query = %s, args = %#v", database.query, database.args)
 	}
 }
 
-func TestFindByUserIDMapsMissingMember(t *testing.T) {
+func TestFindByDiscordUserIDMapsMissingMember(t *testing.T) {
 	repository := NewRepository(&recordingExecutor{err: pgx.ErrNoRows})
 
-	_, err := repository.FindByUserID(context.Background(), "123")
+	_, err := repository.FindByDiscordUserID(context.Background(), "123")
 	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("FindByUserID() error = %v, want ErrNotFound", err)
+		t.Fatalf("FindByDiscordUserID() error = %v, want ErrNotFound", err)
 	}
 }
 
-func TestFindByUserIDWrapsDatabaseError(t *testing.T) {
+func TestFindByDiscordUserIDWrapsDatabaseError(t *testing.T) {
 	repository := NewRepository(&recordingExecutor{err: errors.New("database unavailable")})
 
-	_, err := repository.FindByUserID(context.Background(), "123")
-	if err == nil || !strings.Contains(err.Error(), "find member by user ID") {
-		t.Fatalf("FindByUserID() error = %v", err)
+	_, err := repository.FindByDiscordUserID(context.Background(), "123")
+	if err == nil || !strings.Contains(err.Error(), "find member by Discord user ID") {
+		t.Fatalf("FindByDiscordUserID() error = %v", err)
 	}
 }
 
-func TestUpdateProfileIsScopedByMemberID(t *testing.T) {
-	database := &recordingExecutor{row: memberRow{member: Member{ID: 7, UserID: "123", Username: "delta", DisplayName: "Delta", CharacterName: "Kenji", CFXName: "SOT - Kenji"}}}
-	updated, err := NewRepository(database).UpdateProfile(context.Background(), 7, "Kenji", "SOT - Kenji")
+// The names come from server_members now, so the read has to reach them.
+func TestFindByDiscordUserIDReadsNamesFromTheCharacter(t *testing.T) {
+	database := &recordingExecutor{row: memberRow{member: Member{ID: 7, DiscordUserID: "123"}}}
+	if _, err := NewRepository(database).FindByDiscordUserID(context.Background(), "123"); err != nil {
+		t.Fatalf("FindByDiscordUserID() error = %v", err)
+	}
+	for _, fragment := range []string{"FROM server_members sm", "sm.discord_user_id = m.discord_user_id", "sm.character_name", "sm.player_name"} {
+		if !strings.Contains(database.query, fragment) {
+			t.Errorf("query missing %q: %s", fragment, database.query)
+		}
+	}
+	if strings.Contains(database.query, " m.character_name") || strings.Contains(database.query, "cfx_name") {
+		t.Errorf("query still reads the dropped columns: %s", database.query)
+	}
+}
+
+// The curated name is written to the member's character row, scoped by member
+// id, and never to members.
+func TestUpdateProfileWritesTheCharacterRow(t *testing.T) {
+	database := &recordingExecutor{rows: []pgx.Row{
+		discordUserIDRow{discordUserID: "123"},
+		memberRow{member: Member{ID: 7, DiscordUserID: "123", CharacterName: "Kenji", CFXName: "SOT - Kenji"}},
+	}}
+	updated, err := NewRepository(database).UpdateProfile(context.Background(), 7, "Kenji")
 	if err != nil {
 		t.Fatalf("UpdateProfile() error = %v", err)
 	}
-	if updated.CharacterName != "Kenji" || updated.CFXName != "SOT - Kenji" || len(database.args) != 3 || database.args[0] != int64(7) || !strings.Contains(database.query, "WHERE id = $1") {
-		t.Fatalf("update = %#v, query = %s, args = %#v", updated, database.query, database.args)
+	if updated.CharacterName != "Kenji" || updated.CFXName != "SOT - Kenji" {
+		t.Fatalf("updated = %#v", updated)
 	}
+	write := database.queries[0]
+	if !strings.Contains(write, "UPDATE server_members") || !strings.Contains(write, "WHERE m.id = $1") {
+		t.Fatalf("write query = %s", write)
+	}
+	if strings.Contains(write, "UPDATE members") || strings.Contains(write, "cfx_name") {
+		t.Fatalf("write query still writes members: %s", write)
+	}
+	if args := database.argsByCall[0]; len(args) != 2 || args[0] != int64(7) || args[1] != "Kenji" {
+		t.Fatalf("args = %#v", args)
+	}
+}
+
+// A member the game server has never reported has no character row to hold a
+// curated name, which is a conflict rather than a missing member.
+func TestUpdateProfileWithoutACharacter(t *testing.T) {
+	_, err := NewRepository(&recordingExecutor{err: pgx.ErrNoRows}).UpdateProfile(context.Background(), 7, "Kenji")
+	if !errors.Is(err, ErrNoCharacter) {
+		t.Fatalf("UpdateProfile() error = %v, want ErrNoCharacter", err)
+	}
+}
+
+type discordUserIDRow struct{ discordUserID string }
+
+func (r discordUserIDRow) Scan(destinations ...any) error {
+	*destinations[0].(*string) = r.discordUserID
+	return nil
 }
 
 type memberRow struct{ member Member }
 
 func (r memberRow) Scan(destinations ...any) error {
 	*destinations[0].(*int64) = r.member.ID
-	*destinations[1].(*string) = r.member.UserID
+	*destinations[1].(*string) = r.member.DiscordUserID
 	*destinations[2].(*string) = r.member.Username
 	*destinations[3].(*string) = r.member.DisplayName
 	*destinations[4].(*string) = r.member.CharacterName

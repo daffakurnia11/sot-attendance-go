@@ -34,7 +34,7 @@ func TestEmbedTruncatesLargeRecapWithinDiscordLimit(t *testing.T) {
 	recaps := make([]member.PlaytimeRecap, 500)
 	for index := range recaps {
 		recaps[index] = member.PlaytimeRecap{
-			UserID:        fmt.Sprintf("100%03d", index),
+			DiscordUserID: fmt.Sprintf("100%03d", index),
 			DisplayName:   fmt.Sprintf("Discord member %03d with a long display name", index),
 			CharacterName: fmt.Sprintf("Character %03d with a long roleplay name", index),
 			Playtime:      2 * time.Hour,
@@ -53,9 +53,9 @@ func TestEmbedTruncatesLargeRecapWithinDiscordLimit(t *testing.T) {
 func TestEmbedShowsRankedPlaytime(t *testing.T) {
 	now := time.Date(2026, 8, 13, 23, 0, 0, 0, time.UTC)
 	embed := Embed([]member.PlaytimeRecap{{
-		UserID: "123", DisplayName: "Delta*Kilo", CharacterName: "John_Doe", Playtime: 2*time.Hour + 5*time.Minute,
+		DiscordUserID: "123", DisplayName: "Delta*Kilo", CharacterName: "John_Doe", Playtime: 2*time.Hour + 5*time.Minute,
 	}, {
-		UserID: "456", DisplayName: "Mici", CharacterName: "Mici Yu", Playtime: 90 * time.Minute,
+		DiscordUserID: "456", DisplayName: "Mici", CharacterName: "Mici Yu", Playtime: 90 * time.Minute,
 	}}, now.Add(-2*time.Hour), now, 90*time.Minute)
 
 	if embed.Title != "Attendance Recap (13 August 2026)" {
@@ -78,7 +78,7 @@ func TestEmbedShowsRankedPlaytime(t *testing.T) {
 func TestCheckEmbedShowsCurrentMemberStatusAndGlobalSummary(t *testing.T) {
 	now := time.Date(2026, 8, 21, 3, 24, 0, 0, time.FixedZone("Asia/Jakarta", 7*60*60))
 	currentMember := member.Member{
-		ID: 2, UserID: "123456789", Username: "prince", DisplayName: "Prince Lim", CharacterName: "Prince Nakamura",
+		ID: 2, DiscordUserID: "123456789", Username: "prince", DisplayName: "Prince Lim", CharacterName: "Prince Nakamura",
 	}
 	recaps := []member.PlaytimeRecap{
 		{MemberID: 1, Playtime: 2 * time.Hour},
@@ -105,7 +105,7 @@ func TestCheckEmbedShowsCurrentMemberStatusAndGlobalSummary(t *testing.T) {
 
 func TestCheckEmbedUsesDisplayNameFallbackAndZeroPlaytime(t *testing.T) {
 	now := time.Date(2026, 8, 21, 3, 24, 0, 0, time.UTC)
-	currentMember := member.Member{ID: 3, UserID: "987654321", Username: "delta", DisplayName: "Delta*Kilo"}
+	currentMember := member.Member{ID: 3, DiscordUserID: "987654321", Username: "delta", DisplayName: "Delta*Kilo"}
 
 	embed := CheckEmbed(currentMember, nil, now, now, time.Hour)
 	if embed.Fields[0].Value != "Delta\\*Kilo (<@987654321>)" || embed.Fields[1].Value != "0m" || embed.Fields[2].Value != "Not Attended" {

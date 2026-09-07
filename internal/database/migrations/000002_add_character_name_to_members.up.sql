@@ -1,2 +1,13 @@
-ALTER TABLE members
-    ADD COLUMN IF NOT EXISTS character_name TEXT;
+-- Historical: this added members.character_name.
+--
+-- 000026 moved that data to server_members, where a character name belongs -
+-- one Discord account can hold several characters, each with its own name - and
+-- 000027 dropped the column here.
+--
+-- The statement is gone rather than guarded. The startup runner re-executes
+-- every *.up.sql on every boot, and ADD COLUMN IF NOT EXISTS is NOT a no-op
+-- once the column has been dropped: it puts the column back, and every boot
+-- would add then drop it again. A fresh database now simply never grows the
+-- column, which is where 000027 leaves an existing one, so both converge.
+--
+-- Kept as a file so the sequence has no hole and the history stays readable.

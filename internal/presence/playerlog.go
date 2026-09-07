@@ -80,15 +80,11 @@ func (l *playerLogger) refresh(session *discordgo.Session, guild *discordgo.Guil
 	events := l.transitions(guild, now)
 	for _, event := range events {
 		if l.members != nil {
-			firstConnectedAt := event.startedAt
-			if firstConnectedAt.IsZero() {
-				firstConnectedAt = event.occurredAt
-			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			err := l.members.RecordLog(ctx, member.PlayerLog{
 				Player: member.Player{
-					UserID: event.member.User.ID, Username: event.member.User.Username,
-					DisplayName: event.member.DisplayName(), FirstConnectedAt: firstConnectedAt,
+					DiscordUserID: event.member.User.ID, Username: event.member.User.Username,
+					DisplayName: event.member.DisplayName(),
 				},
 				Status: normalizedPlayerPhase(event.phase), StartedAt: nullableTime(event.startedAt),
 				OccurredAt: event.occurredAt, Playtime: eventPlaytime(event),
@@ -96,7 +92,7 @@ func (l *playerLogger) refresh(session *discordgo.Session, guild *discordgo.Guil
 			if err != nil {
 				l.logger.Error("persist player activity log", "user_id", event.member.User.ID, "status", event.phase, "error", err)
 			}
-			storedMember, findErr := l.members.FindByUserID(ctx, event.member.User.ID)
+			storedMember, findErr := l.members.FindByDiscordUserID(ctx, event.member.User.ID)
 			cancel()
 			if findErr != nil {
 				l.logger.Warn("load character name for player activity log", "user_id", event.member.User.ID, "error", findErr)

@@ -63,10 +63,22 @@ func (r *ReportRepository) GetMonthly(ctx context.Context, year int, month time.
 		Members:        make([]MemberRecord, 0),
 	}
 
+	// The character name comes from server_members now: it belongs to a
+	// character, not to a Discord account. A member holding several is reduced
+	// to the most recently seen one, and a character never renamed by an
+	// operator reads through to the name the game server reported.
 	const membersQuery = `
-		SELECT id, username, display_name, COALESCE(character_name, '')
-		FROM members
-		ORDER BY display_name, id`
+		SELECT m.id, m.username, m.display_name,
+			COALESCE(latest_character.character_name, '')
+		FROM members m
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(NULLIF(sm.character_name, ''), sm.player_name) AS character_name
+			FROM server_members sm
+			WHERE sm.discord_user_id = m.discord_user_id
+			ORDER BY sm.updated_at DESC, sm.id DESC
+			LIMIT 1
+		) latest_character ON TRUE
+		ORDER BY m.display_name, m.id`
 	memberRows, err := r.database.Query(ctx, membersQuery)
 	if err != nil {
 		return MonthlyReport{}, fmt.Errorf("query attendance members: %w", err)

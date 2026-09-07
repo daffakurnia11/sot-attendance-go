@@ -145,7 +145,7 @@ func (b *Bot) slashCommandResponse(interaction *discordgo.Interaction, commandNa
 			return nil, userID, moneyChannelError{officeChannelID: b.officeMoneyChannelID, dirtyChannelID: b.dirtyMoneyChannelID}
 		}
 		request.Account = account
-		currentMember, err := b.members.FindByUserID(ctx, userID)
+		currentMember, err := b.members.FindByDiscordUserID(ctx, userID)
 		if err != nil {
 			return nil, userID, fmt.Errorf("find money command member: %w", err)
 		}
@@ -250,7 +250,7 @@ func (b *Bot) buildCheckEmbed(ctx context.Context, userID string, now time.Time)
 		return nil, 0, time.Time{}, fmt.Errorf("reload attendance settings: %w", err)
 	}
 	attendanceStart, attendanceEnd := commandrecap.AttendanceWindow(now, attendanceConfig.StartTime, attendanceConfig.EndTime, b.location)
-	currentMember, err := b.members.FindByUserID(ctx, userID)
+	currentMember, err := b.members.FindByDiscordUserID(ctx, userID)
 	if err != nil {
 		return nil, 0, time.Time{}, fmt.Errorf("find command member: %w", err)
 	}

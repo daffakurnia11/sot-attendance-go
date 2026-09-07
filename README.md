@@ -15,7 +15,7 @@ POST /api/v1/auth/discord
 Authorization: Bearer <discord-oauth-access-token>
 ```
 
-API verifies token against Discord `/users/@me`, then looks up verified Discord ID in `members.user_id`. Existing member receives short-lived HS256 app JWT. Missing member receives `403 MEMBER_NOT_REGISTERED`. Username and display name are response metadata only, never identity keys.
+API verifies token against Discord `/users/@me`, then looks up verified Discord ID in `members.discord_user_id`. Existing member receives short-lived HS256 app JWT. Missing member receives `403 MEMBER_NOT_REGISTERED`. Username and display name are response metadata only, never identity keys.
 
 ```json
 {
@@ -83,9 +83,13 @@ CFX count polls public directory every `FIVEM_SERVER_CFX_POLL_INTERVAL` millisec
 
 Set `APP_ENV=production` to restrict status counts and player transition logs to members holding `DISCORD_ROLE_ID`. `DISCORD_ROLE_ID` is required in production. Set `APP_ENV=local` to inspect all non-bot guild members during testing; role filtering is disabled even when a role ID is present.
 
-On gateway startup, bot fetches every guild member. Members holding `DISCORD_ROLE_ID` are bulk-upserted into `members` without creating player logs or replacing existing `first_connected_at`. `DISCORD_ADMIN_IDS` accepts comma-separated Discord role IDs and synchronizes `members.is_admin`; members without any configured admin role are cleared.
+On gateway startup, bot fetches every guild member. Members holding `DISCORD_ROLE_ID` are bulk-upserted into `members` without creating activity logs. `DISCORD_ADMIN_IDS` accepts comma-separated Discord role IDs and synchronizes `members.is_admin`; members without any configured admin role are cleared.
 
 Player transitions are sent as embeds to `DISCORD_PLAYER_LOG_CHANNEL_ID`: `Connecting..` when activity name is `FiveM` and details contain `Connecting`, `Connected` when activity name matches `FIVEM_SERVER_NAME`, and `Disconnected` when neither signature exists or member becomes offline/invisible. Server text inside FiveM details/state does not count as connected. Repeated polls in same state do not duplicate logs. Embed titles use the saved character name, falling back to the Discord display name when no character name is saved. Embeds omit the server-name description, use Discord activity start timestamps, show `SOT Players: N` without a capacity suffix, and include Discord embed timestamp.
+
+Two tables record the same shape of event from different sources, and they stay separate because the two disagreeing is the signal worth seeing. `activity_logs` holds Discord rich presence watched through the gateway, and drives attendance and playtime. `server_logs` holds what the CR Roleplay server reported over the webhook. `activity_logs` was named `player_logs` until migration 000029 renamed it; every row survived the rename.
+
+A curated character name lives on `server_members.character_name`, one row per character, since one Discord account can hold several. `members` keeps only Discord identity: `discord_user_id`, `username`, `display_name`, `is_admin`. Readers resolve a member's character name through `server_members` on `discord_user_id`, falling back to the name the game server last reported, and `PATCH /api/v1/me/profile` writes to the member's most recently seen character - returning `409 NO_SERVER_CHARACTER` when the game server has never reported one. `cfx_name` is no longer stored: the webhook reports it as `server_members.username`, so the endpoint still accepts the field and returns the reported value without saving it.
 
 `DISCORD_PLAYER_LOG_CHANNEL_ID` carries Discord activity only. Events the FiveM server reports over the webhook are announced separately to `DISCORD_SERVER_LOG_CHANNEL_ID`, which is required and must differ from the player log channel, so the two feeds never mix in one channel. Server log embeds carry no title: an embed title renders no markdown and no mentions, so the player is named on the first body line as **name** followed by their Discord mention in brackets, which resolves to the live handle and opens a profile card on hover without pinging. Below it is one code-blocked line - `<username> is connecting..`, `[<server_id>] <username> is connected.`, or `[<server_id>] <username> is exiting.` with `Reason: <reason>` on the next line - and the footer carries the event time formatted in `Asia/Jakarta` plus, on a disconnect, the play time of the visit. Footer text is plain: Discord renders neither markdown nor `<t:>` markup there. Connecting lines omit the slot, since the id at that point is a temporary deferral number. Reasons are flattened to one line with backticks replaced, so an unvalidated multi-line FiveM timeout dump cannot break out of the fence.
 
@@ -111,7 +115,7 @@ Before sending automatic end recap, scheduler bulk upserts one `attendance_logs`
 
 Go source is bind-mounted into development container. Air rebuilds and replaces bot process after `.go` file changes; no manual Docker restart needed. Gateway reconnect takes a moment after each rebuild.
 
-Local Compose also starts PostgreSQL. Bot applies embedded SQL migrations at startup. When member reaches `Connected` FiveM state first time, user ID, username, display name, and Discord activity start time are inserted into `members`. Unique `user_id` prevents duplicate rows on later reconnects. Blacklisted users are not stored.
+Local Compose also starts PostgreSQL. Bot applies embedded SQL migrations at startup. When member reaches `Connected` FiveM state first time, Discord user ID, username, and display name are inserted into `members`. Unique `discord_user_id` prevents duplicate rows on later reconnects. Blacklisted users are not stored.
 
 Stop with:
 

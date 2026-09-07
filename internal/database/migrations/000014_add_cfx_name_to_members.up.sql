@@ -1,2 +1,9 @@
-ALTER TABLE members
-    ADD COLUMN IF NOT EXISTS cfx_name TEXT;
+-- Historical: this added members.cfx_name.
+--
+-- The column held an operator-typed copy of the player's CFX name. The webhook
+-- now reports that name directly as server_members.username, so the copy had no
+-- second source to justify it, and 000027 dropped it.
+--
+-- The statement is gone rather than guarded, for the same reason as 000002: the
+-- startup runner replays every up file, and ADD COLUMN IF NOT EXISTS would put
+-- the column back on every boot.

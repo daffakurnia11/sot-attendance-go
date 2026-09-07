@@ -50,7 +50,7 @@ func (i *Issuer) Issue(found member.Member) (string, time.Time, error) {
 		Audience:      "sot-attendance-fe",
 		Subject:       strconv.FormatInt(found.ID, 10),
 		MemberID:      found.ID,
-		DiscordUserID: found.UserID,
+		DiscordUserID: found.DiscordUserID,
 		IssuedAt:      now.Unix(),
 		ExpiresAt:     expiresAt.Unix(),
 	}

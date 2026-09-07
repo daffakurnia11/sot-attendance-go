@@ -11,10 +11,9 @@ import (
 )
 
 type Player struct {
-	UserID           string
-	Username         string
-	DisplayName      string
-	FirstConnectedAt time.Time
+	DiscordUserID string
+	Username      string
+	DisplayName   string
 }
 
 type PlayerLog struct {
@@ -27,7 +26,7 @@ type PlayerLog struct {
 
 type PlaytimeRecap struct {
 	MemberID      int64
-	UserID        string
+	DiscordUserID string
 	DisplayName   string
 	CharacterName string
 	Playtime      time.Duration
@@ -35,15 +34,38 @@ type PlaytimeRecap struct {
 
 var ErrNotFound = errors.New("member not found")
 
+// ErrNoCharacter is returned when a profile write has no character row to land
+// on. The curated name lives on server_members now, so a member the game server
+// has never reported has nowhere to keep one.
+var ErrNoCharacter = errors.New("member has no server character")
+
 type Member struct {
 	ID            int64  `json:"id"`
-	UserID        string `json:"discord_user_id"`
+	DiscordUserID string `json:"discord_user_id"`
 	Username      string `json:"username"`
 	DisplayName   string `json:"display_name"`
 	CharacterName string `json:"character_name"`
 	CFXName       string `json:"cfx_name"`
 	IsAdmin       bool   `json:"is_admin"`
 }
+
+// latestCharacter resolves the names that used to be members.character_name and
+// members.cfx_name. Both now live on server_members, one row per character, so
+// a member holding several has to be reduced to one: the most recently touched
+// row, which is the character the game server saw last.
+//
+// The curated name falls back to the live player_name rather than to nothing. A
+// character the operator never renamed is still a character with a name, and
+// before the move there was no live name to fall back to.
+const latestCharacter = `
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(NULLIF(sm.character_name, ''), sm.player_name) AS character_name,
+			       sm.username
+			FROM server_members sm
+			WHERE sm.discord_user_id = m.discord_user_id
+			ORDER BY sm.updated_at DESC, sm.id DESC
+			LIMIT 1
+		) latest_character ON TRUE`
 
 type executor interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
@@ -56,7 +78,7 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 		WITH closed_sessions AS (
 			SELECT member_id,
 				SUM(EXTRACT(EPOCH FROM (LEAST(occurred_at, $2) - GREATEST(started_at, $1)))) AS seconds
-			FROM player_logs
+			FROM activity_logs
 			WHERE status = 'disconnected'
 				AND started_at IS NOT NULL
 				AND occurred_at > $1
@@ -65,7 +87,7 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 			GROUP BY member_id
 		), latest_logs AS (
 			SELECT DISTINCT ON (member_id) member_id, status, started_at
-			FROM player_logs
+			FROM activity_logs
 			WHERE occurred_at <= $2
 			ORDER BY member_id, occurred_at DESC, id DESC
 		), open_sessions AS (
@@ -85,12 +107,12 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 			GROUP BY member_id
 		)
 		SELECT m.id,
-			m.user_id,
+			m.discord_user_id,
 			m.display_name,
-			COALESCE(NULLIF(m.character_name, ''), 'Unregistered'),
+			COALESCE(NULLIF(latest_character.character_name, ''), 'Unregistered'),
 			FLOOR(t.seconds)::bigint
 		FROM totals t
-		JOIN members m ON m.id = t.member_id
+		JOIN members m ON m.id = t.member_id` + latestCharacter + `
 		WHERE t.seconds > 0
 		ORDER BY t.seconds DESC, m.display_name ASC`
 
@@ -104,7 +126,7 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 	for rows.Next() {
 		var recap PlaytimeRecap
 		var seconds int64
-		if err := rows.Scan(&recap.MemberID, &recap.UserID, &recap.DisplayName, &recap.CharacterName, &seconds); err != nil {
+		if err := rows.Scan(&recap.MemberID, &recap.DiscordUserID, &recap.DisplayName, &recap.CharacterName, &seconds); err != nil {
 			return nil, fmt.Errorf("scan playtime recap: %w", err)
 		}
 		recap.Playtime = time.Duration(seconds) * time.Second
@@ -158,8 +180,8 @@ func NewRepository(database executor) *Repository { return &Repository{database:
 func (r *Repository) SyncAdmins(ctx context.Context, adminUserIDs []string) error {
 	const query = `
 		UPDATE members
-		SET is_admin = (user_id = ANY($1::text[])), updated_at = NOW()
-		WHERE is_admin IS DISTINCT FROM (user_id = ANY($1::text[]))`
+		SET is_admin = (discord_user_id = ANY($1::text[])), updated_at = NOW()
+		WHERE is_admin IS DISTINCT FROM (discord_user_id = ANY($1::text[]))`
 	if _, err := r.database.Exec(ctx, query, adminUserIDs); err != nil {
 		return fmt.Errorf("sync member admins: %w", err)
 	}
@@ -183,16 +205,16 @@ func (r *Repository) CloseOrphanedSessions(ctx context.Context, activeUserIDs []
 	const query = `
 		WITH latest AS (
 			SELECT DISTINCT ON (member_id) member_id, status, started_at
-			FROM player_logs
+			FROM activity_logs
 			ORDER BY member_id, occurred_at DESC, id DESC
 		), orphaned AS (
 			SELECT latest.member_id, latest.started_at
 			FROM latest
 			JOIN members ON members.id = latest.member_id
 			WHERE latest.status IN ('connecting', 'connected')
-				AND NOT (members.user_id = ANY($1::text[]))
+				AND NOT (members.discord_user_id = ANY($1::text[]))
 		)
-		INSERT INTO player_logs (member_id, status, started_at, occurred_at, playtime)
+		INSERT INTO activity_logs (member_id, status, started_at, occurred_at, playtime)
 		SELECT member_id, 'disconnected', started_at, $2,
 			CASE
 				WHEN started_at IS NOT NULL AND $2 > started_at THEN $2 - started_at
@@ -206,42 +228,50 @@ func (r *Repository) CloseOrphanedSessions(ctx context.Context, activeUserIDs []
 	return tag.RowsAffected(), nil
 }
 
-func (r *Repository) UpsertGuildMembers(ctx context.Context, players []Player, observedAt time.Time) error {
+// UpsertGuildMembers records every guild member the gateway sees at startup.
+//
+// It no longer takes an observation time. That existed only to seed
+// first_connected_at, which nothing read and 000028 dropped; created_at already
+// records when a row appeared.
+func (r *Repository) UpsertGuildMembers(ctx context.Context, players []Player) error {
 	if len(players) == 0 {
 		return nil
 	}
-	userIDs := make([]string, len(players))
+	discordUserIDs := make([]string, len(players))
 	usernames := make([]string, len(players))
 	displayNames := make([]string, len(players))
 	for index, player := range players {
-		userIDs[index] = player.UserID
+		discordUserIDs[index] = player.DiscordUserID
 		usernames[index] = player.Username
 		displayNames[index] = player.DisplayName
 	}
 	const query = `
-		INSERT INTO members (user_id, username, display_name, first_connected_at)
-		SELECT data.user_id, data.username, data.display_name, $4
-		FROM unnest($1::text[], $2::text[], $3::text[]) AS data(user_id, username, display_name)
-		ON CONFLICT (user_id) DO UPDATE SET
+		INSERT INTO members (discord_user_id, username, display_name)
+		SELECT data.discord_user_id, data.username, data.display_name
+		FROM unnest($1::text[], $2::text[], $3::text[]) AS data(discord_user_id, username, display_name)
+		ON CONFLICT (discord_user_id) DO UPDATE SET
 			username = EXCLUDED.username,
 			display_name = EXCLUDED.display_name,
 			updated_at = NOW()`
-	if _, err := r.database.Exec(ctx, query, userIDs, usernames, displayNames, observedAt); err != nil {
+	if _, err := r.database.Exec(ctx, query, discordUserIDs, usernames, displayNames); err != nil {
 		return fmt.Errorf("upsert guild members: %w", err)
 	}
 	return nil
 }
 
-func (r *Repository) FindByUserID(ctx context.Context, userID string) (Member, error) {
+func (r *Repository) FindByDiscordUserID(ctx context.Context, discordUserID string) (Member, error) {
 	const query = `
-		SELECT id, user_id, username, display_name, COALESCE(character_name, ''), COALESCE(cfx_name, ''), is_admin
-		FROM members
-		WHERE user_id = $1`
+		SELECT m.id, m.discord_user_id, m.username, m.display_name,
+			COALESCE(latest_character.character_name, ''),
+			COALESCE(latest_character.username, ''),
+			m.is_admin
+		FROM members m` + latestCharacter + `
+		WHERE m.discord_user_id = $1`
 
 	var found Member
-	err := r.database.QueryRow(ctx, query, userID).Scan(
+	err := r.database.QueryRow(ctx, query, discordUserID).Scan(
 		&found.ID,
-		&found.UserID,
+		&found.DiscordUserID,
 		&found.Username,
 		&found.DisplayName,
 		&found.CharacterName,
@@ -252,43 +282,61 @@ func (r *Repository) FindByUserID(ctx context.Context, userID string) (Member, e
 		return Member{}, ErrNotFound
 	}
 	if err != nil {
-		return Member{}, fmt.Errorf("find member by user ID: %w", err)
+		return Member{}, fmt.Errorf("find member by Discord user ID: %w", err)
 	}
 	return found, nil
 }
 
-func (r *Repository) UpdateProfile(ctx context.Context, memberID int64, characterName, cfxName string) (Member, error) {
+// UpdateProfile stores the curated character name on the member's character.
+//
+// The name moved to server_members in 000026, so this writes to the most
+// recently touched character row - the same one the reader resolves - and
+// reports ErrNoCharacter when the member has none. The CFX name is no longer
+// stored anywhere: the webhook reports it as server_members.username, so it is
+// read back rather than accepted.
+func (r *Repository) UpdateProfile(ctx context.Context, memberID int64, characterName string) (Member, error) {
 	const query = `
-		UPDATE members SET character_name = $2, cfx_name = NULLIF($3, ''), updated_at = NOW()
-		WHERE id = $1
-		RETURNING id, user_id, username, display_name, character_name, COALESCE(cfx_name, '')`
-	var updated Member
-	err := r.database.QueryRow(ctx, query, memberID, characterName, cfxName).Scan(&updated.ID, &updated.UserID, &updated.Username, &updated.DisplayName, &updated.CharacterName, &updated.CFXName)
+		WITH target AS (
+			SELECT sm.id
+			FROM server_members sm
+			JOIN members m ON m.discord_user_id = sm.discord_user_id
+			WHERE m.id = $1
+			ORDER BY sm.updated_at DESC, sm.id DESC
+			LIMIT 1
+		)
+		UPDATE server_members sm
+		SET character_name = $2, updated_at = NOW()
+		FROM target
+		WHERE sm.id = target.id
+		RETURNING sm.discord_user_id`
+
+	var discordUserID string
+	err := r.database.QueryRow(ctx, query, memberID, characterName).Scan(&discordUserID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Member{}, ErrNotFound
+		return Member{}, ErrNoCharacter
 	}
 	if err != nil {
 		return Member{}, fmt.Errorf("update member profile: %w", err)
 	}
-	return updated, nil
+	return r.FindByDiscordUserID(ctx, discordUserID)
 }
 
 func (r *Repository) RecordLog(ctx context.Context, log PlayerLog) error {
 	const query = `
 		WITH saved_member AS (
 			INSERT INTO members (
-			user_id, username, display_name, first_connected_at
-			) VALUES ($1, $2, $3, $4)
-			ON CONFLICT (user_id) DO UPDATE SET
+			discord_user_id, username, display_name
+			) VALUES ($1, $2, $3)
+			ON CONFLICT (discord_user_id) DO UPDATE SET
 				username = EXCLUDED.username,
 				display_name = EXCLUDED.display_name,
 				updated_at = NOW()
 			RETURNING id
 		)
-		INSERT INTO player_logs (
+		INSERT INTO activity_logs (
 			member_id, status, started_at, occurred_at, playtime
 		)
-		SELECT id, $5, $6, $7, $8::bigint * INTERVAL '1 second'
+		SELECT id, $4, $5, $6, $7::bigint * INTERVAL '1 second'
 		FROM saved_member`
 
 	var playtimeSeconds *int64
@@ -298,10 +346,9 @@ func (r *Repository) RecordLog(ctx context.Context, log PlayerLog) error {
 	}
 
 	if _, err := r.database.Exec(ctx, query,
-		log.Player.UserID,
+		log.Player.DiscordUserID,
 		log.Player.Username,
 		log.Player.DisplayName,
-		log.Player.FirstConnectedAt,
 		log.Status,
 		log.StartedAt,
 		log.OccurredAt,

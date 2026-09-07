@@ -34,20 +34,21 @@ func (v *stubVerifier) Verify(_ context.Context, token string) (DiscordUser, err
 type stubMembers struct {
 	found                member.Member
 	error                error
-	userID               string
+	discordUserID        string
 	updatedMemberID      int64
 	updatedCharacterName string
-	updatedCFXName       string
 }
 
-func (m *stubMembers) FindByUserID(_ context.Context, userID string) (member.Member, error) {
-	m.userID = userID
+func (m *stubMembers) FindByDiscordUserID(_ context.Context, discordUserID string) (member.Member, error) {
+	m.discordUserID = discordUserID
 	return m.found, m.error
 }
 
-func (m *stubMembers) UpdateProfile(_ context.Context, memberID int64, characterName, cfxName string) (member.Member, error) {
-	m.updatedMemberID, m.updatedCharacterName, m.updatedCFXName = memberID, characterName, cfxName
-	return member.Member{ID: memberID, CharacterName: characterName, CFXName: cfxName}, m.error
+func (m *stubMembers) UpdateProfile(_ context.Context, memberID int64, characterName string) (member.Member, error) {
+	m.updatedMemberID, m.updatedCharacterName = memberID, characterName
+	// The CFX name is reported by the webhook, so the write returns whatever is
+	// stored rather than anything the caller sent.
+	return member.Member{ID: memberID, CharacterName: characterName, CFXName: m.found.CFXName}, m.error
 }
 
 type stubIssuer struct {
@@ -136,7 +137,7 @@ func (s *stubAttendance) GetMonthly(_ context.Context, year int, month time.Mont
 func TestMonthlyAttendanceUsesConfiguredContractStartDate(t *testing.T) {
 	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08"}}
 	store := &stubSettings{values: dbsettings.Values{StartDateContract: "28"}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger(), store)
+	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger(), store)
 
 	response := request(handler, http.MethodGet, "/api/v1/attendance?month=2026-08", "Bearer app-token")
 	if response.Code != http.StatusOK || reader.startDay != 28 {
@@ -172,7 +173,7 @@ func (i *stubIssuer) Issue(found member.Member) (string, time.Time, error) {
 
 func TestDiscordLoginIssuesAppTokenForRegisteredMember(t *testing.T) {
 	verifier := &stubVerifier{user: DiscordUser{ID: "123", Username: "delta"}}
-	members := &stubMembers{found: member.Member{ID: 7, UserID: "123", Username: "delta", DisplayName: "Delta"}}
+	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", Username: "delta", DisplayName: "Delta"}}
 	expiresAt := time.Date(2026, 8, 14, 10, 15, 0, 0, time.UTC)
 	issuer := &stubIssuer{token: "app-token", expiresAt: expiresAt}
 	recorder := request(NewHandler(verifier, members, issuer, stubTokens{}, &stubDashboard{}, &stubAttendance{}, testLogger()), http.MethodPost, "/api/v1/auth/discord", "Bearer discord-token")
@@ -180,8 +181,8 @@ func TestDiscordLoginIssuesAppTokenForRegisteredMember(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"access_token":"app-token"`) {
 		t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
 	}
-	if verifier.token != "discord-token" || members.userID != "123" || issuer.found.ID != 7 {
-		t.Fatalf("flow = verifier token %q, member user %q, issuer member %#v", verifier.token, members.userID, issuer.found)
+	if verifier.token != "discord-token" || members.discordUserID != "123" || issuer.found.ID != 7 {
+		t.Fatalf("flow = verifier token %q, member user %q, issuer member %#v", verifier.token, members.discordUserID, issuer.found)
 	}
 	if recorder.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("Cache-Control = %q", recorder.Header().Get("Cache-Control"))
@@ -305,7 +306,7 @@ func TestDashboardRequiresValidMemberToken(t *testing.T) {
 
 func TestMoneyTransactionsRequireAdminAndUseRequestedAccount(t *testing.T) {
 	ledger := &stubMoneyLedger{balances: map[moneydomain.Account]int64{moneydomain.AccountOffice: 1012500, moneydomain.AccountDirty: 18000}, entries: []moneydomain.LedgerEntry{{ID: 9, Account: moneydomain.AccountDirty, Type: "deposit", Amount: 18000, ActorName: "Kenji"}}}
-	members := &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: true}}
+	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
 	handler := NewHandlerWithCrafting(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, nil, ledger)
 
 	response := request(handler, http.MethodGet, "/api/v1/money-transactions/dirty", "Bearer app-token")
@@ -336,7 +337,7 @@ func TestMemberRecordsUseLoggedInMember(t *testing.T) {
 
 func TestMonthlyAttendanceRequiresAuthAndValidMonth(t *testing.T) {
 	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08", TotalAttended: 12}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger())
+	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger())
 
 	unauthorized := request(handler, http.MethodGet, "/api/v1/attendance?month=2026-08", "")
 	if unauthorized.Code != http.StatusUnauthorized {
@@ -360,7 +361,7 @@ func TestMyMonthlyAttendanceOnlyReturnsLoggedInMember(t *testing.T) {
 			{MemberID: 7, DisplayName: "Logged In", TotalAttended: 1},
 		},
 	}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger())
+	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger())
 
 	response := request(handler, http.MethodGet, "/api/v1/attendance/me?month=2026-08", "Bearer app-token")
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "Other") || !strings.Contains(response.Body.String(), "Logged In") {
@@ -377,7 +378,7 @@ func TestMonthlyPayslipsRequiresAuthAndCalculatesEveryMember(t *testing.T) {
 		{MemberID: 2, CharacterName: "Qualified", TotalAttended: 24},
 	}}}
 	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger(), store)
+	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger(), store)
 
 	unauthorized := request(handler, http.MethodGet, "/api/v1/payslips?month=2026-08", "")
 	if unauthorized.Code != http.StatusUnauthorized {
@@ -391,7 +392,7 @@ func TestMonthlyPayslipsRequiresAuthAndCalculatesEveryMember(t *testing.T) {
 
 func TestSettingsRequireAuthAndValidateUpdates(t *testing.T) {
 	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
-	members := &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: true}}
+	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
 	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), store)
 
 	unauthorized := request(handler, http.MethodGet, "/api/v1/settings", "")
@@ -422,7 +423,7 @@ func TestSettingsRequireAuthAndValidateUpdates(t *testing.T) {
 
 func TestSettingsUpdateRejectsNonAdmin(t *testing.T) {
 	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
-	members := &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: false}}
+	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: false}}
 	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), store)
 	request := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", strings.NewReader(`{}`))
 	request.Header.Set("Authorization", "Bearer app-token")
@@ -436,24 +437,26 @@ func TestSettingsUpdateRejectsNonAdmin(t *testing.T) {
 func TestUpdateMyProfileUsesAuthenticatedMember(t *testing.T) {
 	members := &stubMembers{}
 	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, &stubAttendance{}, testLogger())
+	// cfx_name is still accepted so existing clients do not fail on an unknown
+	// field, but it is not stored: the webhook reports that name.
 	request := httptest.NewRequest(http.MethodPatch, "/api/v1/me/profile", strings.NewReader(`{"character_name":"  Kenji Nakamura  ","cfx_name":"  SOT - Kenji  "}`))
 	request.Header.Set("Authorization", "Bearer app-token")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || members.updatedMemberID != 7 || members.updatedCharacterName != "Kenji Nakamura" || members.updatedCFXName != "SOT - Kenji" {
-		t.Fatalf("response = %d %s, update = %d %q %q", response.Code, response.Body.String(), members.updatedMemberID, members.updatedCharacterName, members.updatedCFXName)
+	if response.Code != http.StatusOK || members.updatedMemberID != 7 || members.updatedCharacterName != "Kenji Nakamura" {
+		t.Fatalf("response = %d %s, update = %d %q", response.Code, response.Body.String(), members.updatedMemberID, members.updatedCharacterName)
 	}
 }
 
 func TestGetMyProfileLoadsCurrentDatabaseValues(t *testing.T) {
-	members := &stubMembers{found: member.Member{ID: 7, UserID: "123", CharacterName: "Kenji Nakamura", CFXName: "SOT - Kenji"}}
+	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", CharacterName: "Kenji Nakamura", CFXName: "SOT - Kenji"}}
 	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger())
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/me/profile", nil)
 	request.Header.Set("Authorization", "Bearer app-token")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cfx_name":"SOT - Kenji"`) || members.userID != "123" {
-		t.Fatalf("response = %d %s, user = %q", response.Code, response.Body.String(), members.userID)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cfx_name":"SOT - Kenji"`) || members.discordUserID != "123" {
+		t.Fatalf("response = %d %s, user = %q", response.Code, response.Body.String(), members.discordUserID)
 	}
 }
 
@@ -473,7 +476,7 @@ func TestRosterWideReportsRejectNonAdmin(t *testing.T) {
 	// The attendance grid covers every member and the payslip report covers
 	// everyone's payout, so both are administrator-only.
 	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
-	members := &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: false}}
+	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: false}}
 	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08"}}
 	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, reader, testLogger(), store)
 
@@ -489,7 +492,7 @@ func TestMemberOwnReportsStayOpenToNonAdmin(t *testing.T) {
 	// A member's own figures are theirs to read; only roster-wide views are
 	// gated, so the personal endpoints must not regress with the admin change.
 	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
-	members := &stubMembers{found: member.Member{ID: 7, UserID: "123", IsAdmin: false}}
+	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: false}}
 	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08", AttendanceDays: []string{"2026-08-05"}}}
 	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, reader, testLogger(), store)
 
@@ -498,5 +501,19 @@ func TestMemberOwnReportsStayOpenToNonAdmin(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s response = %d %s, want 200", path, response.Code, response.Body.String())
 		}
+	}
+}
+
+// A member the game server has never reported has no character row to hold a
+// curated name. That is a conflict the caller can act on, not a 500.
+func TestUpdateMyProfileWithoutAServerCharacter(t *testing.T) {
+	members := &stubMembers{error: member.ErrNoCharacter}
+	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, &stubAttendance{}, testLogger())
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/me/profile", strings.NewReader(`{"character_name":"Kenji Nakamura","cfx_name":""}`))
+	request.Header.Set("Authorization", "Bearer app-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "NO_SERVER_CHARACTER") {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 }

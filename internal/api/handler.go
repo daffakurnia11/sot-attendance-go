@@ -27,10 +27,10 @@ type discordIdentityVerifier interface {
 }
 
 type memberFinder interface {
-	FindByUserID(context.Context, string) (member.Member, error)
+	FindByDiscordUserID(context.Context, string) (member.Member, error)
 }
 type memberProfileUpdater interface {
-	UpdateProfile(context.Context, int64, string, string) (member.Member, error)
+	UpdateProfile(context.Context, int64, string) (member.Member, error)
 }
 
 type tokenIssuer interface {
@@ -199,6 +199,11 @@ func (h *Handler) updateMyProfile(response http.ResponseWriter, request *http.Re
 	request.Body = http.MaxBytesReader(response, request.Body, 1024)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
+	// cfx_name is still accepted and still validated, but no longer stored:
+	// the webhook reports that name as server_members.username, so there is
+	// nothing for a caller to set. Rejecting the field instead would fail every
+	// existing client on DisallowUnknownFields, and the response returns the
+	// reported name, so a caller sees what the value actually is.
 	var payload struct {
 		CharacterName string `json:"character_name"`
 		CFXName       string `json:"cfx_name"`
@@ -221,7 +226,14 @@ func (h *Handler) updateMyProfile(response http.ResponseWriter, request *http.Re
 		writeError(response, http.StatusUnprocessableEntity, "INVALID_CFX_NAME", "CFX name must contain at most 80 characters on one line")
 		return
 	}
-	updated, err := updater.UpdateProfile(request.Context(), claims.MemberID, payload.CharacterName, payload.CFXName)
+	updated, err := updater.UpdateProfile(request.Context(), claims.MemberID, payload.CharacterName)
+	if errors.Is(err, member.ErrNoCharacter) {
+		// The curated name lives on the character now, so a member the game
+		// server has never reported has nowhere to keep one.
+		h.logger.Info("profile update without a server character", "member_id", claims.MemberID)
+		writeError(response, http.StatusConflict, "NO_SERVER_CHARACTER", "Join the CR Roleplay server once before setting a character name")
+		return
+	}
 	if err != nil {
 		h.logger.Error("update member profile", "member_id", claims.MemberID, "error", err)
 		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Profile could not be updated")
@@ -236,7 +248,7 @@ func (h *Handler) getMyProfile(response http.ResponseWriter, request *http.Reque
 	if !ok {
 		return
 	}
-	found, err := h.members.FindByUserID(request.Context(), claims.DiscordUserID)
+	found, err := h.members.FindByDiscordUserID(request.Context(), claims.DiscordUserID)
 	if err != nil {
 		h.logger.Error("load member profile", "member_id", claims.MemberID, "error", err)
 		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Profile could not be loaded")
@@ -370,7 +382,7 @@ func (h *Handler) admin(response http.ResponseWriter, request *http.Request, act
 }
 
 func (h *Handler) loadAuthenticatedMember(response http.ResponseWriter, request *http.Request, claims appauth.Claims) (member.Member, bool) {
-	currentMember, err := h.members.FindByUserID(request.Context(), claims.DiscordUserID)
+	currentMember, err := h.members.FindByDiscordUserID(request.Context(), claims.DiscordUserID)
 	if err != nil {
 		h.logger.Error("load authenticated member", "member_id", claims.MemberID, "error", err)
 		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Member permissions could not be loaded")
@@ -535,7 +547,7 @@ func (h *Handler) discordLogin(response http.ResponseWriter, request *http.Reque
 		return
 	}
 
-	found, err := h.members.FindByUserID(request.Context(), discordUser.ID)
+	found, err := h.members.FindByDiscordUserID(request.Context(), discordUser.ID)
 	if err != nil {
 		if errors.Is(err, member.ErrNotFound) {
 			h.logger.Warn("unregistered Discord login denied", "discord_user_id", discordUser.ID)
@@ -554,7 +566,7 @@ func (h *Handler) discordLogin(response http.ResponseWriter, request *http.Reque
 		return
 	}
 
-	h.logger.Info("member login succeeded", "member_id", found.ID, "discord_user_id", found.UserID)
+	h.logger.Info("member login succeeded", "member_id", found.ID, "discord_user_id", found.DiscordUserID)
 	writeJSON(response, http.StatusOK, map[string]any{
 		"access_token": appToken,
 		"token_type":   "Bearer",

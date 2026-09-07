@@ -1,1 +1,1 @@
-DROP TABLE IF EXISTS player_logs;
+DROP TABLE IF EXISTS activity_logs;

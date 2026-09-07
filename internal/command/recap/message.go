@@ -46,7 +46,7 @@ func CheckEmbed(currentMember member.Member, recaps []member.PlaytimeRecap, atte
 	return embed.New(fmt.Sprintf("Attendance Check (%s)", attendanceStart.Format("02 January 2006"))).
 		Description(fmt.Sprintf("Minimum playtime: %s", formatPlaytime(requiredPlaytime))).
 		Color(color).
-		Field("Name", fmt.Sprintf("%s (<@%s>)", escapeMarkdown(characterName), currentMember.UserID), false).
+		Field("Name", fmt.Sprintf("%s (<@%s>)", escapeMarkdown(characterName), currentMember.DiscordUserID), false).
 		Field("Playtime", formatPlaytime(playtime), true).
 		Field("Status", status, true).
 		Footer(fmt.Sprintf("Attended: %d • Not attending: %d • Participants: %d", attended, len(recaps)-attended, len(recaps)), "").
@@ -110,7 +110,7 @@ func appendSection(description *strings.Builder, title string, recaps []member.P
 		line := fmt.Sprintf("%d. %s (<@%s>) - %s\n",
 			index+1,
 			escapeMarkdown(recap.CharacterName),
-			recap.UserID,
+			recap.DiscordUserID,
 			formatPlaytime(recap.Playtime),
 		)
 		description.WriteString(line)

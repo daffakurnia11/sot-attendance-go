@@ -16,7 +16,7 @@ func TestIssueAndVerify(t *testing.T) {
 	now := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
 	issuer.now = func() time.Time { return now }
 
-	token, expiresAt, err := issuer.Issue(member.Member{ID: 42, UserID: "123456"})
+	token, expiresAt, err := issuer.Issue(member.Member{ID: 42, DiscordUserID: "123456"})
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
@@ -33,7 +33,7 @@ func TestVerifyRejectsTamperedAndExpiredTokens(t *testing.T) {
 	issuer, _ := NewIssuer("01234567890123456789012345678901", time.Minute)
 	now := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
 	issuer.now = func() time.Time { return now }
-	token, _, _ := issuer.Issue(member.Member{ID: 1, UserID: "123"})
+	token, _, _ := issuer.Issue(member.Member{ID: 1, DiscordUserID: "123"})
 
 	if _, err := issuer.Verify(token + "tampered"); !errors.Is(err, ErrInvalidToken) {
 		t.Fatalf("Verify(tampered) error = %v", err)

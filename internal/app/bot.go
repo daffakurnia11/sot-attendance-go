@@ -398,9 +398,9 @@ func (b *Bot) syncGuildMembers(session *discordgo.Session) {
 	roleMembers := matchingRoleMembers(members, []string{b.memberRoleID})
 	players := make([]member.Player, 0, len(roleMembers))
 	for _, guildMember := range roleMembers {
-		players = append(players, member.Player{UserID: guildMember.User.ID, Username: guildMember.User.Username, DisplayName: guildMember.DisplayName()})
+		players = append(players, member.Player{DiscordUserID: guildMember.User.ID, Username: guildMember.User.Username, DisplayName: guildMember.DisplayName()})
 	}
-	if err := b.members.UpsertGuildMembers(ctx, players, time.Now()); err != nil {
+	if err := b.members.UpsertGuildMembers(ctx, players); err != nil {
 		b.logger.Error("upsert Discord role members", "guild_id", b.guildID, "error", err)
 		return
 	}
@@ -503,7 +503,7 @@ func (b *Bot) handleMoney(session *discordgo.Session, message *discordgo.Message
 	request.Account = account
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	currentMember, err := b.members.FindByUserID(ctx, message.Author.ID)
+	currentMember, err := b.members.FindByDiscordUserID(ctx, message.Author.ID)
 	if err != nil {
 		return fmt.Errorf("find money command member: %w", err)
 	}

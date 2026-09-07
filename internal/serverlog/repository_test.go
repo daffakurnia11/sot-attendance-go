@@ -12,10 +12,10 @@ func TestUpsertMemberDerivesTheMatchedMember(t *testing.T) {
 	if strings.Contains(upsertMember, "member_id") {
 		t.Fatal("upsert still references a member_id column")
 	}
-	if !strings.Contains(upsertMember, "SELECT m.id FROM members m WHERE m.user_id = u.discord_user_id") {
+	if !strings.Contains(upsertMember, "SELECT m.id FROM members m WHERE m.discord_user_id = u.discord_user_id") {
 		t.Fatal("upsert does not derive the matched member from discord_user_id")
 	}
-	if !strings.Contains(findEvent, "SELECT m.id FROM members m WHERE m.user_id = sm.discord_user_id") {
+	if !strings.Contains(findEvent, "SELECT m.id FROM members m WHERE m.discord_user_id = sm.discord_user_id") {
 		t.Fatal("duplicate lookup does not derive the matched member")
 	}
 	// Identity is the character plus the Steam account it played from. Discord

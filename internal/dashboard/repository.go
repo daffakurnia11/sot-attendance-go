@@ -79,11 +79,11 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 		SELECT
 			(SELECT COUNT(*) FROM members),
 			COALESCE((SELECT value FROM settings WHERE settings = 'player_threshold'), ''),
-			COALESCE((SELECT SUM(EXTRACT(EPOCH FROM playtime))::bigint FROM player_logs WHERE member_id = $1 AND status = 'disconnected'), 0)
+			COALESCE((SELECT SUM(EXTRACT(EPOCH FROM playtime))::bigint FROM activity_logs WHERE member_id = $1 AND status = 'disconnected'), 0)
 			+ COALESCE((
 				SELECT EXTRACT(EPOCH FROM (NOW() - latest.started_at))::bigint
 				FROM (
-					SELECT status, started_at FROM player_logs
+					SELECT status, started_at FROM activity_logs
 					WHERE member_id = $1 ORDER BY occurred_at DESC, id DESC LIMIT 1
 				) latest
 				WHERE latest.status = 'connected' AND latest.started_at IS NOT NULL
@@ -105,15 +105,15 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 	const playersQuery = `
 		WITH latest AS (
 			SELECT DISTINCT ON (member_id) member_id, status, started_at
-			FROM player_logs
+			FROM activity_logs
 			ORDER BY member_id, occurred_at DESC, id DESC
 		)
 		SELECT
 			m.id,
 			m.username,
 			m.display_name,
-			COALESCE(m.character_name, ''),
-			COALESCE(m.cfx_name, ''),
+			COALESCE(latest_character.character_name, ''),
+			COALESCE(latest_character.username, ''),
 			latest.started_at,
 			CASE
 				WHEN latest.status IN ('connecting', 'connected') THEN latest.status
@@ -126,7 +126,7 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 			END,
 			COALESCE((
 				SELECT SUM(EXTRACT(EPOCH FROM logs.playtime))::bigint
-				FROM player_logs logs
+				FROM activity_logs logs
 				WHERE logs.member_id = m.id AND logs.status = 'disconnected'
 			), 0) + CASE
 				WHEN latest.status = 'connected' AND latest.started_at IS NOT NULL
@@ -135,6 +135,14 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 			END
 		FROM members m
 		LEFT JOIN latest ON latest.member_id = m.id
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(NULLIF(sm.character_name, ''), sm.player_name) AS character_name,
+			       sm.username
+			FROM server_members sm
+			WHERE sm.discord_user_id = m.discord_user_id
+			ORDER BY sm.updated_at DESC, sm.id DESC
+			LIMIT 1
+		) latest_character ON TRUE
 		ORDER BY m.display_name, m.id`
 	rows, err := r.database.Query(ctx, playersQuery)
 	if err != nil {
@@ -167,8 +175,8 @@ func (r *Repository) GetMemberRecords(ctx context.Context, memberID int64) (Memb
 	var result MemberRecords
 	const summaryQuery = `
 		SELECT
-			COALESCE((SELECT SUM(EXTRACT(EPOCH FROM playtime))::bigint FROM player_logs WHERE member_id = $1 AND status = 'disconnected'), 0)
-			+ COALESCE((SELECT EXTRACT(EPOCH FROM (NOW() - latest.started_at))::bigint FROM (SELECT status, started_at FROM player_logs WHERE member_id = $1 ORDER BY occurred_at DESC, id DESC LIMIT 1) latest WHERE latest.status = 'connected' AND latest.started_at IS NOT NULL), 0),
+			COALESCE((SELECT SUM(EXTRACT(EPOCH FROM playtime))::bigint FROM activity_logs WHERE member_id = $1 AND status = 'disconnected'), 0)
+			+ COALESCE((SELECT EXTRACT(EPOCH FROM (NOW() - latest.started_at))::bigint FROM (SELECT status, started_at FROM activity_logs WHERE member_id = $1 ORDER BY occurred_at DESC, id DESC LIMIT 1) latest WHERE latest.status = 'connected' AND latest.started_at IS NOT NULL), 0),
 			(SELECT COUNT(*) FROM attendance_logs WHERE member_id = $1 AND is_attended),
 			(SELECT COUNT(*) FROM attendance_logs WHERE member_id = $1)`
 	if err := r.database.QueryRow(ctx, summaryQuery, memberID).Scan(&result.TotalPlaytimeSeconds, &result.TotalAttended, &result.TotalAttendances); err != nil {
@@ -178,7 +186,7 @@ func (r *Repository) GetMemberRecords(ctx context.Context, memberID int64) (Memb
 	const playerLogsQuery = `
 		SELECT id, status, started_at, occurred_at,
 			CASE WHEN playtime IS NULL THEN NULL ELSE EXTRACT(EPOCH FROM playtime)::bigint END
-		FROM player_logs WHERE member_id = $1 ORDER BY occurred_at DESC, id DESC`
+		FROM activity_logs WHERE member_id = $1 ORDER BY occurred_at DESC, id DESC`
 	rows, err := r.database.Query(ctx, playerLogsQuery, memberID)
 	if err != nil {
 		return MemberRecords{}, fmt.Errorf("query member player logs: %w", err)
