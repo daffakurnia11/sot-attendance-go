@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -78,10 +79,47 @@ const findEvent = `
 	JOIN server_members sm ON sm.id = sl.server_member_id
 	WHERE sl.payload = $1::jsonb`
 
+// Bounds on how stale an open session may be for an arriving event to join it.
+//
+// Both are measured against the arriving event's own timestamp, not the clock,
+// so resolution stays order-independent: replaying the same events in any order
+// reaches the same answer.
+//
+// The two failures are not symmetric, which is why the windows are tight rather
+// than safe. Splitting one visit into two costs an orphan row and nothing else -
+// playtime is derived from the session's first event, so a session that starts
+// at its connected event still reports the right duration. Merging two visits
+// overstates playtime by the gap between them, silently, forever. So when in
+// doubt, split.
+const (
+	// connectGrace bounds a connected event joining an open session. Measured
+	// over sessions with exactly one connecting and one connected, the gap is
+	// p95 10m against a 1m54s floor; the single outlier at 3h47m is a loading
+	// screen left sitting, and splitting that is the cheaper mistake.
+	connectGrace = 30 * time.Minute
+	// visitMaxAge bounds a disconnected event closing an open session. No
+	// legitimate visit outlives the scheduled txAdmin restarts, which run at
+	// 05:00 and 17:00; the longest visit on record is 9h39m against a p95 of
+	// 5h11m. Past this, a disconnect opens its own session rather than claiming
+	// days of playtime by closing an abandoned one.
+	visitMaxAge = 12 * time.Hour
+)
+
 // findOpenSession is how a session is reconstructed without the sender tracking
 // one. A session is open until a disconnected event lands for it, so the most
 // recent open session for this player is the one a connected or disconnected
-// event belongs to.
+// event belongs to - within the bounds above, and subject to one shape rule.
+//
+// The shape rule: a connected event never joins a session that already has one.
+// A visit has exactly one connected event, so a second is a second visit. This
+// is what actually rotted the stored data - all six merged sessions found in
+// production were a connected event landing on a session whose disconnect never
+// arrived, stitching two visits together and reporting their combined span as
+// one. The worst read 33h43m.
+//
+// Staleness alone would not have caught those: the gap between the two visits
+// was hours, and a legitimate disconnect can also land hours after its
+// connected. Shape distinguishes them where time cannot.
 //
 // Cost of deriving rather than being told: a disconnected event that overtakes
 // its own connecting event finds no open session and starts a new one. That
@@ -95,7 +133,16 @@ const findOpenSession = `
 			SELECT 1 FROM server_logs d
 			WHERE d.session_id = sl.session_id AND d.status = 'disconnected'
 		)
-	ORDER BY sl.occurred_at DESC, sl.id DESC
+		AND (
+			$4::boolean IS NOT TRUE
+			OR NOT EXISTS (
+				SELECT 1 FROM server_logs c
+				WHERE c.session_id = sl.session_id AND c.status = 'connected'
+			)
+		)
+	GROUP BY sl.session_id
+	HAVING MAX(sl.occurred_at) > $2::timestamptz - make_interval(secs => $3::double precision)
+	ORDER BY MAX(sl.occurred_at) DESC, MAX(sl.id) DESC
 	LIMIT 1`
 
 const insertLog = `
@@ -221,8 +268,16 @@ func (r *Repository) Store(ctx context.Context, event ValidEvent) (AcceptedResul
 // themselves when none exists so a missed connecting event costs nothing.
 func resolveSession(ctx context.Context, transaction pgx.Tx, event ValidEvent, serverMemberID int64) (string, error) {
 	if event.Status != StatusConnecting {
+		maxAge := visitMaxAge
+		requireNoConnected := event.Status == StatusConnected
+		if requireNoConnected {
+			maxAge = connectGrace
+		}
+
 		var sessionID string
-		err := transaction.QueryRow(ctx, findOpenSession, serverMemberID).Scan(&sessionID)
+		err := transaction.QueryRow(ctx, findOpenSession,
+			serverMemberID, event.OccurredAt, maxAge.Seconds(), requireNoConnected,
+		).Scan(&sessionID)
 		switch {
 		case err == nil:
 			return sessionID, nil

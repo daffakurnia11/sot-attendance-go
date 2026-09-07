@@ -73,6 +73,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go test ./internal/database/ -run TestMigrate -v
+      # Session resolution is a property of the stored rows, so its tests need
+      # a database and skip without one. This is the only job that has one.
+      - run: go test ./internal/serverlog/ -run TestSession -v
 
   build-app:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
