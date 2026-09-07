@@ -312,3 +312,56 @@ type stubCFX struct{}
 func (stubCFX) Rosters(context.Context) ([]CFXPlayer, []CFXPlayer, error) {
 	return []CFXPlayer{}, []CFXPlayer{}, nil
 }
+
+// A player still on the loading screen has reported connecting and nothing
+// else. Deriving status only from sessions that reached connected left them
+// with no status at all, so the page never listed them.
+func TestDashboardPlayerStatusShowsConnecting(t *testing.T) {
+	pool := recordsTestPool(t)
+	ctx := context.Background()
+	repository := NewRepository(pool, stubCFX{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO settings (settings, value) VALUES ('player_threshold', '15')
+		ON CONFLICT (settings) DO UPDATE SET value = EXCLUDED.value`); err != nil {
+		t.Fatal(err)
+	}
+	memberID, serverMemberID := seedMember(t, pool)
+	now := time.Now().UTC()
+
+	// connecting only: no connected event, no disconnect.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO server_logs (payload, server_member_id, session_id, status, occurred_at)
+		VALUES ('{"seed":"arriving"}'::jsonb, $1, '00000000-0000-4000-8000-000000000040', 'connecting', $2)`,
+		serverMemberID, now.Add(-2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := repository.Get(ctx, memberID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if len(snapshot.DiscordPlayers) != 1 {
+		t.Fatalf("players = %#v, want one", snapshot.DiscordPlayers)
+	}
+	player := snapshot.DiscordPlayers[0]
+	if player.Status != "connecting" {
+		t.Errorf("status = %q, want connecting", player.Status)
+	}
+	// Playtime starts at the connected event, which has not happened.
+	if player.StartedAt != nil || player.CurrentPlaytimeSeconds != 0 {
+		t.Errorf("started_at = %v, current = %d, want no playtime yet", player.StartedAt, player.CurrentPlaytimeSeconds)
+	}
+
+	// An attempt abandoned at the loading screen ages out of connecting.
+	if _, err := pool.Exec(ctx, `UPDATE server_logs SET occurred_at = occurred_at - INTERVAL '31 minutes'`); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = repository.Get(ctx, memberID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got := snapshot.DiscordPlayers[0].Status; got != "offline" {
+		t.Errorf("status = %q, want offline once the attempt aged out", got)
+	}
+}

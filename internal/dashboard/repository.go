@@ -11,7 +11,10 @@ import (
 )
 
 type Player struct {
-	MemberID int64 `json:"member_id"`
+	// MemberID is null for a player the game server has reported but who has
+	// no members row, meaning they are not in the Discord guild. The row is
+	// still real: the server saw them.
+	MemberID *int64 `json:"member_id"`
 	// DiscordUserID keys the live presence overlay, and is what the bot and
 	// server_members both identify a member by.
 	DiscordUserID string     `json:"discord_user_id"`
@@ -33,6 +36,11 @@ type Player struct {
 	DiscordPlaying         bool   `json:"discord_playing"`
 	CurrentPlaytimeSeconds int64  `json:"current_playtime_seconds"`
 	TotalPlaytimeSeconds   int64  `json:"total_playtime_seconds"`
+	// CID identifies the character the game server last saw, and ServerID the
+	// slot it gave them on the visit that is open now. ServerID is null when no
+	// visit is open, since a slot means nothing once it is released.
+	CID      string  `json:"cid"`
+	ServerID *string `json:"server_id"`
 }
 
 type Snapshot struct {
@@ -136,66 +144,85 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 	}
 	result.PlayerThreshold = threshold
 
-	// Both feeds again, on the same rule as the member records: server_logs is
-	// the truth where it exists, presence is the fallback where it does not,
-	// and the two are split at each member's first webhook event.
+	// One row per character the game server knows, not per Discord member.
 	//
-	// A webhook status also ages out. A visit whose disconnect never arrived
-	// would otherwise read connected forever, which is the failure the removed
-	// server_members.last_status cache had.
+	// This was members-driven, which could not represent the case the page
+	// exists for: a player the server has on right now who has no members row,
+	// because they are not in the guild. Such a player produced no row at all,
+	// and the only trace of them was an unmatched CFX name with no character
+	// name and no character id. server_members is the subject; members is
+	// joined on for Discord identity and is allowed to be absent.
+	//
+	// Presence and playtime follow the same rule as the member records:
+	// server_logs is the truth where it exists, activity_logs the fallback, the
+	// two split at the member's first webhook event. A webhook status also ages
+	// out, so a visit whose disconnect never arrived stops reading connected.
 	const playersQuery = `
 		WITH handovers AS (
 			SELECT sm.discord_user_id, MIN(sl.occurred_at) AS at
 			FROM server_logs sl
 			JOIN server_members sm ON sm.id = sl.server_member_id
 			GROUP BY sm.discord_user_id
-		), bounds AS (
-			SELECT m.id AS member_id, m.discord_user_id,
-				COALESCE(h.at, NOW()) AS presence_end
-			FROM members m
-			LEFT JOIN handovers h ON h.discord_user_id = m.discord_user_id
 		), visits AS (
-			SELECT sm.discord_user_id, sl.session_id,
+			SELECT sl.server_member_id, sl.session_id,
 				MIN(sl.occurred_at) FILTER (WHERE sl.status = 'connected') AS connected_at,
 				MAX(sl.occurred_at) FILTER (WHERE sl.status = 'disconnected') AS disconnected_at,
-				MAX(sl.occurred_at) AS last_event_at
+				MAX(sl.occurred_at) AS last_event_at,
+				-- The slot the game server assigned, from the visit's own
+				-- connected event. A connecting event carries a temporary
+				-- deferral number instead, which names nothing.
+				(ARRAY_AGG(sl.payload->'player'->>'server_id' ORDER BY sl.occurred_at)
+					FILTER (WHERE sl.status = 'connected'))[1] AS server_id
 			FROM server_logs sl
-			JOIN server_members sm ON sm.id = sl.server_member_id
-			GROUP BY sm.discord_user_id, sl.session_id
+			GROUP BY sl.server_member_id, sl.session_id
+		), latest_session AS (
+			-- Every session, including one that has only reported connecting.
+			-- Deriving status from connected sessions alone meant a player
+			-- still on the loading screen had no status at all and never
+			-- reached the page.
+			SELECT DISTINCT ON (server_member_id)
+				server_member_id, server_id, connected_at, disconnected_at, last_event_at
+			FROM visits
+			ORDER BY server_member_id, last_event_at DESC
+		), character_status AS (
+			SELECT server_member_id, server_id,
+				CASE
+					WHEN disconnected_at IS NOT NULL THEN 'offline'
+					WHEN connected_at IS NOT NULL
+						AND last_event_at + make_interval(secs => $1::double precision) > NOW()
+					THEN 'connected'
+					WHEN connected_at IS NULL
+						AND last_event_at + make_interval(secs => $2::double precision) > NOW()
+					THEN 'connecting'
+					ELSE 'offline'
+				END AS status,
+				-- Playtime starts at the connected event, so an arriving
+				-- player has no start yet.
+				CASE
+					WHEN disconnected_at IS NULL
+						AND connected_at IS NOT NULL
+						AND last_event_at + make_interval(secs => $1::double precision) > NOW()
+					THEN connected_at
+				END AS started_at
+			FROM latest_session
 		), bounded AS (
-			SELECT discord_user_id, connected_at AS starts,
+			SELECT server_member_id, server_id, connected_at AS starts,
 				LEAST(COALESCE(disconnected_at, last_event_at + make_interval(secs => $1::double precision)), NOW()) AS ends,
 				disconnected_at, last_event_at
 			FROM visits
 			WHERE connected_at IS NOT NULL
-		), latest_visit AS (
-			SELECT DISTINCT ON (discord_user_id) discord_user_id, starts, ends, disconnected_at, last_event_at
-			FROM bounded
-			ORDER BY discord_user_id, last_event_at DESC
-		), server_status AS (
-			-- The bound has to be read unclamped here: bounded.ends is capped
-			-- at NOW(), so comparing it to NOW() could never be true.
-			SELECT discord_user_id,
-				CASE
-					WHEN disconnected_at IS NULL
-						AND last_event_at + make_interval(secs => $1::double precision) > NOW()
-					THEN 'connected'
-					ELSE 'offline'
-				END AS status,
-				CASE
-					WHEN disconnected_at IS NULL
-						AND last_event_at + make_interval(secs => $1::double precision) > NOW()
-					THEN starts
-				END AS started_at
-			FROM latest_visit
+		), member_visits AS (
+			SELECT sm.discord_user_id, b.starts, b.ends
+			FROM bounded b
+			JOIN server_members sm ON sm.id = b.server_member_id
+			WHERE b.ends > b.starts
 		), ordered AS (
 			SELECT discord_user_id, starts, ends,
 				MAX(ends) OVER (
 					PARTITION BY discord_user_id ORDER BY starts, ends
 					ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
 				) AS prior_end
-			FROM bounded
-			WHERE ends > starts
+			FROM member_visits
 		), islands AS (
 			SELECT discord_user_id, starts, ends,
 				SUM(CASE WHEN prior_end IS NULL OR starts > prior_end THEN 1 ELSE 0 END) OVER (
@@ -216,59 +243,54 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 			FROM activity_logs a
 			ORDER BY a.member_id, a.occurred_at DESC, a.id DESC
 		), presence_seconds AS (
-			SELECT b.member_id,
-				SUM(EXTRACT(EPOCH FROM a.playtime))::bigint AS seconds
+			SELECT a.member_id, SUM(EXTRACT(EPOCH FROM a.playtime))::bigint AS seconds
 			FROM activity_logs a
-			JOIN bounds b ON b.member_id = a.member_id
+			JOIN members m ON m.id = a.member_id
+			LEFT JOIN handovers h ON h.discord_user_id = m.discord_user_id
 			WHERE a.status = 'disconnected'
 				AND a.playtime IS NOT NULL
-				AND a.occurred_at < b.presence_end
-			GROUP BY b.member_id
+				AND a.occurred_at < COALESCE(h.at, NOW())
+			GROUP BY a.member_id
 		)
 		SELECT
 			m.id,
-			m.discord_user_id,
-			m.username,
-			m.display_name,
-			COALESCE(latest_character.character_name, ''),
-			COALESCE(latest_character.username, ''),
-			COALESCE(server_status.started_at, presence_started.started_at) AS started_at,
+			sm.discord_user_id,
+			COALESCE(m.username, ''),
+			COALESCE(m.display_name, ''),
+			sm.player_name,
+			sm.username,
+			COALESCE(character_status.started_at, presence_started.started_at) AS started_at,
 			COALESCE(
-				NULLIF(server_status.status, 'offline'),
+				NULLIF(character_status.status, 'offline'),
 				CASE
-					WHEN server_status.status IS NULL AND presence_latest.status IN ('connecting', 'connected')
+					WHEN character_status.status IS NULL AND presence_latest.status IN ('connecting', 'connected')
 					THEN presence_latest.status
 				END,
 				'offline'
 			) AS status,
 			CASE
-				WHEN COALESCE(server_status.started_at, presence_started.started_at) IS NOT NULL
-				THEN GREATEST(EXTRACT(EPOCH FROM (NOW() - COALESCE(server_status.started_at, presence_started.started_at)))::bigint, 0)
+				WHEN COALESCE(character_status.started_at, presence_started.started_at) IS NOT NULL
+				THEN GREATEST(EXTRACT(EPOCH FROM (NOW() - COALESCE(character_status.started_at, presence_started.started_at)))::bigint, 0)
 				ELSE 0
 			END AS current_playtime,
-			COALESCE(server_seconds.seconds, 0) + COALESCE(presence_seconds.seconds, 0) AS total_playtime
-		FROM members m
-		LEFT JOIN bounds ON bounds.member_id = m.id
-		LEFT JOIN server_status ON server_status.discord_user_id = m.discord_user_id
-		LEFT JOIN server_seconds ON server_seconds.discord_user_id = m.discord_user_id
+			COALESCE(server_seconds.seconds, 0) + COALESCE(presence_seconds.seconds, 0) AS total_playtime,
+			sm.cid,
+			character_status.server_id
+		FROM server_members sm
+		LEFT JOIN members m ON m.discord_user_id = sm.discord_user_id
+		LEFT JOIN character_status ON character_status.server_member_id = sm.id
+		LEFT JOIN server_seconds ON server_seconds.discord_user_id = sm.discord_user_id
 		LEFT JOIN presence_latest ON presence_latest.member_id = m.id
 		LEFT JOIN presence_seconds ON presence_seconds.member_id = m.id
 		LEFT JOIN LATERAL (
 			-- Presence supplies a start only where the webhook has no say.
 			SELECT presence_latest.started_at AS started_at
-			WHERE server_status.status IS NULL
+			WHERE character_status.status IS NULL
 				AND presence_latest.status IN ('connecting', 'connected')
 				AND presence_latest.started_at IS NOT NULL
 		) presence_started ON TRUE
-		LEFT JOIN LATERAL (
-			SELECT sm.player_name AS character_name, sm.username
-			FROM server_members sm
-			WHERE sm.discord_user_id = m.discord_user_id
-			ORDER BY sm.updated_at DESC, sm.id DESC
-			LIMIT 1
-		) latest_character ON TRUE
-		ORDER BY m.display_name, m.id`
-	rows, err := r.database.Query(ctx, playersQuery, visitMaxAge.Seconds())
+		ORDER BY sm.player_name, sm.id`
+	rows, err := r.database.Query(ctx, playersQuery, visitMaxAge.Seconds(), connectGrace.Seconds())
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("query current Discord players: %w", err)
 	}
@@ -276,7 +298,7 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 	result.DiscordPlayers = make([]Player, 0)
 	for rows.Next() {
 		var player Player
-		if err := rows.Scan(&player.MemberID, &player.DiscordUserID, &player.Username, &player.DisplayName, &player.CharacterName, &player.CFXName, &player.StartedAt, &player.Status, &player.CurrentPlaytimeSeconds, &player.TotalPlaytimeSeconds); err != nil {
+		if err := rows.Scan(&player.MemberID, &player.DiscordUserID, &player.Username, &player.DisplayName, &player.CharacterName, &player.CFXName, &player.StartedAt, &player.Status, &player.CurrentPlaytimeSeconds, &player.TotalPlaytimeSeconds, &player.CID, &player.ServerID); err != nil {
 			return Snapshot{}, fmt.Errorf("scan Discord player: %w", err)
 		}
 		result.DiscordPlayers = append(result.DiscordPlayers, player)
@@ -319,6 +341,12 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 // session resolution and the attendance recap use. A visit whose disconnect
 // never arrived is credited to its last observed event plus this, not forever.
 const visitMaxAge = 12 * time.Hour
+
+// connectGrace bounds how long a session that only ever reported connecting is
+// still shown as connecting. It matches the grace session resolution uses when
+// deciding whether a connected event belongs to an earlier attempt: past it,
+// the attempt was abandoned at a loading screen and the player is not arriving.
+const connectGrace = 30 * time.Minute
 
 // GetMemberRecords reads both feeds.
 //

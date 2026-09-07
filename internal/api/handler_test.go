@@ -281,7 +281,7 @@ func TestDashboardRequiresValidMemberToken(t *testing.T) {
 	dashboards := &stubDashboard{snapshot: dashboard.Snapshot{
 		TotalMembers:    12,
 		PlayerThreshold: 15,
-		DiscordPlayers:  []dashboard.Player{{MemberID: 7, CFXName: "SOT - Kenji"}},
+		DiscordPlayers:  []dashboard.Player{{MemberID: memberID(7), CFXName: "SOT - Kenji"}},
 	}}
 	handler := NewHandler(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, dashboards, &stubAttendance{}, testLogger())
 
@@ -480,3 +480,7 @@ func TestMemberOwnReportsStayOpenToNonAdmin(t *testing.T) {
 		}
 	}
 }
+
+// memberID exists because a dashboard player's member id is a pointer: the
+// game server can report a player who has no members row at all.
+func memberID(value int64) *int64 { return &value }
