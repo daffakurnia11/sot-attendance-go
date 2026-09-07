@@ -15,9 +15,14 @@ import (
 // free of that dependency; the bot does the mapping.
 type ServerLogEvent struct {
 	// PlayerName is the FiveM display name and Username the passport name.
-	// The footer names the player; the status line names the username.
+	// The heading line names the player; the status line names the username.
 	PlayerName string
 	Username   string
+	// DiscordUserID renders the player as a mention beside their name, which
+	// Discord resolves to the live handle and a hover card. Empty when the
+	// player has no Discord id stored, and ignored unless it is all digits: a
+	// malformed mention renders as raw text.
+	DiscordUserID string
 	// Status is the stored value: connecting, connected, or disconnected.
 	Status     string
 	OccurredAt time.Time
@@ -58,16 +63,73 @@ const serverLogTime = "02 January 2006 at 15:04"
 //
 // The line lives in a code block rather than an embed field: the feed is read
 // as a scrollback of what the game server reported, and a monospaced sentence
-// stays scannable where a Status/Time field grid does not. Nothing carries a
-// title: the player name is identity, not a heading, so it sits in the footer
-// with the other metadata and leaves the reported line as the whole body.
+// stays scannable where a Status/Time field grid does not.
+//
+// The player is named in the body rather than the embed title because the
+// title renders no markdown and no mentions - only the whole title can be a
+// link. A mention in the description resolves to the live Discord handle and
+// opens the profile card on hover, which is what a reader chasing an entry
+// wants, and it does not ping.
 func ServerLogEmbed(event ServerLogEvent) *discordgo.MessageEmbed {
 	phase := serverLogPhase(event.Status)
+	description := fmt.Sprintf("```\n%s\n```", serverLogLine(event, phase))
+	if heading := serverLogHeading(event); heading != "" {
+		description = heading + "\n" + description
+	}
 	return embed.New("").
 		Color(playerPhaseColor(phase)).
-		Description(fmt.Sprintf("```\n%s\n```", serverLogLine(event, phase))).
+		Description(description).
 		Footer(serverLogFooter(event, phase), "").
 		Build()
+}
+
+// serverLogHeading names the player above the reported line, as a bold name
+// followed by their Discord account in brackets.
+func serverLogHeading(event ServerLogEvent) string {
+	name := escapeMarkdown(strings.TrimSpace(event.PlayerName))
+	mention := ""
+	if isDiscordSnowflake(event.DiscordUserID) {
+		mention = fmt.Sprintf("<@%s>", event.DiscordUserID)
+	}
+
+	switch {
+	case name != "" && mention != "":
+		return fmt.Sprintf("**%s** (%s)", name, mention)
+	case name != "":
+		return fmt.Sprintf("**%s**", name)
+	default:
+		return mention
+	}
+}
+
+// isDiscordSnowflake reports whether value can be rendered as a mention. Ids
+// reach here from an unvalidated payload field, and anything else would show
+// as the literal <@...> text.
+func isDiscordSnowflake(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// escapeMarkdown neutralises the formatting characters a FiveM display name may
+// contain, which would otherwise leak out of the bold name and reformat the
+// line.
+func escapeMarkdown(value string) string {
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for _, character := range value {
+		if strings.ContainsRune("*_~`|\\>", character) {
+			builder.WriteByte('\\')
+		}
+		builder.WriteRune(character)
+	}
+	return builder.String()
 }
 
 // serverLogLine is what the code block holds. A disconnect reason goes on its
@@ -94,13 +156,10 @@ func serverLogLine(event ServerLogEvent, phase playerPhase) string {
 	}
 }
 
-// serverLogFooter carries the player name, the event time, and - on a
-// disconnect - how long the visit lasted.
+// serverLogFooter carries the event time and - on a disconnect - how long the
+// visit lasted. The player is named in the body, not repeated here.
 func serverLogFooter(event ServerLogEvent, phase playerPhase) string {
-	parts := make([]string, 0, 3)
-	if name := strings.TrimSpace(event.PlayerName); name != "" {
-		parts = append(parts, name)
-	}
+	parts := make([]string, 0, 2)
 	parts = append(parts, event.OccurredAt.Format(serverLogTime))
 	if phase == phaseDisconnected {
 		parts = append(parts, fmt.Sprintf("Playtime: %s", elapsedPlaytime(event.StartedAt, event.OccurredAt)))

@@ -11,17 +11,18 @@ func TestServerLogEmbedShape(t *testing.T) {
 	t.Parallel()
 	occurred := time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC)
 	embed := ServerLogEmbed(ServerLogEvent{
-		PlayerName: "Kenji Nakamura",
-		Username:   "SOT - Ayvix",
-		Status:     "connected",
-		OccurredAt: occurred,
-		ServerID:   "479",
+		PlayerName:    "Kenji Nakamura",
+		Username:      "SOT - Ayvix",
+		Status:        "connected",
+		OccurredAt:    occurred,
+		ServerID:      "479",
+		DiscordUserID: "1220326041067982941",
 	})
 
 	if embed.Title != "" {
 		t.Errorf("Title = %q, want empty", embed.Title)
 	}
-	if embed.Footer == nil || embed.Footer.Text != "Kenji Nakamura • 03 September 2026 at 09:00" {
+	if embed.Footer == nil || embed.Footer.Text != "03 September 2026 at 09:00" {
 		t.Errorf("Footer = %#v", embed.Footer)
 	}
 	// The embed timestamp is what Discord renders as "Today at 08.03"; the
@@ -32,7 +33,7 @@ func TestServerLogEmbedShape(t *testing.T) {
 	if len(embed.Fields) != 0 {
 		t.Errorf("fields = %#v, want none", embed.Fields)
 	}
-	want := "```\n[479] SOT - Ayvix is connected.\n```"
+	want := "**Kenji Nakamura** (<@1220326041067982941>)\n```\n[479] SOT - Ayvix is connected.\n```"
 	if embed.Description != want {
 		t.Errorf("Description = %q, want %q", embed.Description, want)
 	}
@@ -118,13 +119,14 @@ func TestServerLogEmbedFlattensHostileReason(t *testing.T) {
 
 	// The reason keeps its own line and stays one line, however many the
 	// sender used.
+	// Heading, fence, sentence, reason: the reason is the fourth line.
 	lines := strings.Split(e.Description, "\n")
-	if strings.Contains(lines[2], "`") {
-		t.Errorf("reason kept a backtick: %q", lines[2])
+	if strings.Contains(lines[3], "`") {
+		t.Errorf("reason kept a backtick: %q", lines[3])
 	}
 	want := "Reason: Server->client connection timed out. Command list: '''QBCore:Player:SetPlayerData (2862 B)"
-	if lines[2] != want {
-		t.Errorf("reason = %q, want %q", lines[2], want)
+	if lines[3] != want {
+		t.Errorf("reason = %q, want %q", lines[3], want)
 	}
 	// Exactly one opening fence and one closing fence.
 	if got := strings.Count(e.Description, "```"); got != 2 {
@@ -146,21 +148,21 @@ func TestServerLogEmbedFooterPlaytime(t *testing.T) {
 		{
 			name:  "disconnect reports playtime",
 			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "disconnected", OccurredAt: start.Add(110 * time.Minute), StartedAt: start},
-			want:  "Prince Lim • 03 September 2026 at 10:50 • Playtime: 1h 50m",
+			want:  "03 September 2026 at 10:50 • Playtime: 1h 50m",
 		},
 		{
 			name:  "disconnect without a known start",
 			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "disconnected", OccurredAt: start},
-			want:  "Prince Lim • 03 September 2026 at 09:00 • Playtime: Unavailable",
+			want:  "03 September 2026 at 09:00 • Playtime: Unavailable",
 		},
 		{
 			name:  "connected reports none",
 			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "connected", OccurredAt: start, StartedAt: start},
-			want:  "Prince Lim • 03 September 2026 at 09:00",
+			want:  "03 September 2026 at 09:00",
 		},
 		{
-			name:  "an unnamed player leaves the time alone in the footer",
-			event: ServerLogEvent{Status: "connecting", OccurredAt: start},
+			name:  "connecting reports none",
+			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "connecting", OccurredAt: start},
 			want:  "03 September 2026 at 09:00",
 		},
 	} {
@@ -171,5 +173,70 @@ func TestServerLogEmbedFooterPlaytime(t *testing.T) {
 				t.Errorf("Footer = %#v, want %q", e.Footer, test.want)
 			}
 		})
+	}
+}
+
+func TestServerLogHeading(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		event ServerLogEvent
+		want  string
+	}{
+		{
+			name:  "name and mention",
+			event: ServerLogEvent{PlayerName: "Kenji Nakamura", DiscordUserID: "1220326041067982941"},
+			want:  "**Kenji Nakamura** (<@1220326041067982941>)",
+		},
+		{
+			name:  "no stored Discord id",
+			event: ServerLogEvent{PlayerName: "Kenji Nakamura"},
+			want:  "**Kenji Nakamura**",
+		},
+		{
+			// A malformed id would render as literal <@...> text.
+			name:  "non-numeric Discord id is not a mention",
+			event: ServerLogEvent{PlayerName: "Kenji Nakamura", DiscordUserID: "discord:123"},
+			want:  "**Kenji Nakamura**",
+		},
+		{
+			name:  "mention alone",
+			event: ServerLogEvent{DiscordUserID: "1220326041067982941"},
+			want:  "<@1220326041067982941>",
+		},
+		{
+			name:  "neither",
+			event: ServerLogEvent{},
+			want:  "",
+		},
+		{
+			// Formatting characters in a display name must not leak out of the
+			// bold name and reformat the line.
+			name:  "markdown in a display name is escaped",
+			event: ServerLogEvent{PlayerName: "**Kenji** _N_"},
+			want:  `**\*\*Kenji\*\* \_N\_**`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := serverLogHeading(test.event); got != test.want {
+				t.Errorf("serverLogHeading() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+// With no player to name, the body is the reported line alone rather than a
+// blank first line.
+func TestServerLogEmbedWithoutHeading(t *testing.T) {
+	t.Parallel()
+	e := ServerLogEmbed(ServerLogEvent{
+		Username:   "SOT - Ayvix",
+		Status:     "connected",
+		ServerID:   "479",
+		OccurredAt: time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC),
+	})
+	if want := "```\n[479] SOT - Ayvix is connected.\n```"; e.Description != want {
+		t.Errorf("Description = %q, want %q", e.Description, want)
 	}
 }

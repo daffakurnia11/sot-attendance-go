@@ -285,6 +285,9 @@ func (b *Bot) announceServerLogs(ctx context.Context) {
 			ServerID:   announcement.ServerID,
 			Reason:     announcement.Reason,
 			StartedAt:  announcement.StartedAt,
+			// The mention resolves to the live Discord handle, so a reader can
+			// chase an entry to the account without the bot storing a name.
+			DiscordUserID: announcement.DiscordUserID,
 		}
 		if _, err := b.session.ChannelMessageSendEmbed(b.serverLogChannelID, presence.ServerLogEmbed(event)); err != nil {
 			// Stop at the first failure and leave the cursor behind it, so the
