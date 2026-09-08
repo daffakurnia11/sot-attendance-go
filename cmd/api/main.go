@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
 	// Embeds the timezone database in the binary. The production image is
 	// alpine with no tzdata package, and unlike the build container there is no
 	// Go toolchain to fall back on, so LoadLocation("Asia/Jakarta") fails
@@ -25,6 +26,7 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/money"
 	"github.com/daffakurniawan/sot-discord-bot/internal/serverlog"
 	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
+	"github.com/daffakurniawan/sot-discord-bot/internal/stock"
 )
 
 func main() {
@@ -73,8 +75,9 @@ func main() {
 	}
 	settingsRepository := dbsettings.NewRepository(pool)
 	serverLogRepository := serverlog.NewRepository(pool)
+	stockRepository := stock.NewRepository(pool)
 	webhook := api.NewServerLogWebhook(serverLogRepository, serverlog.NewAuthenticator(config.FiveMWebhookSecret, nil))
-	handler := api.NewHandlerWithWebhook(api.NewDiscordVerifier(client), member.NewRepository(pool), issuer, issuer, dashboard.NewRepository(pool, cfxClient, logger).WithPresence(dashboard.NewPresenceClient(&http.Client{Timeout: 3 * time.Second}, os.Getenv("BOT_PRESENCE_URL"))), attendancehistory.NewReportRepository(pool, location), logger, settingsRepository, crafting.NewRepository(pool), money.NewRepository(pool), webhook)
+	handler := api.NewHandlerWithWebhook(api.NewDiscordVerifier(client), member.NewRepository(pool), issuer, issuer, dashboard.NewRepository(pool, cfxClient, logger).WithPresence(dashboard.NewPresenceClient(&http.Client{Timeout: 3 * time.Second}, os.Getenv("BOT_PRESENCE_URL"))), attendancehistory.NewReportRepository(pool, location), logger, settingsRepository, crafting.NewRepository(pool), money.NewRepository(pool), webhook, stockRepository)
 	server := &http.Server{
 		Addr:              config.Address,
 		Handler:           handler,
