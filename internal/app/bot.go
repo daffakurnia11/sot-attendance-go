@@ -34,6 +34,10 @@ import (
 
 type cfxPlayerReader interface {
 	Players(context.Context) ([]dashboard.CFXPlayer, error)
+	// Rosters also returns every player on the server, not only the
+	// configured family. Reconciliation has to match against all of them: a
+	// member absent from the full roster has really left.
+	Rosters(context.Context) ([]dashboard.CFXPlayer, []dashboard.CFXPlayer, error)
 }
 
 type Bot struct {
@@ -358,7 +362,7 @@ func (b *Bot) runCFXPoller(ctx context.Context) {
 func (b *Bot) refreshCFX(ctx context.Context) {
 	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	players, err := b.cfx.Players(requestContext)
+	players, roster, err := b.cfx.Rosters(requestContext)
 	if err != nil {
 		b.logger.Warn("refresh CFX player count", "error", err)
 		return
@@ -367,6 +371,34 @@ func (b *Bot) refreshCFX(ctx context.Context) {
 	previous := b.cfxCount.Swap(count)
 	if previous != count {
 		b.logger.Info("CFX player count updated", "count", count)
+	}
+	b.reconcileServerSessions(ctx, roster)
+}
+
+// reconcileServerSessions closes visits the game server no longer lists.
+//
+// A disconnected event that never arrives leaves a visit open for twelve hours
+// and credits the player attendance for the whole window. The roster already
+// polled above answers the question that event would have, so it is used to
+// close what it contradicts.
+func (b *Bot) reconcileServerSessions(ctx context.Context, roster []dashboard.CFXPlayer) {
+	if !b.announces || b.serverLogs == nil || len(roster) == 0 {
+		return
+	}
+	present := make([]string, 0, len(roster))
+	for _, player := range roster {
+		present = append(present, player.Name)
+	}
+
+	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	closed, err := b.serverLogs.CloseAbsentSessions(requestContext, present, time.Now().UTC(), serverlog.ReconcileGrace)
+	if err != nil {
+		b.logger.Error("reconcile open server sessions", "error", err)
+		return
+	}
+	if closed > 0 {
+		b.logger.Info("open server sessions closed from the CFX roster", "sessions", closed, "roster", len(roster))
 	}
 }
 

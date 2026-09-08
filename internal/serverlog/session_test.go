@@ -278,3 +278,71 @@ func lockTestSchema(t *testing.T, databaseURL string) {
 		connection.Close(ctx)
 	})
 }
+
+func TestCloseAbsentSessions(t *testing.T) {
+	pool := sessionTestPool(t)
+	repository := NewRepository(pool)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// One visit whose disconnect never arrived, opened well before the grace.
+	storeEvent(t, pool, "connected", now.Add(-3*time.Hour), 400)
+
+	var username string
+	if err := pool.QueryRow(ctx, "SELECT username FROM server_members LIMIT 1").Scan(&username); err != nil {
+		t.Fatal(err)
+	}
+
+	// An empty roster is not evidence the server emptied.
+	if closed, err := repository.CloseAbsentSessions(ctx, nil, now, ReconcileGrace); err != nil || closed != 0 {
+		t.Fatalf("empty roster closed = %d, %v; want 0", closed, err)
+	}
+
+	// Present on the roster, matched case-insensitively and untrimmed: left open.
+	if closed, err := repository.CloseAbsentSessions(ctx, []string{"  " + strings.ToUpper(username) + " "}, now, ReconcileGrace); err != nil || closed != 0 {
+		t.Fatalf("present player closed = %d, %v; want 0", closed, err)
+	}
+
+	// Absent, but still inside the grace: the roster is polled, so a visit that
+	// has just begun is legitimately missing from it.
+	if closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, now, 4*time.Hour); err != nil || closed != 0 {
+		t.Fatalf("in-grace player closed = %d, %v; want 0", closed, err)
+	}
+
+	// Absent and past the grace: closed.
+	closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, now, ReconcileGrace)
+	if err != nil || closed != 1 {
+		t.Fatalf("absent player closed = %d, %v; want 1", closed, err)
+	}
+
+	var status, reason string
+	if err := pool.QueryRow(ctx, `
+		SELECT status, payload->'event'->>'reason'
+		FROM server_logs ORDER BY id DESC LIMIT 1`).Scan(&status, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if status != "disconnected" || !strings.Contains(reason, "CFX roster") {
+		t.Errorf("closing row = %q / %q", status, reason)
+	}
+
+	// Idempotent: the visit is closed, so a second sweep finds nothing.
+	if closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, now, ReconcileGrace); err != nil || closed != 0 {
+		t.Fatalf("second sweep closed = %d, %v; want 0", closed, err)
+	}
+}
+
+// A visit that only ever reported connecting is a loading screen, not a player
+// on the server, so the roster has nothing to say about it.
+func TestCloseAbsentSessionsIgnoresConnectingOnlyVisits(t *testing.T) {
+	pool := sessionTestPool(t)
+	repository := NewRepository(pool)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	storeEvent(t, pool, "connecting", now.Add(-3*time.Hour), 66401)
+
+	closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, now, ReconcileGrace)
+	if err != nil || closed != 0 {
+		t.Fatalf("connecting-only closed = %d, %v; want 0", closed, err)
+	}
+}
