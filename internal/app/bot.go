@@ -75,6 +75,9 @@ type Bot struct {
 	ready                atomic.Bool
 	cfxCount             atomic.Int64
 	showCFXStatus        bool
+	// cfxRosterWindow holds the last rosterAbsenceStreak CFX reads, oldest
+	// first, and is touched only by the CFX poller goroutine.
+	cfxRosterWindow [][]string
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
@@ -381,25 +384,98 @@ func (b *Bot) refreshCFX(ctx context.Context) {
 // and credits the player attendance for the whole window. The roster already
 // polled above answers the question that event would have, so it is used to
 // close what it contradicts.
+//
+// The FiveM webhook stays the authority on visits: it opens them, and a
+// disconnected event it sends closes them immediately. This sweep only handles
+// the events that never arrive, and it demands three separate agreements before
+// writing one, because a wrong closure ends a live visit and nothing later
+// reopens it:
+//
+//   - absent from the CFX roster in every one of the last rosterAbsenceStreak
+//     polls, so one truncated read cannot end anybody's visit;
+//   - absent from live Discord presence, meaning no activity naming the server;
+//   - and, in the query, past ReconcileGrace and within MaxClosedShare.
+//
+// Discord presence is a second source rather than the deciding one because it
+// is blind to an invisible member, so it can only ever veto a closure. Both
+// sources have to say gone; either saying present, or failing to answer at all,
+// leaves the visit open.
 func (b *Bot) reconcileServerSessions(ctx context.Context, roster []dashboard.CFXPlayer) {
 	if !b.announces || b.serverLogs == nil || len(roster) == 0 {
 		return
 	}
-	present := make([]string, 0, len(roster))
-	for _, player := range roster {
-		present = append(present, player.Name)
+
+	present := b.rosterWindow(roster)
+
+	// A presence read that fails is not evidence of absence, so it stops the
+	// sweep instead of being treated as an empty set of players.
+	presences, err := b.status.Snapshot(b.session)
+	if err != nil {
+		b.logger.Warn("skip server session reconcile: no Discord presence to validate against", "error", err)
+		return
+	}
+	playing := make([]string, 0, len(presences))
+	for _, entry := range presences {
+		if entry.Playing {
+			playing = append(playing, entry.DiscordUserID)
+		}
 	}
 
 	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	closed, err := b.serverLogs.CloseAbsentSessions(requestContext, present, time.Now().UTC(), serverlog.ReconcileGrace)
+	closed, err := b.serverLogs.CloseAbsentSessions(requestContext, present, playing, time.Now().UTC(), serverlog.ReconcileGrace)
 	if err != nil {
 		b.logger.Error("reconcile open server sessions", "error", err)
 		return
 	}
 	if closed > 0 {
-		b.logger.Info("open server sessions closed from the CFX roster", "sessions", closed, "roster", len(roster))
+		b.logger.Info("open server sessions closed from the CFX roster",
+			"sessions", closed, "roster", len(roster), "discord_playing", len(playing))
 	}
+}
+
+// rosterAbsenceStreak is how many consecutive CFX reads must omit a player
+// before the sweep believes they left.
+//
+// CFX is a third party HTTP API that can answer 200 with a stale or partial
+// player list, and one such answer used to be enough to close every visit it
+// omitted. Requiring a streak costs a few poll intervals of delay on a genuine
+// lost disconnect - which has already been open for minutes by then - and buys
+// immunity to a single bad read.
+const rosterAbsenceStreak = 3
+
+// rosterWindow records this roster and returns every name seen across the last
+// rosterAbsenceStreak reads, lowercased.
+//
+// Treating the union as present is what enforces the streak: a name has to be
+// missing from all of them to count as absent.
+func (b *Bot) rosterWindow(roster []dashboard.CFXPlayer) []string {
+	current := make([]string, 0, len(roster))
+	for _, player := range roster {
+		current = append(current, player.Name)
+	}
+
+	b.cfxRosterWindow = append(b.cfxRosterWindow, current)
+	if len(b.cfxRosterWindow) > rosterAbsenceStreak {
+		b.cfxRosterWindow = b.cfxRosterWindow[len(b.cfxRosterWindow)-rosterAbsenceStreak:]
+	}
+
+	seen := make(map[string]struct{})
+	union := make([]string, 0, len(current)*len(b.cfxRosterWindow))
+	for _, read := range b.cfxRosterWindow {
+		for _, name := range read {
+			key := strings.ToLower(strings.TrimSpace(name))
+			if key == "" {
+				continue
+			}
+			if _, duplicate := seen[key]; duplicate {
+				continue
+			}
+			seen[key] = struct{}{}
+			union = append(union, name)
+		}
+	}
+	return union
 }
 
 func (b *Bot) rotateStatus() {

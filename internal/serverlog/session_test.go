@@ -3,6 +3,7 @@ package serverlog
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
@@ -294,23 +295,23 @@ func TestCloseAbsentSessions(t *testing.T) {
 	}
 
 	// An empty roster is not evidence the server emptied.
-	if closed, err := repository.CloseAbsentSessions(ctx, nil, now, ReconcileGrace); err != nil || closed != 0 {
+	if closed, err := repository.CloseAbsentSessions(ctx, nil, nil, now, ReconcileGrace); err != nil || closed != 0 {
 		t.Fatalf("empty roster closed = %d, %v; want 0", closed, err)
 	}
 
 	// Present on the roster, matched case-insensitively and untrimmed: left open.
-	if closed, err := repository.CloseAbsentSessions(ctx, []string{"  " + strings.ToUpper(username) + " "}, now, ReconcileGrace); err != nil || closed != 0 {
+	if closed, err := repository.CloseAbsentSessions(ctx, []string{"  " + strings.ToUpper(username) + " "}, nil, now, ReconcileGrace); err != nil || closed != 0 {
 		t.Fatalf("present player closed = %d, %v; want 0", closed, err)
 	}
 
 	// Absent, but still inside the grace: the roster is polled, so a visit that
 	// has just begun is legitimately missing from it.
-	if closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, now, 4*time.Hour); err != nil || closed != 0 {
+	if closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now, 4*time.Hour); err != nil || closed != 0 {
 		t.Fatalf("in-grace player closed = %d, %v; want 0", closed, err)
 	}
 
 	// Absent and past the grace: closed.
-	closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, now, ReconcileGrace)
+	closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now, ReconcileGrace)
 	if err != nil || closed != 1 {
 		t.Fatalf("absent player closed = %d, %v; want 1", closed, err)
 	}
@@ -326,7 +327,7 @@ func TestCloseAbsentSessions(t *testing.T) {
 	}
 
 	// Idempotent: the visit is closed, so a second sweep finds nothing.
-	if closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, now, ReconcileGrace); err != nil || closed != 0 {
+	if closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now, ReconcileGrace); err != nil || closed != 0 {
 		t.Fatalf("second sweep closed = %d, %v; want 0", closed, err)
 	}
 }
@@ -341,8 +342,98 @@ func TestCloseAbsentSessionsIgnoresConnectingOnlyVisits(t *testing.T) {
 
 	storeEvent(t, pool, "connecting", now.Add(-3*time.Hour), 66401)
 
-	closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, now, ReconcileGrace)
+	closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now, ReconcileGrace)
 	if err != nil || closed != 0 {
 		t.Fatalf("connecting-only closed = %d, %v; want 0", closed, err)
+	}
+}
+
+// Discord activity is the second source of truth and can only veto: a member
+// whose presence still names the server stays connected however the CFX roster
+// reads, because a partial roster is far likelier than a player who is on the
+// server and absent from it.
+func TestCloseAbsentSessionsKeepsPlayersDiscordStillSeesPlaying(t *testing.T) {
+	pool := sessionTestPool(t)
+	repository := NewRepository(pool)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	storeEvent(t, pool, "connected", now.Add(-3*time.Hour), 400)
+
+	var discordUserID string
+	if err := pool.QueryRow(ctx, "SELECT discord_user_id FROM server_members LIMIT 1").Scan(&discordUserID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Absent from CFX and past the grace, but Discord says they are playing.
+	if closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, []string{discordUserID}, now, ReconcileGrace); err != nil || closed != 0 {
+		t.Fatalf("player Discord sees playing closed = %d, %v; want 0", closed, err)
+	}
+
+	// Same sweep once Discord stops seeing them: both sources now agree.
+	closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, []string{"999"}, now, ReconcileGrace)
+	if err != nil || closed != 1 {
+		t.Fatalf("player absent from both sources closed = %d, %v; want 1", closed, err)
+	}
+}
+
+// A truncated roster read looks identical to everyone leaving at once, so a
+// sweep that would end most of the open population is refused whole rather
+// than trusted.
+func TestCloseAbsentSessionsRefusesMassClosure(t *testing.T) {
+	pool := sessionTestPool(t)
+	repository := NewRepository(pool)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Six open visits under distinct usernames, all stale.
+	for index := range 6 {
+		storeVisit(t, pool, fmt.Sprintf("SOT - Player%d", index), fmt.Sprintf("CID%d", index),
+			fmt.Sprintf("11111111111111%04d", index), now.Add(-3*time.Hour), 500+index)
+	}
+
+	if _, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now, ReconcileGrace); err == nil {
+		t.Fatal("a roster omitting every open visit must be refused, not obeyed")
+	}
+
+	var stillOpen int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM server_logs WHERE status = 'disconnected'`).Scan(&stillOpen); err != nil {
+		t.Fatal(err)
+	}
+	if stillOpen != 0 {
+		t.Fatalf("a refused sweep wrote %d closing rows; want 0", stillOpen)
+	}
+
+	// Two of the six missing is an ordinary pair of lost disconnects.
+	present := []string{"SOT - Player0", "SOT - Player1", "SOT - Player2", "SOT - Player3"}
+	closed, err := repository.CloseAbsentSessions(ctx, present, nil, now, ReconcileGrace)
+	if err != nil || closed != 2 {
+		t.Fatalf("two absent players closed = %d, %v; want 2", closed, err)
+	}
+}
+
+// storeVisit opens a visit for a player of its own, so a test can build a
+// population rather than one member's history.
+func storeVisit(t *testing.T, pool *pgxpool.Pool, username, cid, discordUserID string, occurredAt time.Time, serverID int) {
+	t.Helper()
+	payload := map[string]any{
+		"event": map[string]any{"type": "connected", "timestamp": occurredAt.UTC().Format(time.RFC3339)},
+		"player": map[string]any{
+			"cid": cid, "name": username, "username": username,
+			"server_id": serverID, "ping": 30,
+			"identifiers": map[string]any{"license": "license:" + cid, "discord": discordUserID},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRepository(pool).Store(context.Background(), ValidEvent{
+		Payload: body, Status: "connected", OccurredAt: occurredAt,
+		PlayerName: username, Username: username, CID: cid,
+		License: "license:" + cid, Discord: discordUserID,
+	}); err != nil {
+		t.Fatalf("Store(connected, %s) error = %v", username, err)
 	}
 }
