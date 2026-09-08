@@ -43,6 +43,23 @@ func TestCalculateBatchLoadsAndCombinesRecipes(t *testing.T) {
 	}
 }
 
+func TestApplyStockAvailabilityCombinesStashesAndCalculatesShortage(t *testing.T) {
+	result := BatchCalculation{Ingredients: []TotalIngredient{
+		{ItemCode: "iron", ItemName: "Iron", TotalQuantity: 100},
+		{ItemCode: "blueprint", ItemName: "Blueprint Magnum", TotalQuantity: 60},
+	}}
+	ApplyStockAvailability(&result, map[string]StockAvailability{
+		"iron":             {PublicQuantity: 40, BossQuantity: 70},
+		"blueprint_magnum": {BossQuantity: 50},
+	})
+	if !result.StockAvailable || result.Ingredients[0].AvailableTotal != 110 || result.Ingredients[0].MissingQuantity != 0 {
+		t.Fatalf("iron availability = %+v", result.Ingredients[0])
+	}
+	if result.Ingredients[1].AvailableTotal != 50 || result.Ingredients[1].MissingQuantity != 10 {
+		t.Fatalf("blueprint availability = %+v", result.Ingredients[1])
+	}
+}
+
 func TestCalculateBatchRejectsDuplicateAndUnknownRecipes(t *testing.T) {
 	t.Parallel()
 	store := batchStore{recipes: map[string]Recipe{"vector": {RecipeSummary: RecipeSummary{WeaponCode: "vector", OutputQuantity: 1, CraftingTimeSeconds: 8}}}}

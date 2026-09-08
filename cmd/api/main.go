@@ -36,6 +36,11 @@ func main() {
 		logger.Error("load API configuration", "error", err)
 		os.Exit(1)
 	}
+	stockDiscordConfig, err := api.LoadStockDiscordConfig()
+	if err != nil {
+		logger.Error("load stock Discord configuration", "error", err)
+		os.Exit(1)
+	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		logger.Error("load API configuration", "error", "DATABASE_URL is required")
@@ -77,7 +82,8 @@ func main() {
 	serverLogRepository := serverlog.NewRepository(pool)
 	stockRepository := stock.NewRepository(pool)
 	webhook := api.NewServerLogWebhook(serverLogRepository, serverlog.NewAuthenticator(config.FiveMWebhookSecret, nil))
-	handler := api.NewHandlerWithWebhook(api.NewDiscordVerifier(client), member.NewRepository(pool), issuer, issuer, dashboard.NewRepository(pool, cfxClient, logger).WithPresence(dashboard.NewPresenceClient(&http.Client{Timeout: 3 * time.Second}, os.Getenv("BOT_PRESENCE_URL"))), attendancehistory.NewReportRepository(pool, location), logger, settingsRepository, crafting.NewRepository(pool), money.NewRepository(pool), webhook, stockRepository)
+	stockNotifier := api.NewDiscordStockNotifier(client, stockDiscordConfig.Token, stockDiscordConfig.Channels)
+	handler := api.NewHandlerWithStockNotifications(api.NewDiscordVerifier(client), member.NewRepository(pool), issuer, issuer, dashboard.NewRepository(pool, cfxClient, logger).WithPresence(dashboard.NewPresenceClient(&http.Client{Timeout: 3 * time.Second}, os.Getenv("BOT_PRESENCE_URL"))), attendancehistory.NewReportRepository(pool, location), logger, settingsRepository, crafting.NewRepository(pool), money.NewRepository(pool), webhook, stockRepository, stockNotifier)
 	server := &http.Server{
 		Addr:              config.Address,
 		Handler:           handler,

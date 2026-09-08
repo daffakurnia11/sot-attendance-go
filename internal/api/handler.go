@@ -56,19 +56,27 @@ type safeboxStockReader interface {
 	List(context.Context) ([]stock.Item, error)
 	Transact(context.Context, stock.Transaction) error
 }
+type craftingStockWriter interface {
+	safeboxStockReader
+	ApplyMovements(context.Context, stock.MovementBatch) (bool, error)
+}
+type craftingStockNotifier interface {
+	Notify(context.Context, string, []stock.Movement, map[string]string) error
+}
 type Handler struct {
-	verifier   discordIdentityVerifier
-	members    memberFinder
-	issuer     tokenIssuer
-	tokens     tokenVerifier
-	dashboard  dashboardReader
-	attendance attendanceReader
-	settings   settingsStore
-	crafting   crafting.Store
-	money      moneyLedgerReader
-	serverLogs *ServerLogWebhook
-	stock      safeboxStockReader
-	logger     *slog.Logger
+	verifier    discordIdentityVerifier
+	members     memberFinder
+	issuer      tokenIssuer
+	tokens      tokenVerifier
+	dashboard   dashboardReader
+	attendance  attendanceReader
+	settings    settingsStore
+	crafting    crafting.Store
+	money       moneyLedgerReader
+	serverLogs  *ServerLogWebhook
+	stock       safeboxStockReader
+	stockNotify craftingStockNotifier
+	logger      *slog.Logger
 }
 
 func NewHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, stores ...settingsStore) http.Handler {
@@ -76,7 +84,7 @@ func NewHandler(verifier discordIdentityVerifier, members memberFinder, issuer t
 	if len(stores) > 0 {
 		settings = stores[0]
 	}
-	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, nil, nil, nil)
+	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, nil, nil, nil, nil)
 }
 
 func NewHandlerWithCrafting(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledgers ...moneyLedgerReader) http.Handler {
@@ -84,22 +92,26 @@ func NewHandlerWithCrafting(verifier discordIdentityVerifier, members memberFind
 	if len(ledgers) > 0 {
 		ledger = ledgers[0]
 	}
-	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes, ledger, nil)
+	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes, ledger, nil, nil)
 }
 
 // NewHandlerWithWebhook is NewHandlerWithCrafting plus the CR Roleplay player
 // log webhook. Pass a nil webhook to leave the route registered but reporting
 // 503, which is what the other constructors do.
 func NewHandlerWithWebhook(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledger moneyLedgerReader, webhook *ServerLogWebhook, stocks ...safeboxStockReader) http.Handler {
-	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes, ledger, webhook, stocks...)
+	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes, ledger, webhook, nil, stocks...)
 }
 
-func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledger moneyLedgerReader, webhook *ServerLogWebhook, stocks ...safeboxStockReader) http.Handler {
+func NewHandlerWithStockNotifications(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledger moneyLedgerReader, webhook *ServerLogWebhook, stocks safeboxStockReader, notifier craftingStockNotifier) http.Handler {
+	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes, ledger, webhook, notifier, stocks)
+}
+
+func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledger moneyLedgerReader, webhook *ServerLogWebhook, notifier craftingStockNotifier, stocks ...safeboxStockReader) http.Handler {
 	var stockReader safeboxStockReader
 	if len(stocks) > 0 {
 		stockReader = stocks[0]
 	}
-	handler := &Handler{verifier: verifier, members: members, issuer: issuer, tokens: tokens, dashboard: dashboard, attendance: attendance, settings: settings, crafting: recipes, money: ledger, serverLogs: webhook, stock: stockReader, logger: logger}
+	handler := &Handler{verifier: verifier, members: members, issuer: issuer, tokens: tokens, dashboard: dashboard, attendance: attendance, settings: settings, crafting: recipes, money: ledger, serverLogs: webhook, stock: stockReader, stockNotify: notifier, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handler.health)
 	mux.HandleFunc("POST /api/v1/auth/discord", handler.discordLogin)
@@ -114,6 +126,7 @@ func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer t
 	mux.HandleFunc("GET /api/v1/crafting/recipes", handler.craftingRecipes)
 	mux.HandleFunc("POST /api/v1/crafting/calculate", handler.calculateCrafting)
 	mux.HandleFunc("POST /api/v1/crafting/calculate-batch", handler.calculateCraftingBatch)
+	mux.HandleFunc("POST /api/v1/crafting/store-stock", handler.storeCraftingStock)
 	mux.HandleFunc("GET /api/v1/money-transactions/{account}", handler.moneyTransactions)
 	mux.HandleFunc("GET /api/v1/safebox-stock", handler.safeboxStock)
 	mux.HandleFunc("POST /api/v1/safebox-stock/transactions", handler.safeboxStockTransaction)

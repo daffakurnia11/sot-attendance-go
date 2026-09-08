@@ -18,6 +18,7 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
 	moneydomain "github.com/daffakurniawan/sot-discord-bot/internal/money"
 	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
+	"github.com/daffakurniawan/sot-discord-bot/internal/stock"
 )
 
 type stubVerifier struct {
@@ -274,6 +275,85 @@ func TestBatchCraftingCalculationTotalsRecipes(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"total_requested_quantity":5`) || !strings.Contains(response.Body.String(), `"total_quantity":100`) {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestBatchCraftingCalculationIncludesStashAvailability(t *testing.T) {
+	recipes := &stubCrafting{recipe: crafting.Recipe{
+		RecipeSummary: crafting.RecipeSummary{WeaponCode: "weapon", WeaponName: "Weapon", OutputQuantity: 1, CraftingTimeSeconds: 8},
+		Ingredients:   []crafting.Ingredient{{ItemCode: "iron", ItemName: "Iron", Quantity: 20}},
+	}}
+	stocks := &stubSafeboxStock{items: []stock.Item{
+		{Safebox: "public", ItemKey: "iron", Quantity: 40},
+		{Safebox: "boss", ItemKey: "iron", Quantity: 30},
+	}}
+	handler := NewHandlerWithWebhook(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, recipes, nil, nil, stocks)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/crafting/calculate-batch", strings.NewReader(`{"recipes":[{"weapon_code":"one","quantity":5}]}`))
+	request.Header.Set("Authorization", "Bearer app-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"stock_available":true`) || !strings.Contains(response.Body.String(), `"available_total":70`) || !strings.Contains(response.Body.String(), `"missing_quantity":30`) {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestStoreCraftingStockWithdrawsPublicFirstAndDepositsOutput(t *testing.T) {
+	recipes := &stubCrafting{recipe: crafting.Recipe{
+		RecipeSummary: crafting.RecipeSummary{WeaponCode: "vector", WeaponName: "Vector", OutputQuantity: 1, CraftingTimeSeconds: 8},
+		Ingredients:   []crafting.Ingredient{{ItemCode: "iron", ItemName: "Iron", Quantity: 20}},
+	}}
+	stocks := &stubSafeboxStock{items: []stock.Item{
+		{Safebox: "public", ItemKey: "iron", Quantity: 80},
+		{Safebox: "boss", ItemKey: "iron", Quantity: 30},
+	}}
+	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
+	notifier := &stubCraftingStockNotifier{}
+	handler := NewHandlerWithStockNotifications(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, recipes, nil, nil, stocks, notifier)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/crafting/store-stock", strings.NewReader(`{"recipes":[{"weapon_code":"vector","quantity":5}],"destination":"boss","idempotency_key":"request-1"}`))
+	request.Header.Set("Authorization", "Bearer app-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || len(stocks.movementBatch.Movements) != 3 {
+		t.Fatalf("response = %d %s, batch = %+v", response.Code, response.Body.String(), stocks.movementBatch)
+	}
+	want := []stock.Movement{
+		{Safebox: "public", ItemKey: "iron", Action: stock.ActionWithdraw, Quantity: 80},
+		{Safebox: "boss", ItemKey: "iron", Action: stock.ActionWithdraw, Quantity: 20},
+		{Safebox: "boss", ItemKey: "vector", Action: stock.ActionDeposit, Quantity: 5},
+	}
+	for index := range want {
+		if stocks.movementBatch.Movements[index] != want[index] {
+			t.Fatalf("movement %d = %+v, want %+v", index, stocks.movementBatch.Movements[index], want[index])
+		}
+	}
+	if notifier.calls != 1 || notifier.actorDiscordID != "123" {
+		t.Fatalf("notifier = %+v", notifier)
+	}
+}
+
+type stubCraftingStockNotifier struct {
+	calls          int
+	actorDiscordID string
+}
+
+func (s *stubCraftingStockNotifier) Notify(_ context.Context, actorDiscordID string, _ []stock.Movement, _ map[string]string) error {
+	s.calls++
+	s.actorDiscordID = actorDiscordID
+	return nil
+}
+
+func TestStoreCraftingStockIdempotentReplayDoesNotNotifyDiscord(t *testing.T) {
+	recipes := &stubCrafting{recipe: crafting.Recipe{RecipeSummary: crafting.RecipeSummary{WeaponCode: "vector", WeaponName: "Vector", OutputQuantity: 1, CraftingTimeSeconds: 8}, Ingredients: []crafting.Ingredient{{ItemCode: "iron", ItemName: "Iron", Quantity: 20}}}}
+	stocks := &stubSafeboxStock{alreadyApplied: true, items: []stock.Item{{Safebox: "public", ItemKey: "iron", Name: "Iron", Quantity: 20}}}
+	notifier := &stubCraftingStockNotifier{}
+	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
+	handler := NewHandlerWithStockNotifications(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, recipes, nil, nil, stocks, notifier)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/crafting/store-stock", strings.NewReader(`{"recipes":[{"weapon_code":"vector","quantity":1}],"destination":"boss","idempotency_key":"request-1"}`))
+	request.Header.Set("Authorization", "Bearer app-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || notifier.calls != 0 {
+		t.Fatalf("response = %d %s, notifier calls = %d", response.Code, response.Body.String(), notifier.calls)
 	}
 }
 

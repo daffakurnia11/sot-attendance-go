@@ -65,13 +65,57 @@ type BatchCalculation struct {
 	TotalRequestedQuantity   int64             `json:"total_requested_quantity"`
 	TotalCraftCount          int64             `json:"total_craft_count"`
 	TotalCraftingTimeSeconds int64             `json:"total_crafting_time_seconds"`
+	StockAvailable           bool              `json:"stock_available"`
 	Ingredients              []TotalIngredient `json:"ingredients"`
 }
 
 type TotalIngredient struct {
-	ItemCode      string `json:"item_code"`
-	ItemName      string `json:"item_name"`
-	TotalQuantity int64  `json:"total_quantity"`
+	ItemCode        string `json:"item_code"`
+	ItemName        string `json:"item_name"`
+	TotalQuantity   int64  `json:"total_quantity"`
+	PublicQuantity  int64  `json:"public_quantity"`
+	BossQuantity    int64  `json:"boss_quantity"`
+	AvailableTotal  int64  `json:"available_total"`
+	MissingQuantity int64  `json:"missing_quantity"`
+}
+
+type StockAvailability struct {
+	PublicQuantity int64
+	BossQuantity   int64
+}
+
+// ApplyStockAvailability enriches required materials without changing recipe math.
+func ApplyStockAvailability(result *BatchCalculation, available map[string]StockAvailability) {
+	result.StockAvailable = true
+	for index := range result.Ingredients {
+		stock := available[StockItemKey(result.Ingredients[index])]
+		result.Ingredients[index].PublicQuantity = stock.PublicQuantity
+		result.Ingredients[index].BossQuantity = stock.BossQuantity
+		result.Ingredients[index].AvailableTotal = stock.PublicQuantity + stock.BossQuantity
+		if result.Ingredients[index].TotalQuantity > result.Ingredients[index].AvailableTotal {
+			result.Ingredients[index].MissingQuantity = result.Ingredients[index].TotalQuantity - result.Ingredients[index].AvailableTotal
+		}
+	}
+}
+
+func StockItemKey(ingredient TotalIngredient) string {
+	if ingredient.ItemCode != "blueprint" {
+		return ingredient.ItemCode
+	}
+	switch strings.ToLower(ingredient.ItemName) {
+	case "blueprint weapon":
+		return "blueprint_weapon"
+	case "blueprint magnum":
+		return "blueprint_magnum"
+	case "blueprint mp9":
+		return "blueprint_mp9"
+	case "blueprint vector":
+		return "blueprint_vector"
+	case "blueprint rifle":
+		return "blueprint_rifle"
+	default:
+		return ingredient.ItemCode
+	}
 }
 
 func CalculateBatch(ctx context.Context, store Store, items []BatchItem) (BatchCalculation, error) {

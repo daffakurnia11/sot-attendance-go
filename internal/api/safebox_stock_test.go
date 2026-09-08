@@ -14,9 +14,16 @@ import (
 )
 
 type stubSafeboxStock struct {
-	items       []stock.Item
-	transaction stock.Transaction
-	err         error
+	items          []stock.Item
+	transaction    stock.Transaction
+	movementBatch  stock.MovementBatch
+	alreadyApplied bool
+	err            error
+}
+
+func (s *stubSafeboxStock) ApplyMovements(_ context.Context, batch stock.MovementBatch) (bool, error) {
+	s.movementBatch = batch
+	return s.err == nil && !s.alreadyApplied, s.err
 }
 
 func requestWithBody(handler http.Handler, method, path, authorization, body string) *httptest.ResponseRecorder {

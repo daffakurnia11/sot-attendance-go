@@ -1,0 +1,1 @@
+-- No rollback: removing identity generation would restore broken inserts.

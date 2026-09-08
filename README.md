@@ -79,6 +79,8 @@ on, so close it when finished.
 
 Bot status rotates between `N CR players on Discord` and `N CR players on CFX` every `DISCORD_POLL_STATUS` milliseconds. Discord count polls cached presences every `DISCORD_POLL_INTERVAL` milliseconds and includes visible online members whose activity name matches `FIVEM_SERVER_NAME`, ignoring case, spaces, and punctuation. Offline, invisible, and bot accounts are excluded. Discord REST member responses do not contain activities; Presence Intent feeds this cache.
 
+Crafting calculator stock updates post Discord embeds after database commit. Deposits route to `STASH_BOSS_DP_CHANNEL_ID` or `STASH_PUBLIC_DP_CHANNEL_ID`; material withdrawals route to `STASH_BOSS_WD_CHANNEL_ID` or `STASH_PUBLIC_WD_CHANNEL_ID`. Idempotent request replays do not post duplicate embeds. Discord delivery failure is logged and does not undo committed stock.
+
 CFX count polls public directory every `FIVEM_SERVER_CFX_POLL_INTERVAL` milliseconds and applies existing `FIVEM_PLAYER_ID` name filter. Failed CFX requests keep last successful count; CFX status remains hidden until first successful poll.
 
 Set `APP_ENV=production` to restrict status counts and player transition logs to members holding `DISCORD_ROLE_ID`. `DISCORD_ROLE_ID` is required in production. Set `APP_ENV=local` to inspect all non-bot guild members during testing; role filtering is disabled even when a role ID is present.
