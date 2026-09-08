@@ -153,7 +153,7 @@ func TestSaveAttendanceRecapBulkUpserts(t *testing.T) {
 	end := start.Add(4 * time.Hour)
 
 	err := repository.SaveAttendanceRecap(context.Background(), []PlaytimeRecap{
-		{MemberID: 10, Playtime: 91 * time.Minute},
+		{MemberID: 10, ServerMemberID: 305, Playtime: 91 * time.Minute},
 		{MemberID: 20, Playtime: 90 * time.Minute},
 	}, start, end, 90*time.Minute)
 	if err != nil {
@@ -162,8 +162,14 @@ func TestSaveAttendanceRecapBulkUpserts(t *testing.T) {
 	if !strings.Contains(database.query, "FROM unnest") || !strings.Contains(database.query, "ON CONFLICT") {
 		t.Fatalf("SaveAttendanceRecap() query is not bulk upsert: %s", database.query)
 	}
-	attended, ok := database.args[2].([]bool)
+	// Arguments are member ids, character ids, playtime, then attendance: the
+	// character was added when attendance became per character.
+	attended, ok := database.args[3].([]bool)
 	if !ok || len(attended) != 2 || !attended[0] || attended[1] {
-		t.Fatalf("SaveAttendanceRecap() attended = %#v", database.args[2])
+		t.Fatalf("SaveAttendanceRecap() attended = %#v", database.args[3])
+	}
+	characters, ok := database.args[1].([]*int64)
+	if !ok || len(characters) != 2 {
+		t.Fatalf("SaveAttendanceRecap() characters = %#v", database.args[1])
 	}
 }

@@ -22,6 +22,17 @@ type PlaytimeRecap struct {
 	DisplayName   string
 	CharacterName string
 	Playtime      time.Duration
+	// ServerMemberID names the character that earned this playtime, and CID its
+	// character id. One member holding two characters produces two recap rows,
+	// each judged against the threshold on its own: a player who logged 138
+	// minutes on one and 115 on the other met it once and missed it once, which
+	// a single row keyed on the member could not say.
+	//
+	// Both are zero for a member the game server has never reported, whose
+	// playtime comes from the Discord presence fallback and belongs to no
+	// character.
+	ServerMemberID int64
+	CID            string
 }
 
 var ErrNotFound = errors.New("member not found")
@@ -66,31 +77,27 @@ type executor interface {
 // not to the end of time.
 const visitMaxAge = 12 * time.Hour
 
-// PlaytimeRecap totals each member's playtime inside an attendance window.
+// PlaytimeRecap lists playtime inside an attendance window, one row per
+// character.
 //
-// Both feeds are read. server_logs - what the CR Roleplay server itself
-// reported over the webhook - is the truth wherever it exists, and Discord rich
-// presence is the fallback where it does not. Presence was only ever a guess at
-// whether someone was in the game, and it both under- and over-reports: it lost
-// one member's whole visit and cut another's short by an hour.
+// A member holding two characters produces two rows, each judged against the
+// threshold on its own. One player logged 138 minutes on one character and 115
+// on another in the same window: separately that is one attendance met and one
+// missed, which a single row keyed on the member could only report as 253
+// minutes attended.
 //
-// The two are split at a per-member handover, that member's first webhook event
-// ever. Presence accounts for the part of the window before it, the webhook for
-// the part after. A member the game server has never reported has no handover
-// and is measured entirely from presence, which is the fallback the rule exists
-// for. Nothing is counted twice and nothing is dropped, which a plain
-// preference between the sources could not manage.
+// Both feeds are read. server_logs - what the CR Roleplay server reported over
+// the webhook - names the character, so it produces the character rows. Discord
+// presence is the fallback for the period before a member's first webhook event
+// ever, and belongs to no character, so it produces at most one extra row per
+// member carrying their display name. A member the game server has never
+// reported has only that row.
 //
-// Playtime is the union of a member's visits, never their sum. Two visits can
-// overlap - a member holding two characters, or a legacy session merged before
-// session resolution was bounded - and a player is only ever in one place, so
-// summing them credited one member 600 minutes inside a 300 minute window.
-//
-// A visit starts at its connected event, never at the connecting attempt, since
-// a loading screen is not playtime. It ends at its disconnected event or, absent
-// one, no later than visitMaxAge past its last event; an abandoned visit
-// therefore ages out instead of counting forever. Both ends are clamped to the
-// window.
+// Playtime is the union of a character's visits, never their sum, since a
+// session merged before resolution was bounded can overlap another. A visit
+// starts at its connected event, not the connecting attempt, and ends at its
+// disconnect or no later than visitMaxAge past its last event. Both ends are
+// clamped to the window.
 func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attendanceEnd time.Time) ([]PlaytimeRecap, error) {
 	const query = `
 		WITH handovers AS (
@@ -99,22 +106,19 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 			JOIN server_members sm ON sm.id = sl.server_member_id
 			GROUP BY sm.discord_user_id
 		), bounds AS (
-			-- Where presence stops counting for this member. With no handover
-			-- it is the window end, so presence covers the whole window.
 			SELECT m.id AS member_id, m.discord_user_id,
 				LEAST($2::timestamptz, COALESCE(h.at, $2::timestamptz)) AS presence_end
 			FROM members m
 			LEFT JOIN handovers h ON h.discord_user_id = m.discord_user_id
 		), visits AS (
-			SELECT sm.discord_user_id,
+			SELECT sl.server_member_id,
 				MIN(sl.occurred_at) FILTER (WHERE sl.status = 'connected') AS connected_at,
 				MAX(sl.occurred_at) FILTER (WHERE sl.status = 'disconnected') AS disconnected_at,
 				MAX(sl.occurred_at) AS last_event_at
 			FROM server_logs sl
-			JOIN server_members sm ON sm.id = sl.server_member_id
-			GROUP BY sl.session_id, sm.discord_user_id
+			GROUP BY sl.session_id, sl.server_member_id
 		), bounded AS (
-			SELECT discord_user_id,
+			SELECT server_member_id,
 				GREATEST(connected_at, $1) AS starts,
 				LEAST(COALESCE(disconnected_at, last_event_at + make_interval(secs => $3::double precision)), $2) AS ends
 			FROM visits
@@ -122,29 +126,28 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 				AND connected_at < $2
 				AND COALESCE(disconnected_at, last_event_at + make_interval(secs => $3::double precision)) > $1
 		), ordered AS (
-			SELECT discord_user_id, starts, ends,
+			SELECT server_member_id, starts, ends,
 				MAX(ends) OVER (
-					PARTITION BY discord_user_id ORDER BY starts, ends
+					PARTITION BY server_member_id ORDER BY starts, ends
 					ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
 				) AS prior_end
 			FROM bounded
 			WHERE ends > starts
 		), islands AS (
-			SELECT discord_user_id, starts, ends,
+			SELECT server_member_id, starts, ends,
 				SUM(CASE WHEN prior_end IS NULL OR starts > prior_end THEN 1 ELSE 0 END) OVER (
-					PARTITION BY discord_user_id ORDER BY starts, ends
+					PARTITION BY server_member_id ORDER BY starts, ends
 					ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
 				) AS island
 			FROM ordered
 		), merged AS (
-			SELECT discord_user_id, MIN(starts) AS starts, MAX(ends) AS ends
+			SELECT server_member_id, MIN(starts) AS starts, MAX(ends) AS ends
 			FROM islands
-			GROUP BY discord_user_id, island
-		), server_seconds AS (
-			SELECT b.member_id, SUM(EXTRACT(EPOCH FROM (merged.ends - merged.starts))) AS seconds
+			GROUP BY server_member_id, island
+		), character_seconds AS (
+			SELECT server_member_id, SUM(EXTRACT(EPOCH FROM (ends - starts))) AS seconds
 			FROM merged
-			JOIN bounds b ON b.discord_user_id = merged.discord_user_id
-			GROUP BY b.member_id
+			GROUP BY server_member_id
 		), presence_closed AS (
 			SELECT b.member_id,
 				SUM(EXTRACT(EPOCH FROM (LEAST(a.occurred_at, b.presence_end) - GREATEST(a.started_at, $1)))) AS seconds
@@ -168,26 +171,24 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 			WHERE l.status = 'connected'
 				AND l.started_at IS NOT NULL
 				AND b.presence_end > GREATEST(l.started_at, $1)
-		), totals AS (
+		), presence_seconds AS (
 			SELECT member_id, SUM(seconds) AS seconds
-			FROM (
-				SELECT * FROM server_seconds
-				UNION ALL
-				SELECT * FROM presence_closed
-				UNION ALL
-				SELECT * FROM presence_open
-			) sources
+			FROM (SELECT * FROM presence_closed UNION ALL SELECT * FROM presence_open) sources
 			GROUP BY member_id
 		)
-		SELECT m.id,
-			m.discord_user_id,
-			m.display_name,
-			COALESCE(NULLIF(latest_character.character_name, ''), 'Unregistered'),
-			FLOOR(t.seconds)::bigint
-		FROM totals t
-		JOIN members m ON m.id = t.member_id` + latestCharacter + `
-		WHERE t.seconds > 0
-		ORDER BY t.seconds DESC, m.display_name ASC`
+		SELECT m.id, m.discord_user_id, m.display_name,
+			sm.player_name, sm.id, sm.cid, FLOOR(c.seconds)::bigint
+		FROM character_seconds c
+		JOIN server_members sm ON sm.id = c.server_member_id
+		JOIN members m ON m.discord_user_id = sm.discord_user_id
+		WHERE c.seconds > 0
+		UNION ALL
+		SELECT m.id, m.discord_user_id, m.display_name,
+			'Unregistered', 0, '', FLOOR(p.seconds)::bigint
+		FROM presence_seconds p
+		JOIN members m ON m.id = p.member_id
+		WHERE p.seconds > 0
+		ORDER BY 7 DESC, 4 ASC`
 
 	rows, err := r.database.Query(ctx, query, attendanceStart, attendanceEnd, visitMaxAge.Seconds())
 	if err != nil {
@@ -199,7 +200,8 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 	for rows.Next() {
 		var recap PlaytimeRecap
 		var seconds int64
-		if err := rows.Scan(&recap.MemberID, &recap.DiscordUserID, &recap.DisplayName, &recap.CharacterName, &seconds); err != nil {
+		if err := rows.Scan(&recap.MemberID, &recap.DiscordUserID, &recap.DisplayName,
+			&recap.CharacterName, &recap.ServerMemberID, &recap.CID, &seconds); err != nil {
 			return nil, fmt.Errorf("scan playtime recap: %w", err)
 		}
 		recap.Playtime = time.Duration(seconds) * time.Second
@@ -211,36 +213,47 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 	return recaps, nil
 }
 
+// SaveAttendanceRecap stores one row per character per window.
+//
+// The conflict target folds a null character to zero, matching the unique index
+// 000032 created: a member the game server never reported has no character, and
+// a plain unique constraint treats nulls as distinct, which would let the same
+// window be written for them twice.
 func (r *Repository) SaveAttendanceRecap(ctx context.Context, recaps []PlaytimeRecap, attendanceStart, attendanceEnd time.Time, requiredPlaytime time.Duration) error {
 	if len(recaps) == 0 {
 		return nil
 	}
 	memberIDs := make([]int64, len(recaps))
+	serverMemberIDs := make([]*int64, len(recaps))
 	playtimeSeconds := make([]int64, len(recaps))
 	isAttended := make([]bool, len(recaps))
 	for index, recap := range recaps {
 		memberIDs[index] = recap.MemberID
+		if recap.ServerMemberID != 0 {
+			serverMemberID := recap.ServerMemberID
+			serverMemberIDs[index] = &serverMemberID
+		}
 		playtimeSeconds[index] = int64(recap.Playtime / time.Second)
 		isAttended[index] = recap.Playtime > requiredPlaytime
 	}
 
 	const query = `
 		INSERT INTO attendance_logs (
-			member_id, attendance_start, attendance_end,
+			member_id, server_member_id, attendance_start, attendance_end,
 			playtime, required_playtime, is_attended
 		)
-		SELECT data.member_id, $4, $5,
+		SELECT data.member_id, data.server_member_id, $5, $6,
 			data.playtime_seconds * INTERVAL '1 second',
-			$6::bigint * INTERVAL '1 second', data.is_attended
-		FROM unnest($1::bigint[], $2::bigint[], $3::boolean[])
-			AS data(member_id, playtime_seconds, is_attended)
-		ON CONFLICT (member_id, attendance_start, attendance_end)
+			$7::bigint * INTERVAL '1 second', data.is_attended
+		FROM unnest($1::bigint[], $2::bigint[], $3::bigint[], $4::boolean[])
+			AS data(member_id, server_member_id, playtime_seconds, is_attended)
+		ON CONFLICT (member_id, COALESCE(server_member_id, 0), attendance_start, attendance_end)
 		DO UPDATE SET
 			playtime = EXCLUDED.playtime,
 			required_playtime = EXCLUDED.required_playtime,
 			is_attended = EXCLUDED.is_attended`
 
-	if _, err := r.database.Exec(ctx, query, memberIDs, playtimeSeconds, isAttended, attendanceStart, attendanceEnd, int64(requiredPlaytime/time.Second)); err != nil {
+	if _, err := r.database.Exec(ctx, query, memberIDs, serverMemberIDs, playtimeSeconds, isAttended, attendanceStart, attendanceEnd, int64(requiredPlaytime/time.Second)); err != nil {
 		return fmt.Errorf("save attendance recap: %w", err)
 	}
 	return nil

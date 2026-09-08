@@ -130,8 +130,11 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 				) latest
 				WHERE latest.status = 'connected' AND latest.started_at IS NOT NULL
 			), 0),
-			(SELECT COUNT(*) FROM attendance_logs WHERE member_id = $1 AND is_attended),
-			(SELECT COUNT(*) FROM attendance_logs WHERE member_id = $1)`
+			-- Attendance is stored per character, so a member who attended on
+			-- two characters in one window has two rows for one window. Count
+			-- windows, not rows.
+			(SELECT COUNT(DISTINCT attendance_start) FROM attendance_logs WHERE member_id = $1 AND is_attended),
+			(SELECT COUNT(DISTINCT attendance_start) FROM attendance_logs WHERE member_id = $1)`
 	if err := r.database.QueryRow(ctx, summaryQuery, memberID).Scan(
 		&result.TotalMembers, &thresholdValue, &result.TotalPlaytimeSeconds,
 		&result.TotalAttended, &result.TotalAttendances,
@@ -443,8 +446,11 @@ func (r *Repository) GetMemberRecords(ctx context.Context, memberID int64) (Memb
 			), 0)::bigint AS seconds
 		)
 		SELECT (SELECT seconds FROM server_seconds) + (SELECT seconds FROM discord_seconds),
-			(SELECT COUNT(*) FROM attendance_logs WHERE member_id = $1 AND is_attended),
-			(SELECT COUNT(*) FROM attendance_logs WHERE member_id = $1)`
+			-- Attendance is stored per character, so a member who attended on
+			-- two characters in one window has two rows for one window. Count
+			-- windows, not rows.
+			(SELECT COUNT(DISTINCT attendance_start) FROM attendance_logs WHERE member_id = $1 AND is_attended),
+			(SELECT COUNT(DISTINCT attendance_start) FROM attendance_logs WHERE member_id = $1)`
 	if err := r.database.QueryRow(ctx, summaryQuery, memberID, visitMaxAge.Seconds()).Scan(&result.TotalPlaytimeSeconds, &result.TotalAttended, &result.TotalAttendances); err != nil {
 		return MemberRecords{}, fmt.Errorf("query member records summary: %w", err)
 	}

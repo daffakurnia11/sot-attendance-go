@@ -75,6 +75,31 @@ func TestEmbedShowsRankedPlaytime(t *testing.T) {
 	}
 }
 
+// Two characters under one Discord account are two entries, each judged on its
+// own playtime: 138 minutes met the threshold, 115 did not, and the member
+// appears in both sections.
+func TestEmbedListsCharactersSeparately(t *testing.T) {
+	now := time.Date(2026, 9, 8, 2, 0, 0, 0, time.UTC)
+	embed := Embed([]member.PlaytimeRecap{{
+		DiscordUserID: "123", DisplayName: "Valencia Wang", CharacterName: "Valencia Wang",
+		ServerMemberID: 305, CID: "TAT79645", Playtime: 138 * time.Minute,
+	}, {
+		DiscordUserID: "123", DisplayName: "Valencia Wang", CharacterName: "Hyuna Nakamura",
+		ServerMemberID: 163, CID: "YN820AL0", Playtime: 115 * time.Minute,
+	}}, now.Add(-5*time.Hour), now, 2*time.Hour)
+
+	if !strings.Contains(embed.Description, "1. Valencia Wang (<@123>) - 2h18m") {
+		t.Errorf("attended entry missing: %q", embed.Description)
+	}
+	if !strings.Contains(embed.Description, "❌ Not Attending**\n1. Hyuna Nakamura (<@123>) - 1h55m") {
+		t.Errorf("not-attending entry missing: %q", embed.Description)
+	}
+	// Two characters count as two participants, one of each.
+	if embed.Footer == nil || embed.Footer.Text != "Attended: 1 • Not attending: 1 • Participants: 2" {
+		t.Fatalf("footer = %#v", embed.Footer)
+	}
+}
+
 func TestCheckEmbedShowsCurrentMemberStatusAndGlobalSummary(t *testing.T) {
 	now := time.Date(2026, 8, 21, 3, 24, 0, 0, time.FixedZone("Asia/Jakarta", 7*60*60))
 	currentMember := member.Member{

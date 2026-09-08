@@ -124,20 +124,21 @@ func TestPlaytimeRecapFromServerLogs(t *testing.T) {
 			want: 2 * time.Hour,
 		},
 		{
-			// A player is only ever in one place. Summing these credited 600
-			// minutes inside a 300 minute window.
-			name: "overlapping visits count once",
+			// Overlapping visits on the same character still count once: that
+			// is a session merged before resolution was bounded, not two
+			// places at once.
+			name: "overlapping visits on one character count once",
 			visits: []visit{
 				{"CHAR1", windowStart, windowEnd},
-				{"CHAR2", windowStart, windowEnd},
+				{"CHAR1", windowStart.Add(time.Hour), windowStart.Add(2 * time.Hour)},
 			},
 			want: 5 * time.Hour,
 		},
 		{
-			name: "partly overlapping visits merge into their union",
+			name: "partly overlapping visits on one character merge into their union",
 			visits: []visit{
 				{"CHAR1", windowStart, windowStart.Add(2 * time.Hour)},
-				{"CHAR2", windowStart.Add(time.Hour), windowStart.Add(3 * time.Hour)},
+				{"CHAR1", windowStart.Add(time.Hour), windowStart.Add(3 * time.Hour)},
 			},
 			want: 3 * time.Hour,
 		},
@@ -290,4 +291,76 @@ func lockTestSchema(t *testing.T, databaseURL string) {
 		}
 		connection.Close(ctx)
 	})
+}
+
+// Two characters under one Discord account are two rows, each carrying its own
+// playtime. Valencia Wang is the case this was built from: 138 minutes on one
+// character and 115 on the other, back to back.
+func TestPlaytimeRecapRowPerCharacter(t *testing.T) {
+	pool := playtimeTestPool(t)
+	windowStart := time.Date(2026, 9, 6, 14, 0, 0, 0, time.UTC)
+	windowEnd := windowStart.Add(5 * time.Hour)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM server_logs; DELETE FROM server_members; DELETE FROM activity_logs; DELETE FROM members;"); err != nil {
+		t.Fatal(err)
+	}
+	seedVisits(t, pool, "111", []visit{
+		{"VWANG", windowStart.Add(41 * time.Minute), windowStart.Add(179 * time.Minute)},
+		{"HYUNA", windowStart.Add(184 * time.Minute), windowStart.Add(299 * time.Minute)},
+	})
+
+	recaps, err := NewRepository(pool).PlaytimeRecap(ctx, windowStart, windowEnd)
+	if err != nil {
+		t.Fatalf("PlaytimeRecap() error = %v", err)
+	}
+	if len(recaps) != 2 {
+		t.Fatalf("recaps = %#v, want one row per character", recaps)
+	}
+	got := map[string]time.Duration{}
+	for _, recap := range recaps {
+		got[recap.CharacterName] = recap.Playtime
+		if recap.ServerMemberID == 0 || recap.CID == "" {
+			t.Errorf("row %q has no character: %#v", recap.CharacterName, recap)
+		}
+		if recap.DiscordUserID != "111" {
+			t.Errorf("row %q lost the shared Discord account: %#v", recap.CharacterName, recap)
+		}
+	}
+	if got["VWANG"] != 138*time.Minute || got["HYUNA"] != 115*time.Minute {
+		t.Errorf("split = %#v, want VWANG 138m and HYUNA 115m", got)
+	}
+}
+
+// A member the game server has never reported has no character, so their
+// presence fallback row carries none.
+func TestPlaytimeRecapPresenceRowHasNoCharacter(t *testing.T) {
+	pool := playtimeTestPool(t)
+	windowStart := time.Date(2026, 9, 6, 14, 0, 0, 0, time.UTC)
+	windowEnd := windowStart.Add(5 * time.Hour)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM server_logs; DELETE FROM server_members; DELETE FROM activity_logs; DELETE FROM members;"); err != nil {
+		t.Fatal(err)
+	}
+	var memberID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO members (discord_user_id, username, display_name)
+		VALUES ('222', 'nofivem', 'NoFiveM') RETURNING id`).Scan(&memberID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO activity_logs (member_id, status, started_at, occurred_at, playtime)
+		VALUES ($1, 'disconnected', $2::timestamptz, $3::timestamptz, INTERVAL '3 hours')`,
+		memberID, windowStart, windowStart.Add(3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	recaps, err := NewRepository(pool).PlaytimeRecap(ctx, windowStart, windowEnd)
+	if err != nil {
+		t.Fatalf("PlaytimeRecap() error = %v", err)
+	}
+	if len(recaps) != 1 || recaps[0].ServerMemberID != 0 || recaps[0].Playtime != 3*time.Hour {
+		t.Fatalf("recaps = %#v, want one character-less row of 3h", recaps)
+	}
 }
