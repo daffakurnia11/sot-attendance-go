@@ -15,6 +15,7 @@ import (
 
 type stubSafeboxStock struct {
 	items          []stock.Item
+	transactions   []stock.TransactionEntry
 	transaction    stock.Transaction
 	movementBatch  stock.MovementBatch
 	alreadyApplied bool
@@ -36,9 +37,37 @@ func requestWithBody(handler http.Handler, method, path, authorization, body str
 }
 
 func (s *stubSafeboxStock) List(context.Context) ([]stock.Item, error) { return s.items, nil }
+func (s *stubSafeboxStock) ListTransactions(_ context.Context, safebox string) ([]stock.TransactionEntry, error) {
+	if safebox != "public" && safebox != "boss" {
+		return nil, stock.ErrInvalidTransaction
+	}
+	return s.transactions, s.err
+}
 func (s *stubSafeboxStock) Transact(_ context.Context, transaction stock.Transaction) error {
 	s.transaction = transaction
 	return s.err
+}
+
+func TestSafeboxStockTransactionsListsSelectedSafebox(t *testing.T) {
+	store := &stubSafeboxStock{transactions: []stock.TransactionEntry{{ID: 1, Safebox: "boss", ItemName: "MP9"}}}
+	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
+	handler := NewHandlerWithWebhook(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, nil, nil, nil, store)
+
+	response := requestWithBody(handler, http.MethodGet, "/api/v1/safebox-stock/transactions?safebox=boss", "Bearer app-token", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"item_name":"MP9"`) {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestSafeboxStockTransactionsRejectsUnknownSafebox(t *testing.T) {
+	store := &stubSafeboxStock{}
+	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
+	handler := NewHandlerWithWebhook(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, nil, nil, nil, store)
+
+	response := requestWithBody(handler, http.MethodGet, "/api/v1/safebox-stock/transactions?safebox=private", "Bearer app-token", "")
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
 }
 
 func TestSafeboxStockTransactionRequiresAdminAndRecordsActor(t *testing.T) {

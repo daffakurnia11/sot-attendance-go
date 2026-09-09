@@ -10,6 +10,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,6 +36,21 @@ type Item struct {
 	Name     string `json:"name"`
 	Group    string `json:"stock_group"`
 	Quantity int32  `json:"quantity"`
+}
+
+type TransactionEntry struct {
+	ID             int64     `json:"id"`
+	Safebox        string    `json:"safebox"`
+	ItemKey        string    `json:"item_key"`
+	ItemName       string    `json:"item_name"`
+	Action         string    `json:"action"`
+	QuantityBefore int32     `json:"quantity_before"`
+	QuantityAfter  int32     `json:"quantity_after"`
+	Delta          int32     `json:"delta"`
+	Reason         string    `json:"reason"`
+	ActorName      string    `json:"actor_name"`
+	ActorUsername  string    `json:"actor_username"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type TransactionLine struct {
@@ -92,6 +108,41 @@ func (r *Repository) List(ctx context.Context) ([]Item, error) {
 		return nil, fmt.Errorf("read safebox stock: %w", err)
 	}
 	return items, nil
+}
+
+func (r *Repository) ListTransactions(ctx context.Context, safebox string) ([]TransactionEntry, error) {
+	if safebox != "public" && safebox != "boss" {
+		return nil, ErrInvalidTransaction
+	}
+	const query = `
+		SELECT t.id, t.safebox, i.item_key, i.name, t.action,
+			t.quantity_before, t.quantity_after, t.delta, t.reason,
+			COALESCE(m.display_name, 'System'), COALESCE(m.username, ''), t.created_at
+		FROM safebox_stock_transactions t
+		JOIN safebox_stock_items i ON i.id = t.item_id
+		LEFT JOIN members m ON m.id = t.actor_member_id
+		WHERE t.safebox = $1
+		ORDER BY t.created_at DESC, t.id DESC
+		LIMIT 500`
+	rows, err := r.pool.Query(ctx, query, safebox)
+	if err != nil {
+		return nil, fmt.Errorf("list safebox stock transactions: %w", err)
+	}
+	defer rows.Close()
+	entries := make([]TransactionEntry, 0)
+	for rows.Next() {
+		var entry TransactionEntry
+		if err := rows.Scan(&entry.ID, &entry.Safebox, &entry.ItemKey, &entry.ItemName, &entry.Action,
+			&entry.QuantityBefore, &entry.QuantityAfter, &entry.Delta, &entry.Reason,
+			&entry.ActorName, &entry.ActorUsername, &entry.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan safebox stock transaction: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read safebox stock transactions: %w", err)
+	}
+	return entries, nil
 }
 
 func (r *Repository) Transact(ctx context.Context, transaction Transaction) error {

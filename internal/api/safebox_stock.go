@@ -27,6 +27,29 @@ func (h *Handler) safeboxStock(response http.ResponseWriter, request *http.Reque
 	writeJSON(response, http.StatusOK, map[string]any{"items": items})
 }
 
+func (h *Handler) safeboxStockTransactions(response http.ResponseWriter, request *http.Request) {
+	claims, ok := h.admin(response, request, "safebox stock transactions")
+	if !ok {
+		return
+	}
+	if h.stock == nil {
+		writeError(response, http.StatusServiceUnavailable, "SAFEBOX_STOCK_UNAVAILABLE", "Safebox stock is unavailable")
+		return
+	}
+	safebox := request.URL.Query().Get("safebox")
+	entries, err := h.stock.ListTransactions(request.Context(), safebox)
+	if err != nil {
+		if errors.Is(err, stock.ErrInvalidTransaction) {
+			writeError(response, http.StatusBadRequest, "INVALID_SAFEBOX", "Safebox must be public or boss")
+			return
+		}
+		h.logger.Error("list safebox stock transactions", "member_id", claims.MemberID, "safebox", safebox, "error", err)
+		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Safebox transactions could not be loaded")
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"transactions": entries})
+}
+
 func (h *Handler) safeboxStockTransaction(response http.ResponseWriter, request *http.Request) {
 	claims, ok := h.admin(response, request, "safebox stock transaction")
 	if !ok {

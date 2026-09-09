@@ -54,6 +54,7 @@ type moneyLedgerReader interface {
 }
 type safeboxStockReader interface {
 	List(context.Context) ([]stock.Item, error)
+	ListTransactions(context.Context, string) ([]stock.TransactionEntry, error)
 	Transact(context.Context, stock.Transaction) error
 }
 type craftingStockWriter interface {
@@ -129,6 +130,7 @@ func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer t
 	mux.HandleFunc("POST /api/v1/crafting/store-stock", handler.storeCraftingStock)
 	mux.HandleFunc("GET /api/v1/money-transactions/{account}", handler.moneyTransactions)
 	mux.HandleFunc("GET /api/v1/safebox-stock", handler.safeboxStock)
+	mux.HandleFunc("GET /api/v1/safebox-stock/transactions", handler.safeboxStockTransactions)
 	mux.HandleFunc("POST /api/v1/safebox-stock/transactions", handler.safeboxStockTransaction)
 	// Authenticated by HMAC, not by member JWT, so it must stay outside the
 	// bearer-token handlers above.
