@@ -81,6 +81,8 @@ Bot status rotates between `N CR players on Discord` and `N CR players on CFX` e
 
 Crafting calculator stock updates post Discord embeds after database commit. Deposits route to `STASH_BOSS_DP_CHANNEL_ID` or `STASH_PUBLIC_DP_CHANNEL_ID`; material withdrawals route to `STASH_BOSS_WD_CHANNEL_ID` or `STASH_PUBLIC_WD_CHANNEL_ID`. Idempotent request replays do not post duplicate embeds. Discord delivery failure is logged and does not undo committed stock.
 
+The bot reads the same four channel IDs and refuses to start unless all four are present, digits-only, and distinct. A shared ID would make one channel mean two things, and the channel is the only thing naming the safebox and the action.
+
 CFX count polls public directory every `FIVEM_SERVER_CFX_POLL_INTERVAL` milliseconds and applies existing `FIVEM_PLAYER_ID` name filter. Failed CFX requests keep last successful count; CFX status remains hidden until first successful poll.
 
 Set `APP_ENV=production` to restrict status counts and player transition logs to members holding `DISCORD_ROLE_ID`. `DISCORD_ROLE_ID` is required in production. Set `APP_ENV=local` to inspect all non-bot guild members during testing; role filtering is disabled even when a role ID is present.
@@ -113,11 +115,21 @@ A pending disconnect is delayed for at least 15 seconds (or two poll intervals w
 
 `DISCORD_COMMAND_PREFIX` controls message commands.
 
-The bot also registers guild-scoped `/craft`, `/check`, and `/recap` application commands at gateway startup. These slash commands mirror their prefix-command equivalents and appear in Discord's command picker.
+The bot also registers guild-scoped `/craft`, `/check`, `/recap`, `/money`, and `/stash` application commands at gateway startup. All but `/stash` mirror a prefix-command equivalent; `/stash` has none on purpose, for the reason below.
 
 Run `/craft` to open an ephemeral multi-product crafting builder. Select a weapon, enter its quantity, and repeat for up to 20 products. The bot combines matching materials into one total, shows the total crafting time, and lets the caller explicitly post the completed result to the channel. Drafts expire after 10 minutes and quantities must be between 1 and 10,000.
 
 For a faster public calculation, use the prefix command with one or more `<weapon-code>:<quantity>` pairs. Example: `!craft vector:30 mp9:20 crx_mk2:5`. Weapon codes are case-insensitive; hyphens are normalized to underscores. Both command forms read the saved `crafting_recipes` data and use the same calculator as the web API.
+
+`/stash` is the only way to read or move safebox stock, and it works only inside the four safebox channels. There is deliberately no `!stash` prefix form: a prefix command would take the item as text, and a member writing their own word for an item can name something the database does not hold. Every item in the flow is picked from a menu the bot fills out of `safebox_stock_items`, so an item is a stored row by construction.
+
+The channel fixes both the safebox and the action - `STASH_PUBLIC_DP_CHANNEL_ID` is public deposits and nothing else - so the command names neither. The action is still chosen as a subcommand and checked against the channel: `/stash withdraw` run in a deposit channel is refused with the channel to use, rather than depositing instead.
+
+`/stash deposit` and `/stash withdraw` open an ephemeral builder. Pick a stock group, pick an item, enter its quantity, set a reason, then submit. Each option shows the item's current quantity. The group menu exists because Discord caps a select at 25 options and the catalog is larger than that. Drafts are held per member per channel and expire after 10 minutes; every item is re-checked against the safebox on submit, since a draft outlives the menu it was built from. `/stash balance` lists the channel's safebox grouped by stock group.
+
+The four channels are a stock ledger, not a chat. Any message written in one - conversation, an image, or another bot command such as `!recap` - is answered with a reply naming the one action that channel accepts and the command that performs it, and nothing else runs there. The member's own message is left alone; the bot deletes its own notice after 15 seconds, so the channel needs no moderation permission and a false positive destroys nothing. Nobody is exempt, admins included, and every offending message is answered.
+
+Reading a balance is open to any member; deposits and withdrawals require `members.is_admin`, the same gate `!money` uses. Movements go through `stock.Repository.Transact`, so one submission is one transaction with the same row locking, audit rows, and balance floors the web API writes. The interaction ID is the idempotency key, so a redelivered event cannot apply the movement twice. The resulting embed reports the safebox quantity after the move, re-read rather than computed, since the crafting calculator writes the same balances.
 
 Run `<prefix>recap` (default `!recap`) to show ranked member playtime with clickable Discord member mentions in an embed. Recap uses `start_attendance` from the `settings` table in `Asia/Jakarta`; session time before that boundary is excluded. Completed sessions and currently connected sessions are included. `playtime_threshold` uses Go duration format such as `90m`; playtime strictly above this threshold appears under Attended, otherwise under Not Attended.
 

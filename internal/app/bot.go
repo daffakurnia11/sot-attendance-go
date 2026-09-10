@@ -29,6 +29,7 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/presence"
 	"github.com/daffakurniawan/sot-discord-bot/internal/serverlog"
 	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
+	stockdomain "github.com/daffakurniawan/sot-discord-bot/internal/stock"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -54,7 +55,9 @@ type Bot struct {
 	settings           *dbsettings.Repository
 	crafting           craftingdomain.Store
 	money              *moneydomain.Repository
+	stock              *stockdomain.Repository
 	craftDrafts        *craftDraftStore
+	stashDrafts        *stashDraftStore
 	location           *time.Location
 	database           *pgxpool.Pool
 	guildID            string
@@ -68,6 +71,7 @@ type Bot struct {
 	memberRoleID         string
 	officeMoneyChannelID string
 	dirtyMoneyChannelID  string
+	stashChannels        stashChannels
 	serverLogChannelID   string
 	serverLogs           *serverlog.Repository
 	serverLogCursor      int64
@@ -163,7 +167,9 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		settings:             settingsRepository,
 		crafting:             craftingRepository,
 		money:                moneydomain.NewRepository(pool),
+		stock:                stockdomain.NewRepository(pool),
 		craftDrafts:          newCraftDraftStore(10 * time.Minute),
+		stashDrafts:          newStashDraftStore(10 * time.Minute),
 		location:             location,
 		database:             pool,
 		guildID:              cfg.GuildID,
@@ -174,6 +180,12 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		serverLogs:           serverlog.NewRepository(pool),
 		officeMoneyChannelID: cfg.OfficeMoneyChannelID,
 		dirtyMoneyChannelID:  cfg.DirtyMoneyChannelID,
+		stashChannels: stashChannels{
+			bossDeposit:    cfg.StashChannels.BossDeposit,
+			bossWithdraw:   cfg.StashChannels.BossWithdraw,
+			publicDeposit:  cfg.StashChannels.PublicDeposit,
+			publicWithdraw: cfg.StashChannels.PublicWithdraw,
+		},
 	}
 	bot.cfxCount.Store(-1)
 	session.AddHandler(bot.onReady)
@@ -637,6 +649,10 @@ func (b *Bot) onMessageCreate(session *discordgo.Session, message *discordgo.Mes
 		return
 	}
 	commandName := b.router.Match(message.Content)
+	if b.inStashChannel(message.ChannelID) {
+		b.warnStashChannel(session, message)
+		return
+	}
 	if commandName == "" {
 		return
 	}

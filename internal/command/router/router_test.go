@@ -17,6 +17,10 @@ func TestRouterMatch(t *testing.T) {
 		{content: "!craft vector:30 mp9:20", want: "craft"},
 		{content: "!money balance", want: "money"},
 		{content: "!money deposit 1000 income", want: "money"},
+		// Stash has no prefix form: a written item name could name something
+		// the database does not hold.
+		{content: "!stash balance"},
+		{content: "!stash deposit copper:500 weekly farm"},
 		{content: "!Me"},
 		{content: "!check extra"},
 		{content: "!check <@member>"},

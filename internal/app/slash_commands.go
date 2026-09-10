@@ -10,7 +10,9 @@ import (
 	commandcrafting "github.com/daffakurniawan/sot-discord-bot/internal/command/crafting"
 	commandmoney "github.com/daffakurniawan/sot-discord-bot/internal/command/money"
 	commandrecap "github.com/daffakurniawan/sot-discord-bot/internal/command/recap"
+	commandstash "github.com/daffakurniawan/sot-discord-bot/internal/command/stash"
 	moneydomain "github.com/daffakurniawan/sot-discord-bot/internal/money"
+	stockdomain "github.com/daffakurniawan/sot-discord-bot/internal/stock"
 )
 
 var errMoneyAdminRequired = errors.New("money command requires administrator permission")
@@ -37,6 +39,40 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		},
 		{Name: commandrecap.Command, Description: "Show the current attendance recap", Contexts: &guildContexts},
 		moneySlashCommand(guildContexts),
+		stashSlashCommand(guildContexts),
+	}
+}
+
+// stashSlashCommand carries the action as a subcommand even though the channel
+// already fixes it. The bot checks the two agree, so a member who picks the
+// wrong one is told which channel to use rather than moving stock the wrong
+// way round.
+func stashSlashCommand(guildContexts []discordgo.InteractionContextType) *discordgo.ApplicationCommand {
+	subcommand := func(name, description string) *discordgo.ApplicationCommandOption {
+		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionSubCommand, Name: name, Description: description}
+	}
+	// No item or reason option: both are collected by the builder, whose menus
+	// are filled from safebox_stock_items. An item is therefore always a
+	// stored row and never something a member spelled.
+	return &discordgo.ApplicationCommand{Name: commandstash.Command, Description: "View or change the current channel stash", Contexts: &guildContexts, Options: []*discordgo.ApplicationCommandOption{
+		subcommand(commandstash.BalanceAction, "View the current channel safebox contents"),
+		subcommand(stockdomain.ActionDeposit, "Deposit items into the safebox"),
+		subcommand(stockdomain.ActionWithdraw, "Withdraw items from the safebox"),
+	}}
+}
+
+// stashSlashAction reads the chosen subcommand. A malformed interaction falls
+// back to the balance action, which changes nothing.
+func stashSlashAction(interaction *discordgo.Interaction) string {
+	options := interaction.ApplicationCommandData().Options
+	if len(options) != 1 || options[0].Type != discordgo.ApplicationCommandOptionSubCommand {
+		return commandstash.BalanceAction
+	}
+	switch options[0].Name {
+	case stockdomain.ActionDeposit, stockdomain.ActionWithdraw:
+		return options[0].Name
+	default:
+		return commandstash.BalanceAction
 	}
 }
 
@@ -69,8 +105,11 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 		return
 	}
 	if event.Type == discordgo.InteractionMessageComponent || event.Type == discordgo.InteractionModalSubmit {
-		if isCraftInteraction(event.Interaction) {
+		switch {
+		case isCraftInteraction(event.Interaction):
 			b.handleCraftInteraction(session, event.Interaction)
+		case isStashInteraction(event.Interaction):
+			b.handleStashInteraction(session, event.Interaction)
 		}
 		return
 	}
@@ -84,6 +123,14 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 	if commandName == commandcrafting.Command {
 		b.handleCraftSlashStart(session, event.Interaction)
 		return
+	}
+	// Only the balance action answers in one shot. A movement opens the
+	// builder instead, so it is not deferred here.
+	if commandName == commandstash.Command {
+		if action := stashSlashAction(event.Interaction); action != commandstash.BalanceAction {
+			b.handleStashSlashStart(session, event.Interaction, action)
+			return
+		}
 	}
 
 	if err := session.InteractionRespond(event.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredChannelMessageWithSource}); err != nil {
@@ -108,7 +155,7 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 
 func isSlashCommand(name string) bool {
 	switch name {
-	case commandrecap.CheckCommand, commandrecap.Command, commandcrafting.Command, commandmoney.Command:
+	case commandrecap.CheckCommand, commandrecap.Command, commandcrafting.Command, commandmoney.Command, commandstash.Command:
 		return true
 	default:
 		return false
@@ -162,6 +209,9 @@ func (b *Bot) slashCommandResponse(interaction *discordgo.Interaction, commandNa
 		}
 		b.logger.Info("money transaction applied", "guild_id", interaction.GuildID, "channel_id", interaction.ChannelID, "user_id", userID, "member_id", currentMember.ID, "transaction_id", transaction.ID, "account", transaction.Account, "action", transaction.Action, "amount", transaction.Amount)
 		return embedEdit(commandmoney.TransactionEmbed(transaction, currentMember.CharacterName)), userID, nil
+	case commandstash.Command:
+		embed, err := b.stashResponse(ctx, userID, interaction.ChannelID, "discord-interaction:"+interaction.ID, commandstash.Request{Action: commandstash.BalanceAction})
+		return embedEdit(embed), userID, err
 	default:
 		return nil, userID, fmt.Errorf("unsupported slash command %q", commandName)
 	}
@@ -193,6 +243,9 @@ func parseMoneySlashRequest(interaction *discordgo.Interaction) (commandmoney.Re
 }
 
 func slashUserError(err error) string {
+	if content, known := stashUserError(err); known {
+		return content
+	}
 	var channelError moneyChannelError
 	switch {
 	case errors.As(err, &channelError):

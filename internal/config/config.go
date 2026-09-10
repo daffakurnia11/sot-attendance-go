@@ -28,7 +28,20 @@ type Config struct {
 	PlayerRecapChannelID string
 	OfficeMoneyChannelID string
 	DirtyMoneyChannelID  string
+	StashChannels        StashChannels
 	DatabaseURL          string
+}
+
+// StashChannels names the four safebox channels. Each one fixes both the
+// safebox and the action, so a stash command carries neither: posting in the
+// public withdraw channel can only withdraw from the public safebox. The same
+// four channels already receive the crafting calculator's stock embeds, so a
+// channel reads as one ledger regardless of which side wrote the row.
+type StashChannels struct {
+	BossDeposit    string
+	BossWithdraw   string
+	PublicDeposit  string
+	PublicWithdraw string
 }
 
 // Announces reports whether this process may act on Discord and on shared
@@ -61,6 +74,16 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	config, err = withStashChannels(
+		config,
+		os.Getenv("STASH_BOSS_DP_CHANNEL_ID"),
+		os.Getenv("STASH_BOSS_WD_CHANNEL_ID"),
+		os.Getenv("STASH_PUBLIC_DP_CHANNEL_ID"),
+		os.Getenv("STASH_PUBLIC_WD_CHANNEL_ID"),
+	)
+	if err != nil {
+		return Config{}, err
+	}
 	config, err = withServerLogChannel(config, os.Getenv("DISCORD_SERVER_LOG_CHANNEL_ID"))
 	if err != nil {
 		return Config{}, err
@@ -82,6 +105,35 @@ func withMoneyChannels(config Config, officeChannelID, dirtyChannelID string) (C
 	}
 	config.OfficeMoneyChannelID = officeChannelID
 	config.DirtyMoneyChannelID = dirtyChannelID
+	return config, nil
+}
+
+// withStashChannels validates the four safebox channels and refuses to let any
+// two share an ID. A shared ID would make one channel mean two things - the
+// safebox and the action are read from the channel and nothing else - so the
+// bot could not tell a public deposit from a boss withdrawal.
+func withStashChannels(config Config, bossDeposit, bossWithdraw, publicDeposit, publicWithdraw string) (Config, error) {
+	values := []struct{ name, value string }{
+		{"STASH_BOSS_DP_CHANNEL_ID", bossDeposit},
+		{"STASH_BOSS_WD_CHANNEL_ID", bossWithdraw},
+		{"STASH_PUBLIC_DP_CHANNEL_ID", publicDeposit},
+		{"STASH_PUBLIC_WD_CHANNEL_ID", publicWithdraw},
+	}
+	seen := make(map[string]string, len(values))
+	for index := range values {
+		values[index].value = strings.TrimSpace(values[index].value)
+		if err := validateDiscordID(values[index].value); err != nil {
+			return Config{}, fmt.Errorf("%s: %w", values[index].name, err)
+		}
+		if previous, duplicate := seen[values[index].value]; duplicate {
+			return Config{}, fmt.Errorf("%s and %s must be different", previous, values[index].name)
+		}
+		seen[values[index].value] = values[index].name
+	}
+	config.StashChannels = StashChannels{
+		BossDeposit: values[0].value, BossWithdraw: values[1].value,
+		PublicDeposit: values[2].value, PublicWithdraw: values[3].value,
+	}
 	return config, nil
 }
 
