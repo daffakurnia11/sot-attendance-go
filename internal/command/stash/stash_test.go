@@ -103,21 +103,22 @@ func TestBalanceEmbedWithoutItems(t *testing.T) {
 	}
 }
 
-func TestChannelWarningNamesTheOneAllowedAction(t *testing.T) {
+func TestChannelWarningNamesTheSafeboxAndBothCommands(t *testing.T) {
 	t.Parallel()
-	deposit := ChannelWarning("123", "public", stockdomain.ActionDeposit)
-	want := "<@123> This channel only records **Public Stash deposits**. " +
-		"Run `/stash deposit` and pick the items from the menu. " +
+	public := ChannelWarning("123", "public")
+	want := "<@123> This channel only records **Public Stash** movements. " +
+		"Run `/stash deposit` or `/stash withdraw` and pick the items from the menu. " +
 		"This notice disappears shortly."
-	if deposit != want {
-		t.Fatalf("ChannelWarning() = %q\nwant %q", deposit, want)
+	if public != want {
+		t.Fatalf("ChannelWarning() = %q\nwant %q", public, want)
+	}
+	// The channel no longer fixes the action, so both are offered.
+	boss := ChannelWarning("456", "boss")
+	if !strings.Contains(boss, "**Boss Stash**") || !strings.Contains(boss, "`/stash deposit`") || !strings.Contains(boss, "`/stash withdraw`") {
+		t.Fatalf("ChannelWarning() = %q", boss)
 	}
 	// No prefix command is offered: there is no way to write an item name.
-	withdraw := ChannelWarning("456", "boss", stockdomain.ActionWithdraw)
-	if !strings.Contains(withdraw, "**Boss Stash withdraws**") || !strings.Contains(withdraw, "`/stash withdraw`") {
-		t.Fatalf("ChannelWarning() = %q", withdraw)
-	}
-	if strings.Contains(withdraw, "!stash") || strings.Contains(withdraw, ":1000") {
-		t.Fatalf("ChannelWarning() still offers a written command: %q", withdraw)
+	if strings.Contains(boss, "!stash") || strings.Contains(boss, ":1000") {
+		t.Fatalf("ChannelWarning() still offers a written command: %q", boss)
 	}
 }

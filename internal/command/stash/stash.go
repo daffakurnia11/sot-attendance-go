@@ -246,14 +246,13 @@ func contains(values []string, value string) bool {
 // ChannelWarning is the notice posted when someone writes anything but a stash
 // command in a safebox channel.
 //
-// The four channels are a stock ledger read by people and by the crafting
-// calculator alike, so a line of conversation in one is noise in a record.
-// The notice names the one action the channel accepts and the command that
-// performs it, because a member who wrote the wrong thing needs the right
-// thing in front of them, not a rule.
-func ChannelWarning(userDiscordID, safebox, action string) string {
+// Both channels are a stock ledger read by people and by the crafting
+// calculator alike, so a line of conversation in one is noise in a record. The
+// notice names the commands that do record something, because a member who
+// wrote the wrong thing needs the right thing in front of them, not a rule.
+func ChannelWarning(userDiscordID, safebox string) string {
 	return fmt.Sprintf(
-		"<@%s> This channel only records **%s %ss**. Run `/%s %s` and pick the items from the menu. This notice disappears shortly.",
-		userDiscordID, SafeboxLabel(safebox), action, Command, action,
+		"<@%s> This channel only records **%s** movements. Run `/%s deposit` or `/%s withdraw` and pick the items from the menu. This notice disappears shortly.",
+		userDiscordID, SafeboxLabel(safebox), Command, Command,
 	)
 }

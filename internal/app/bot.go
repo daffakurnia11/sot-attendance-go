@@ -180,12 +180,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		serverLogs:           serverlog.NewRepository(pool),
 		officeMoneyChannelID: cfg.OfficeMoneyChannelID,
 		dirtyMoneyChannelID:  cfg.DirtyMoneyChannelID,
-		stashChannels: stashChannels{
-			bossDeposit:    cfg.StashChannels.BossDeposit,
-			bossWithdraw:   cfg.StashChannels.BossWithdraw,
-			publicDeposit:  cfg.StashChannels.PublicDeposit,
-			publicWithdraw: cfg.StashChannels.PublicWithdraw,
-		},
+		stashChannels:        stashChannels{public: cfg.StashChannels.Public, boss: cfg.StashChannels.Boss},
 	}
 	bot.cfxCount.Store(-1)
 	session.AddHandler(bot.onReady)

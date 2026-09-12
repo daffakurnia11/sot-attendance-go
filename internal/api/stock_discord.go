@@ -17,10 +17,8 @@ import (
 )
 
 type StockDiscordChannels struct {
-	BossDeposit    string
-	BossWithdraw   string
-	PublicDeposit  string
-	PublicWithdraw string
+	Public string
+	Boss   string
 }
 
 type DiscordStockNotifier struct {
@@ -66,17 +64,13 @@ func (n *DiscordStockNotifier) Notify(ctx context.Context, actorDiscordID string
 	return errors.Join(failures...)
 }
 
+// Deposits and withdrawals share their safebox's channel; the embed title and
+// colour are what tell them apart.
 func (n *DiscordStockNotifier) channelID(key stockNoticeKey) string {
-	if key.safebox == "boss" && key.action == stock.ActionDeposit {
-		return n.channels.BossDeposit
-	}
 	if key.safebox == "boss" {
-		return n.channels.BossWithdraw
+		return n.channels.Boss
 	}
-	if key.action == stock.ActionDeposit {
-		return n.channels.PublicDeposit
-	}
-	return n.channels.PublicWithdraw
+	return n.channels.Public
 }
 
 func stockMovementLines(movements []stock.Movement, names map[string]string) []string {

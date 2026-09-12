@@ -38,10 +38,8 @@ type Config struct {
 // four channels already receive the crafting calculator's stock embeds, so a
 // channel reads as one ledger regardless of which side wrote the row.
 type StashChannels struct {
-	BossDeposit    string
-	BossWithdraw   string
-	PublicDeposit  string
-	PublicWithdraw string
+	Public string
+	Boss   string
 }
 
 // Announces reports whether this process may act on Discord and on shared
@@ -74,13 +72,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	config, err = withStashChannels(
-		config,
-		os.Getenv("STASH_BOSS_DP_CHANNEL_ID"),
-		os.Getenv("STASH_BOSS_WD_CHANNEL_ID"),
-		os.Getenv("STASH_PUBLIC_DP_CHANNEL_ID"),
-		os.Getenv("STASH_PUBLIC_WD_CHANNEL_ID"),
-	)
+	config, err = withStashChannels(config, os.Getenv("STASH_PUBLIC_CHANNEL_ID"), os.Getenv("STASH_BOSS_CHANNEL_ID"))
 	if err != nil {
 		return Config{}, err
 	}
@@ -108,32 +100,22 @@ func withMoneyChannels(config Config, officeChannelID, dirtyChannelID string) (C
 	return config, nil
 }
 
-// withStashChannels validates the four safebox channels and refuses to let any
-// two share an ID. A shared ID would make one channel mean two things - the
-// safebox and the action are read from the channel and nothing else - so the
-// bot could not tell a public deposit from a boss withdrawal.
-func withStashChannels(config Config, bossDeposit, bossWithdraw, publicDeposit, publicWithdraw string) (Config, error) {
-	values := []struct{ name, value string }{
-		{"STASH_BOSS_DP_CHANNEL_ID", bossDeposit},
-		{"STASH_BOSS_WD_CHANNEL_ID", bossWithdraw},
-		{"STASH_PUBLIC_DP_CHANNEL_ID", publicDeposit},
-		{"STASH_PUBLIC_WD_CHANNEL_ID", publicWithdraw},
+// withStashChannels validates the two safebox channels and refuses to let them
+// share an ID. The channel is what names the safebox - the action comes from
+// the subcommand - so one ID for both would make every movement ambiguous.
+func withStashChannels(config Config, publicChannelID, bossChannelID string) (Config, error) {
+	publicChannelID = strings.TrimSpace(publicChannelID)
+	if err := validateDiscordID(publicChannelID); err != nil {
+		return Config{}, fmt.Errorf("STASH_PUBLIC_CHANNEL_ID: %w", err)
 	}
-	seen := make(map[string]string, len(values))
-	for index := range values {
-		values[index].value = strings.TrimSpace(values[index].value)
-		if err := validateDiscordID(values[index].value); err != nil {
-			return Config{}, fmt.Errorf("%s: %w", values[index].name, err)
-		}
-		if previous, duplicate := seen[values[index].value]; duplicate {
-			return Config{}, fmt.Errorf("%s and %s must be different", previous, values[index].name)
-		}
-		seen[values[index].value] = values[index].name
+	bossChannelID = strings.TrimSpace(bossChannelID)
+	if err := validateDiscordID(bossChannelID); err != nil {
+		return Config{}, fmt.Errorf("STASH_BOSS_CHANNEL_ID: %w", err)
 	}
-	config.StashChannels = StashChannels{
-		BossDeposit: values[0].value, BossWithdraw: values[1].value,
-		PublicDeposit: values[2].value, PublicWithdraw: values[3].value,
+	if publicChannelID == bossChannelID {
+		return Config{}, errors.New("STASH_PUBLIC_CHANNEL_ID and STASH_BOSS_CHANNEL_ID must be different")
 	}
+	config.StashChannels = StashChannels{Public: publicChannelID, Boss: bossChannelID}
 	return config, nil
 }
 

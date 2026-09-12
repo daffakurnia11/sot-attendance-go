@@ -13,11 +13,11 @@ import (
 )
 
 func TestStockDiscordConfigValidatesChannels(t *testing.T) {
-	config, err := StockDiscordConfigFromValues(" token ", "11", "22", "33", "44")
-	if err != nil || config.Token != "token" || config.Channels.PublicWithdraw != "44" {
+	config, err := StockDiscordConfigFromValues(" token ", "33", "11")
+	if err != nil || config.Token != "token" || config.Channels.Public != "33" || config.Channels.Boss != "11" {
 		t.Fatalf("config = %#v, error = %v", config, err)
 	}
-	if _, err := StockDiscordConfigFromValues("token", "invalid", "22", "33", "44"); err == nil || !strings.Contains(err.Error(), "STASH_BOSS_DP_CHANNEL_ID") {
+	if _, err := StockDiscordConfigFromValues("token", "invalid", "11"); err == nil || !strings.Contains(err.Error(), "STASH_PUBLIC_CHANNEL_ID") {
 		t.Fatalf("invalid channel error = %v", err)
 	}
 }
@@ -54,7 +54,7 @@ func TestDiscordStockNotifierRoutesEachMovementGroup(t *testing.T) {
 		fields = append(fields, payload.Embeds[0].Fields)
 		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader("{}"))}, nil
 	})}
-	notifier := NewDiscordStockNotifier(client, "secret", StockDiscordChannels{BossDeposit: "11", BossWithdraw: "22", PublicDeposit: "33", PublicWithdraw: "44"})
+	notifier := NewDiscordStockNotifier(client, "secret", StockDiscordChannels{Public: "33", Boss: "11"})
 	notifier.baseURL = "https://discord.test"
 	err := notifier.Notify(context.Background(), "123", []stock.Movement{
 		{Safebox: "public", ItemKey: "iron", Action: stock.ActionWithdraw, Quantity: 80},
@@ -65,7 +65,8 @@ func TestDiscordStockNotifierRoutesEachMovementGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPaths := []string{"/channels/11/messages", "/channels/22/messages", "/channels/33/messages", "/channels/44/messages"}
+	// Both of a safebox's actions post to its one channel; the title separates them.
+	wantPaths := []string{"/channels/11/messages", "/channels/11/messages", "/channels/33/messages", "/channels/33/messages"}
 	wantTitles := []string{"Deposit · Boss Stash", "Withdraw · Boss Stash", "Deposit · Public Stash", "Withdraw · Public Stash"}
 	if !reflect.DeepEqual(paths, wantPaths) || !reflect.DeepEqual(titles, wantTitles) {
 		t.Fatalf("paths = %v, titles = %v", paths, titles)
@@ -90,7 +91,7 @@ func TestDiscordStockNotifierReportsDiscordFailure(t *testing.T) {
 	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader("forbidden"))}, nil
 	})}
-	notifier := NewDiscordStockNotifier(client, "secret", StockDiscordChannels{BossDeposit: "11"})
+	notifier := NewDiscordStockNotifier(client, "secret", StockDiscordChannels{Boss: "11"})
 	notifier.baseURL = "https://discord.test"
 	err := notifier.Notify(context.Background(), "123", []stock.Movement{{Safebox: "boss", ItemKey: "vector", Action: stock.ActionDeposit, Quantity: 1}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "status 403") {

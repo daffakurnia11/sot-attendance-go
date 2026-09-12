@@ -28,9 +28,11 @@ const (
 )
 
 // stashDraft is one member's unsubmitted movement in one channel. The safebox
-// and the action are not held here: they belong to the channel, and the key
-// carries the channel.
+// is not held here - it belongs to the channel, and the key carries the
+// channel - but the action is, because it comes from the subcommand that
+// opened the builder and nothing else records it.
 type stashDraft struct {
+	Action    string
 	Group     string
 	Reason    string
 	Items     []stockdomain.TransactionLine
@@ -108,9 +110,8 @@ func isStashInteraction(interaction *discordgo.Interaction) bool {
 }
 
 // handleStashSlashStart opens the builder for /stash deposit and /stash
-// withdraw. The subcommand is checked against the channel here, before any
-// draft exists, so a member in the wrong channel is told immediately instead
-// of after picking items.
+// withdraw. The channel is checked here, before any draft exists, so a member
+// in the wrong channel is told immediately instead of after picking items.
 func (b *Bot) handleStashSlashStart(session *discordgo.Session, interaction *discordgo.Interaction, action string) {
 	if !b.deferStashResponse(session, interaction, true) {
 		return
@@ -120,17 +121,18 @@ func (b *Bot) handleStashSlashStart(session *discordgo.Session, interaction *dis
 		b.editStashError(session, interaction, err)
 		return
 	}
-	safebox, channelAction, valid := b.stashChannels.target(interaction.ChannelID)
+	safebox, valid := b.stashChannels.target(interaction.ChannelID)
 	if !valid {
 		b.editStashError(session, interaction, stashChannelError{channels: b.stashChannels})
 		return
 	}
-	if action != channelAction {
-		b.editStashError(session, interaction, stashActionError{requested: action, safebox: safebox, channelID: b.stashChannels.channelFor(safebox, action)})
+	key := stashDraftKey(interaction.GuildID, interaction.ChannelID, userID)
+	b.stashDrafts.clear(key)
+	if err := b.stashDrafts.touch(key, func(draft *stashDraft) error { draft.Action = action; return nil }); err != nil {
+		b.editStashError(session, interaction, err)
 		return
 	}
-	b.stashDrafts.clear(stashDraftKey(interaction.GuildID, interaction.ChannelID, userID))
-	b.editStashBuilder(session, interaction, safebox, channelAction, stashDraftKey(interaction.GuildID, interaction.ChannelID, userID))
+	b.editStashBuilder(session, interaction, safebox, action, key)
 }
 
 func (b *Bot) handleStashInteraction(session *discordgo.Session, interaction *discordgo.Interaction) {
@@ -139,12 +141,19 @@ func (b *Bot) handleStashInteraction(session *discordgo.Session, interaction *di
 		b.logger.Error("identify stash interaction user", "error", err)
 		return
 	}
-	safebox, action, valid := b.stashChannels.target(interaction.ChannelID)
+	safebox, valid := b.stashChannels.target(interaction.ChannelID)
 	if !valid {
 		b.respondStashError(session, interaction, stashChannelError{channels: b.stashChannels})
 		return
 	}
 	key := stashDraftKey(interaction.GuildID, interaction.ChannelID, userID)
+	// The action lives in the draft, so a builder whose draft has expired has
+	// nothing left to apply and its buttons must not fall through to a default.
+	action := b.stashDrafts.get(key).Action
+	if action == "" {
+		b.respondStashError(session, interaction, errStashDraftExpired)
+		return
+	}
 
 	if interaction.Type == discordgo.InteractionMessageComponent {
 		data := interaction.MessageComponentData()

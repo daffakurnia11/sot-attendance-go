@@ -13,33 +13,28 @@ import (
 )
 
 func testStashChannels() stashChannels {
-	return stashChannels{bossDeposit: "1", bossWithdraw: "2", publicDeposit: "3", publicWithdraw: "4"}
+	return stashChannels{public: "3", boss: "1"}
 }
 
+// The channel names the safebox and nothing else: both actions are recorded in
+// the same channel, so the subcommand is what separates them.
 func TestStashChannelsTarget(t *testing.T) {
 	t.Parallel()
 	channels := testStashChannels()
 	tests := []struct {
 		channelID string
 		safebox   string
-		action    string
 		valid     bool
 	}{
-		{channelID: "1", safebox: "boss", action: stockdomain.ActionDeposit, valid: true},
-		{channelID: "2", safebox: "boss", action: stockdomain.ActionWithdraw, valid: true},
-		{channelID: "3", safebox: "public", action: stockdomain.ActionDeposit, valid: true},
-		{channelID: "4", safebox: "public", action: stockdomain.ActionWithdraw, valid: true},
+		{channelID: "1", safebox: "boss", valid: true},
+		{channelID: "3", safebox: "public", valid: true},
 		{channelID: "5"},
+		{channelID: ""},
 	}
 	for _, test := range tests {
-		safebox, action, valid := channels.target(test.channelID)
-		if valid != test.valid || safebox != test.safebox || action != test.action {
-			t.Errorf("target(%q) = %q, %q, %v; want %q, %q, %v", test.channelID, safebox, action, valid, test.safebox, test.action, test.valid)
-		}
-		if test.valid {
-			if got := channels.channelFor(test.safebox, test.action); got != test.channelID {
-				t.Errorf("channelFor(%q, %q) = %q, want %q", test.safebox, test.action, got, test.channelID)
-			}
+		safebox, valid := channels.target(test.channelID)
+		if valid != test.valid || safebox != test.safebox {
+			t.Errorf("target(%q) = %q, %v; want %q, %v", test.channelID, safebox, valid, test.safebox, test.valid)
 		}
 	}
 }
@@ -52,7 +47,7 @@ func TestStashUserErrorNamesTheFix(t *testing.T) {
 		contains string
 	}{
 		{name: "wrong channel", err: stashChannelError{channels: testStashChannels()}, contains: "<#3>"},
-		{name: "wrong action", err: stashActionError{requested: "withdraw", safebox: "boss", channelID: "2"}, contains: "<#2>"},
+		{name: "expired draft", err: errStashDraftExpired, contains: "/stash deposit"},
 		{name: "vanished item", err: stashItemError{itemKey: "coper"}, contains: "`coper`"},
 		{name: "not admin", err: errStashAdminRequired, contains: "Administrator"},
 		{name: "insufficient", err: stockdomain.ErrInsufficientStock, contains: "Insufficient stock"},
@@ -196,12 +191,12 @@ func TestInStashChannel(t *testing.T) {
 	bot := &Bot{stashChannels: testStashChannels()}
 	// Every message in a safebox channel is warned: /stash is the only way to
 	// move stock, so nothing typed there is meant to be acted on.
-	for _, channelID := range []string{"1", "2", "3", "4"} {
+	for _, channelID := range []string{"1", "3"} {
 		if !bot.inStashChannel(channelID) {
 			t.Errorf("inStashChannel(%q) = false", channelID)
 		}
 	}
-	for _, channelID := range []string{"", "5", "99"} {
+	for _, channelID := range []string{"", "2", "4", "5", "99"} {
 		if bot.inStashChannel(channelID) {
 			t.Errorf("inStashChannel(%q) = true", channelID)
 		}

@@ -150,21 +150,15 @@ func TestWithMoneyChannels(t *testing.T) {
 
 func TestWithStashChannels(t *testing.T) {
 	t.Parallel()
-	configured, err := withStashChannels(Config{}, " 11 ", " 22 ", " 33 ", " 44 ")
-	if err != nil || configured.StashChannels != (StashChannels{BossDeposit: "11", BossWithdraw: "22", PublicDeposit: "33", PublicWithdraw: "44"}) {
+	configured, err := withStashChannels(Config{}, " 11 ", " 22 ")
+	if err != nil || configured.StashChannels != (StashChannels{Public: "11", Boss: "22"}) {
 		t.Fatalf("withStashChannels() = %#v, %v", configured, err)
 	}
-	invalid := [][4]string{
-		{"", "22", "33", "44"},
-		{"11", "abc", "33", "44"},
-		{"11", "22", "", "44"},
-		{"11", "22", "33", "4 4"},
-		{"11", "11", "33", "44"},
-		{"11", "22", "33", "22"},
-	}
-	for _, channels := range invalid {
-		if _, err := withStashChannels(Config{}, channels[0], channels[1], channels[2], channels[3]); err == nil {
-			t.Errorf("withStashChannels(%q) error = nil", channels)
+	// The last pair shares one ID, which would leave the safebox unreadable
+	// from the channel.
+	for _, channels := range [][2]string{{"", "22"}, {"abc", "22"}, {"11", ""}, {"11", "2 2"}, {"11", "11"}} {
+		if _, err := withStashChannels(Config{}, channels[0], channels[1]); err == nil {
+			t.Errorf("withStashChannels(%q, %q) error = nil", channels[0], channels[1])
 		}
 	}
 }
