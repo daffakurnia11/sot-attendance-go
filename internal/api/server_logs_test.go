@@ -38,7 +38,7 @@ func webhookHandler(t *testing.T, store serverLogStore) http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	auth := serverlog.NewAuthenticator(webhookSecret, nil)
 	webhook := NewServerLogWebhook(store, auth)
-	return NewHandlerWithWebhook(nil, nil, nil, nil, nil, nil, logger, nil, nil, nil, webhook)
+	return NewHandler(Deps{ServerLogs: webhook, Logger: logger})
 }
 
 func text(value string) *string { return &value }
@@ -342,7 +342,7 @@ func TestServerLogWebhookUnavailableWithoutLimiter(t *testing.T) {
 		Store: &fakeServerLogStore{},
 		Auth:  serverlog.NewAuthenticator(webhookSecret, nil),
 	}
-	handler := NewHandlerWithWebhook(nil, nil, nil, nil, nil, nil, logger, nil, nil, nil, webhook)
+	handler := NewHandler(Deps{ServerLogs: webhook, Logger: logger})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, signedRequest(webhookBody(t, nil), nil))
 
@@ -353,7 +353,7 @@ func TestServerLogWebhookUnavailableWithoutLimiter(t *testing.T) {
 
 func TestServerLogWebhookUnavailableWithoutStore(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler := NewHandlerWithWebhook(nil, nil, nil, nil, nil, nil, logger, nil, nil, nil, nil)
+	handler := NewHandler(Deps{Logger: logger})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, signedRequest(webhookBody(t, nil), nil))
 
@@ -367,7 +367,7 @@ func TestServerLogWebhookRateLimits(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	auth := serverlog.NewAuthenticator(webhookSecret, nil)
 	webhook := &ServerLogWebhook{Store: store, Auth: auth, Limiter: newRateLimiter(1, 1, nil)}
-	handler := NewHandlerWithWebhook(nil, nil, nil, nil, nil, nil, logger, nil, nil, nil, webhook)
+	handler := NewHandler(Deps{ServerLogs: webhook, Logger: logger})
 
 	first := httptest.NewRecorder()
 	handler.ServeHTTP(first, signedRequest(webhookBody(t, nil), nil))

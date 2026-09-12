@@ -80,39 +80,41 @@ type Handler struct {
 	logger      *slog.Logger
 }
 
-func NewHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, stores ...settingsStore) http.Handler {
-	var settings settingsStore
-	if len(stores) > 0 {
-		settings = stores[0]
+// Deps is everything the API handler needs. Optional collaborators may be
+// nil; the routes that use them answer 503 instead of being unregistered, so
+// the surface stays the same regardless of what is wired in.
+type Deps struct {
+	Verifier    discordIdentityVerifier
+	Members     memberFinder
+	Issuer      tokenIssuer
+	Tokens      tokenVerifier
+	Dashboard   dashboardReader
+	Attendance  attendanceReader
+	Settings    settingsStore
+	Crafting    crafting.Store
+	Money       moneyLedgerReader
+	ServerLogs  *ServerLogWebhook
+	Stock       safeboxStockReader
+	StockNotify craftingStockNotifier
+	Logger      *slog.Logger
+}
+
+func NewHandler(deps Deps) http.Handler {
+	handler := &Handler{
+		verifier:    deps.Verifier,
+		members:     deps.Members,
+		issuer:      deps.Issuer,
+		tokens:      deps.Tokens,
+		dashboard:   deps.Dashboard,
+		attendance:  deps.Attendance,
+		settings:    deps.Settings,
+		crafting:    deps.Crafting,
+		money:       deps.Money,
+		serverLogs:  deps.ServerLogs,
+		stock:       deps.Stock,
+		stockNotify: deps.StockNotify,
+		logger:      deps.Logger,
 	}
-	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, nil, nil, nil, nil)
-}
-
-func NewHandlerWithCrafting(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledgers ...moneyLedgerReader) http.Handler {
-	var ledger moneyLedgerReader
-	if len(ledgers) > 0 {
-		ledger = ledgers[0]
-	}
-	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes, ledger, nil, nil)
-}
-
-// NewHandlerWithWebhook is NewHandlerWithCrafting plus the CR Roleplay player
-// log webhook. Pass a nil webhook to leave the route registered but reporting
-// 503, which is what the other constructors do.
-func NewHandlerWithWebhook(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledger moneyLedgerReader, webhook *ServerLogWebhook, stocks ...safeboxStockReader) http.Handler {
-	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes, ledger, webhook, nil, stocks...)
-}
-
-func NewHandlerWithStockNotifications(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledger moneyLedgerReader, webhook *ServerLogWebhook, stocks safeboxStockReader, notifier craftingStockNotifier) http.Handler {
-	return newHandler(verifier, members, issuer, tokens, dashboard, attendance, logger, settings, recipes, ledger, webhook, notifier, stocks)
-}
-
-func newHandler(verifier discordIdentityVerifier, members memberFinder, issuer tokenIssuer, tokens tokenVerifier, dashboard dashboardReader, attendance attendanceReader, logger *slog.Logger, settings settingsStore, recipes crafting.Store, ledger moneyLedgerReader, webhook *ServerLogWebhook, notifier craftingStockNotifier, stocks ...safeboxStockReader) http.Handler {
-	var stockReader safeboxStockReader
-	if len(stocks) > 0 {
-		stockReader = stocks[0]
-	}
-	handler := &Handler{verifier: verifier, members: members, issuer: issuer, tokens: tokens, dashboard: dashboard, attendance: attendance, settings: settings, crafting: recipes, money: ledger, serverLogs: webhook, stock: stockReader, stockNotify: notifier, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handler.health)
 	mux.HandleFunc("POST /api/v1/auth/discord", handler.discordLogin)

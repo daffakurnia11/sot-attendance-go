@@ -129,7 +129,7 @@ func (s *stubAttendance) GetMonthly(_ context.Context, year int, month time.Mont
 func TestMonthlyAttendanceUsesConfiguredContractStartDate(t *testing.T) {
 	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08"}}
 	store := &stubSettings{values: dbsettings.Values{StartDateContract: "28"}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger(), store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: &stubDashboard{}, Attendance: reader, Settings: store, Logger: testLogger()})
 
 	response := request(handler, http.MethodGet, "/api/v1/attendance?month=2026-08", "Bearer app-token")
 	if response.Code != http.StatusOK || reader.startDay != 28 {
@@ -168,7 +168,7 @@ func TestDiscordLoginIssuesAppTokenForRegisteredMember(t *testing.T) {
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", Username: "delta", DisplayName: "Delta"}}
 	expiresAt := time.Date(2026, 8, 14, 10, 15, 0, 0, time.UTC)
 	issuer := &stubIssuer{token: "app-token", expiresAt: expiresAt}
-	recorder := request(NewHandler(verifier, members, issuer, stubTokens{}, &stubDashboard{}, &stubAttendance{}, testLogger()), http.MethodPost, "/api/v1/auth/discord", "Bearer discord-token")
+	recorder := request(NewHandler(Deps{Verifier: verifier, Members: members, Issuer: issuer, Tokens: stubTokens{}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Logger: testLogger()}), http.MethodPost, "/api/v1/auth/discord", "Bearer discord-token")
 
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"access_token":"app-token"`) {
 		t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
@@ -200,7 +200,7 @@ func TestDiscordLoginRejectsInvalidAndUnregisteredUsers(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			verifier := &stubVerifier{user: DiscordUser{ID: "123", Username: "delta"}, error: test.verifyErr}
 			members := &stubMembers{error: test.memberErr}
-			recorder := request(NewHandler(verifier, members, &stubIssuer{}, stubTokens{}, &stubDashboard{}, &stubAttendance{}, testLogger()), http.MethodPost, "/api/v1/auth/discord", test.header)
+			recorder := request(NewHandler(Deps{Verifier: verifier, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Logger: testLogger()}), http.MethodPost, "/api/v1/auth/discord", test.header)
 			if recorder.Code != test.wantStatus || !strings.Contains(recorder.Body.String(), test.wantCode) {
 				t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
 			}
@@ -209,7 +209,7 @@ func TestDiscordLoginRejectsInvalidAndUnregisteredUsers(t *testing.T) {
 }
 
 func TestHealthAndMethodRouting(t *testing.T) {
-	handler := NewHandler(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{}, &stubDashboard{}, &stubAttendance{}, testLogger())
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{}, Issuer: &stubIssuer{}, Tokens: stubTokens{}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Logger: testLogger()})
 	health := request(handler, http.MethodGet, "/healthz", "")
 	if health.Code != http.StatusOK || health.Body.String() != "{\"status\":\"ok\"}\n" {
 		t.Fatalf("health response = %d %s", health.Code, health.Body.String())
@@ -228,7 +228,7 @@ func TestCraftingRecipesRequireAuthAndCalculateTotals(t *testing.T) {
 			Ingredients:   []crafting.Ingredient{{ItemCode: "iron", ItemName: "Iron", Quantity: 25}},
 		},
 	}
-	handler := NewHandlerWithCrafting(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Crafting: store, Logger: testLogger()})
 	unauthorized := request(handler, http.MethodGet, "/api/v1/crafting/recipes", "")
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized response = %d %s", unauthorized.Code, unauthorized.Body.String())
@@ -248,7 +248,7 @@ func TestCraftingRecipesRequireAuthAndCalculateTotals(t *testing.T) {
 
 func TestCraftingCalculationRejectsInvalidQuantityAndUnknownRecipe(t *testing.T) {
 	store := &stubCrafting{err: crafting.ErrNotFound}
-	handler := NewHandlerWithCrafting(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Crafting: store, Logger: testLogger()})
 	for body, wantStatus := range map[string]int{
 		`{"weapon_code":"desert_eagle","quantity":0}`: http.StatusUnprocessableEntity,
 		`{"weapon_code":"missing","quantity":1}`:      http.StatusNotFound,
@@ -268,7 +268,7 @@ func TestBatchCraftingCalculationTotalsRecipes(t *testing.T) {
 		RecipeSummary: crafting.RecipeSummary{WeaponCode: "weapon", WeaponName: "Weapon", OutputQuantity: 1, CraftingTimeSeconds: 8},
 		Ingredients:   []crafting.Ingredient{{ItemCode: "iron", ItemName: "Iron", Quantity: 20}},
 	}}
-	handler := NewHandlerWithCrafting(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Crafting: store, Logger: testLogger()})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/crafting/calculate-batch", strings.NewReader(`{"recipes":[{"weapon_code":"one","quantity":2},{"weapon_code":"two","quantity":3}]}`))
 	request.Header.Set("Authorization", "Bearer app-token")
 	response := httptest.NewRecorder()
@@ -287,7 +287,7 @@ func TestBatchCraftingCalculationIncludesStashAvailability(t *testing.T) {
 		{Safebox: "public", ItemKey: "iron", Quantity: 40},
 		{Safebox: "boss", ItemKey: "iron", Quantity: 30},
 	}}
-	handler := NewHandlerWithWebhook(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, recipes, nil, nil, stocks)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Crafting: recipes, Stock: stocks, Logger: testLogger()})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/crafting/calculate-batch", strings.NewReader(`{"recipes":[{"weapon_code":"one","quantity":5}]}`))
 	request.Header.Set("Authorization", "Bearer app-token")
 	response := httptest.NewRecorder()
@@ -308,7 +308,7 @@ func TestStoreCraftingStockWithdrawsPublicFirstAndDepositsOutput(t *testing.T) {
 	}}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
 	notifier := &stubCraftingStockNotifier{}
-	handler := NewHandlerWithStockNotifications(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, recipes, nil, nil, stocks, notifier)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Crafting: recipes, Stock: stocks, StockNotify: notifier, Logger: testLogger()})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/crafting/store-stock", strings.NewReader(`{"recipes":[{"weapon_code":"vector","quantity":5}],"destination":"boss","idempotency_key":"request-1"}`))
 	request.Header.Set("Authorization", "Bearer app-token")
 	response := httptest.NewRecorder()
@@ -347,7 +347,7 @@ func TestStoreCraftingStockIdempotentReplayDoesNotNotifyDiscord(t *testing.T) {
 	stocks := &stubSafeboxStock{alreadyApplied: true, items: []stock.Item{{Safebox: "public", ItemKey: "iron", Name: "Iron", Quantity: 20}}}
 	notifier := &stubCraftingStockNotifier{}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
-	handler := NewHandlerWithStockNotifications(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, recipes, nil, nil, stocks, notifier)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Crafting: recipes, Stock: stocks, StockNotify: notifier, Logger: testLogger()})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/crafting/store-stock", strings.NewReader(`{"recipes":[{"weapon_code":"vector","quantity":1}],"destination":"boss","idempotency_key":"request-1"}`))
 	request.Header.Set("Authorization", "Bearer app-token")
 	response := httptest.NewRecorder()
@@ -363,7 +363,7 @@ func TestDashboardRequiresValidMemberToken(t *testing.T) {
 		PlayerThreshold: 15,
 		DiscordPlayers:  []dashboard.Player{{MemberID: memberID(7), CFXName: "SOT - Kenji"}},
 	}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, dashboards, &stubAttendance{}, testLogger())
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: dashboards, Attendance: &stubAttendance{}, Logger: testLogger()})
 
 	unauthorized := request(handler, http.MethodGet, "/api/v1/dashboard", "")
 	if unauthorized.Code != http.StatusUnauthorized {
@@ -378,7 +378,7 @@ func TestDashboardRequiresValidMemberToken(t *testing.T) {
 func TestMoneyTransactionsOpenToMembersAndUseRequestedAccount(t *testing.T) {
 	ledger := &stubMoneyLedger{balances: map[moneydomain.Account]int64{moneydomain.AccountOffice: 1012500, moneydomain.AccountDirty: 18000}, entries: []moneydomain.LedgerEntry{{ID: 9, Account: moneydomain.AccountDirty, Type: "deposit", Amount: 18000, ActorName: "Kenji"}}}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
-	handler := NewHandlerWithCrafting(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, nil, ledger)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Money: ledger, Logger: testLogger()})
 
 	response := request(handler, http.MethodGet, "/api/v1/money-transactions/dirty", "Bearer app-token")
 	if response.Code != http.StatusOK || ledger.account != moneydomain.AccountDirty || !strings.Contains(response.Body.String(), `"actor_name":"Kenji"`) || !strings.Contains(response.Body.String(), `"current_balance":18000`) || !strings.Contains(response.Body.String(), `"office":1012500`) {
@@ -395,7 +395,7 @@ func TestMoneyTransactionsOpenToMembersAndUseRequestedAccount(t *testing.T) {
 
 func TestMemberRecordsUseLoggedInMember(t *testing.T) {
 	dashboards := &stubDashboard{records: dashboard.MemberRecords{TotalPlaytimeSeconds: 3600, TotalAttended: 2}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, dashboards, &stubAttendance{}, testLogger())
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: dashboards, Attendance: &stubAttendance{}, Logger: testLogger()})
 
 	unauthorized := request(handler, http.MethodGet, "/api/v1/me/records", "")
 	if unauthorized.Code != http.StatusUnauthorized {
@@ -409,7 +409,7 @@ func TestMemberRecordsUseLoggedInMember(t *testing.T) {
 
 func TestMonthlyAttendanceRequiresAuthAndValidMonth(t *testing.T) {
 	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08", TotalAttended: 12}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger())
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: &stubDashboard{}, Attendance: reader, Logger: testLogger()})
 
 	unauthorized := request(handler, http.MethodGet, "/api/v1/attendance?month=2026-08", "")
 	if unauthorized.Code != http.StatusUnauthorized {
@@ -433,7 +433,7 @@ func TestMyMonthlyAttendanceOnlyReturnsLoggedInMember(t *testing.T) {
 			{MemberID: 7, DisplayName: "Logged In", TotalAttended: 1},
 		},
 	}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger())
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: &stubDashboard{}, Attendance: reader, Logger: testLogger()})
 
 	response := request(handler, http.MethodGet, "/api/v1/attendance/me?month=2026-08", "Bearer app-token")
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "Other") || !strings.Contains(response.Body.String(), "Logged In") {
@@ -450,7 +450,7 @@ func TestMonthlyPayslipsRequiresAuthAndCalculatesEveryMember(t *testing.T) {
 		{MemberID: 2, CharacterName: "Qualified", TotalAttended: 24},
 	}}}
 	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
-	handler := NewHandler(&stubVerifier{}, &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7}}, &stubDashboard{}, reader, testLogger(), store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: &stubDashboard{}, Attendance: reader, Settings: store, Logger: testLogger()})
 
 	unauthorized := request(handler, http.MethodGet, "/api/v1/payslips?month=2026-08", "")
 	if unauthorized.Code != http.StatusUnauthorized {
@@ -465,7 +465,7 @@ func TestMonthlyPayslipsRequiresAuthAndCalculatesEveryMember(t *testing.T) {
 func TestSettingsRequireAuthAndValidateUpdates(t *testing.T) {
 	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
-	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Settings: store, Logger: testLogger()})
 
 	unauthorized := request(handler, http.MethodGet, "/api/v1/settings", "")
 	if unauthorized.Code != http.StatusUnauthorized {
@@ -496,7 +496,7 @@ func TestSettingsRequireAuthAndValidateUpdates(t *testing.T) {
 func TestSettingsUpdateRejectsNonAdmin(t *testing.T) {
 	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: false}}
-	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Settings: store, Logger: testLogger()})
 	request := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", strings.NewReader(`{}`))
 	request.Header.Set("Authorization", "Bearer app-token")
 	response := httptest.NewRecorder()
@@ -508,7 +508,7 @@ func TestSettingsUpdateRejectsNonAdmin(t *testing.T) {
 
 func TestGetMyProfileLoadsCurrentDatabaseValues(t *testing.T) {
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", CharacterName: "Kenji Nakamura", CFXName: "SOT - Kenji"}}
-	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger())
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Logger: testLogger()})
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/me/profile", nil)
 	request.Header.Set("Authorization", "Bearer app-token")
 	response := httptest.NewRecorder()
@@ -537,7 +537,7 @@ func TestPayoutReportRejectsNonAdmin(t *testing.T) {
 	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: false}}
 	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08"}}
-	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, reader, testLogger(), store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: reader, Settings: store, Logger: testLogger()})
 
 	response := request(handler, http.MethodGet, "/api/v1/payslips", "Bearer app-token")
 	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "ADMIN_REQUIRED") {
@@ -556,7 +556,7 @@ func TestMemberOwnReportsStayOpenToNonAdmin(t *testing.T) {
 	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: false}}
 	reader := &stubAttendance{report: attendancehistory.MonthlyReport{Month: "2026-08", AttendanceDays: []string{"2026-08-05"}}}
-	handler := NewHandler(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, reader, testLogger(), store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: reader, Settings: store, Logger: testLogger()})
 
 	for _, path := range []string{"/api/v1/attendance/me", "/api/v1/me/records", "/api/v1/dashboard"} {
 		response := request(handler, http.MethodGet, path, "Bearer app-token")

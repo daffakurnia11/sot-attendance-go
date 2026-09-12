@@ -51,7 +51,7 @@ func (s *stubSafeboxStock) Transact(_ context.Context, transaction stock.Transac
 func TestSafeboxStockTransactionsListsSelectedSafebox(t *testing.T) {
 	store := &stubSafeboxStock{transactions: []stock.TransactionEntry{{ID: 1, Safebox: "boss", ItemName: "MP9"}}}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
-	handler := NewHandlerWithWebhook(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, nil, nil, nil, store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Stock: store, Logger: testLogger()})
 
 	response := requestWithBody(handler, http.MethodGet, "/api/v1/safebox-stock/transactions?safebox=boss", "Bearer app-token", "")
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"item_name":"MP9"`) {
@@ -62,7 +62,7 @@ func TestSafeboxStockTransactionsListsSelectedSafebox(t *testing.T) {
 func TestSafeboxStockTransactionsRejectsUnknownSafebox(t *testing.T) {
 	store := &stubSafeboxStock{}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
-	handler := NewHandlerWithWebhook(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, nil, nil, nil, store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Stock: store, Logger: testLogger()})
 
 	response := requestWithBody(handler, http.MethodGet, "/api/v1/safebox-stock/transactions?safebox=private", "Bearer app-token", "")
 	if response.Code != http.StatusBadRequest {
@@ -73,7 +73,7 @@ func TestSafeboxStockTransactionsRejectsUnknownSafebox(t *testing.T) {
 func TestSafeboxStockTransactionRequiresAdminAndRecordsActor(t *testing.T) {
 	store := &stubSafeboxStock{}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
-	handler := NewHandlerWithWebhook(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, nil, nil, nil, store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Stock: store, Logger: testLogger()})
 
 	response := requestWithBody(handler, http.MethodPost, "/api/v1/safebox-stock/transactions", "Bearer app-token", `{"safebox":"public","action":"deposit","reason":"restock","idempotency_key":"request-1","items":[{"item_key":"iron","quantity":2}]}`)
 	if response.Code != http.StatusNoContent || store.transaction.ActorMemberID != 7 || store.transaction.Items[0].ItemKey != "iron" || response.Body.Len() != 0 {
@@ -90,7 +90,7 @@ func TestSafeboxStockTransactionRequiresAdminAndRecordsActor(t *testing.T) {
 func TestSafeboxStockTransactionMapsInsufficientStock(t *testing.T) {
 	store := &stubSafeboxStock{err: stock.ErrInsufficientStock}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
-	handler := NewHandlerWithWebhook(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, nil, nil, nil, store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Stock: store, Logger: testLogger()})
 
 	response := requestWithBody(handler, http.MethodPost, "/api/v1/safebox-stock/transactions", "Bearer app-token", `{"safebox":"public","action":"withdraw","reason":"usage","idempotency_key":"request-3","items":[{"item_key":"iron","quantity":99}]}`)
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "INSUFFICIENT_SAFEBOX_STOCK") {
@@ -101,7 +101,7 @@ func TestSafeboxStockTransactionMapsInsufficientStock(t *testing.T) {
 func TestSafeboxStockTransactionMapsIdempotencyConflict(t *testing.T) {
 	store := &stubSafeboxStock{err: stock.ErrIdempotencyConflict}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
-	handler := NewHandlerWithWebhook(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, nil, nil, nil, store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Stock: store, Logger: testLogger()})
 
 	response := requestWithBody(handler, http.MethodPost, "/api/v1/safebox-stock/transactions", "Bearer app-token", `{"safebox":"public","action":"deposit","reason":"restock","idempotency_key":"request-4","items":[{"item_key":"iron","quantity":2}]}`)
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "SAFEBOX_IDEMPOTENCY_CONFLICT") {
@@ -112,7 +112,7 @@ func TestSafeboxStockTransactionMapsIdempotencyConflict(t *testing.T) {
 func TestSafeboxStockTransactionRejectsUnknownFields(t *testing.T) {
 	store := &stubSafeboxStock{err: errors.New("must not be called")}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}
-	handler := NewHandlerWithWebhook(&stubVerifier{}, members, &stubIssuer{}, stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, &stubDashboard{}, &stubAttendance{}, testLogger(), nil, nil, nil, nil, store)
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: members, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: &stubAttendance{}, Stock: store, Logger: testLogger()})
 
 	response := requestWithBody(handler, http.MethodPost, "/api/v1/safebox-stock/transactions", "Bearer app-token", `{"safebox":"public","action":"deposit","reason":"restock","items":[],"extra":true}`)
 	if response.Code != http.StatusBadRequest {

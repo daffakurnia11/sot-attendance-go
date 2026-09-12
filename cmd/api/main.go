@@ -83,7 +83,21 @@ func main() {
 	stockRepository := stock.NewRepository(pool)
 	webhook := api.NewServerLogWebhook(serverLogRepository, serverlog.NewAuthenticator(config.FiveMWebhookSecret, nil))
 	stockNotifier := api.NewDiscordStockNotifier(client, stockDiscordConfig.Token, stockDiscordConfig.Channels)
-	handler := api.NewHandlerWithStockNotifications(api.NewDiscordVerifier(client), member.NewRepository(pool), issuer, issuer, dashboard.NewRepository(pool, cfxClient, logger).WithPresence(dashboard.NewPresenceClient(&http.Client{Timeout: 3 * time.Second}, os.Getenv("BOT_PRESENCE_URL"))), attendancehistory.NewReportRepository(pool, location), logger, settingsRepository, crafting.NewRepository(pool), money.NewRepository(pool), webhook, stockRepository, stockNotifier)
+	handler := api.NewHandler(api.Deps{
+		Verifier:    api.NewDiscordVerifier(client),
+		Members:     member.NewRepository(pool),
+		Issuer:      issuer,
+		Tokens:      issuer,
+		Dashboard:   dashboard.NewRepository(pool, cfxClient, logger).WithPresence(dashboard.NewPresenceClient(&http.Client{Timeout: 3 * time.Second}, os.Getenv("BOT_PRESENCE_URL"))),
+		Attendance:  attendancehistory.NewReportRepository(pool, location),
+		Settings:    settingsRepository,
+		Crafting:    crafting.NewRepository(pool),
+		Money:       money.NewRepository(pool),
+		ServerLogs:  webhook,
+		Stock:       stockRepository,
+		StockNotify: stockNotifier,
+		Logger:      logger,
+	})
 	server := &http.Server{
 		Addr:              config.Address,
 		Handler:           handler,
