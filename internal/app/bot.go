@@ -264,6 +264,7 @@ func (b *Bot) Run(ctx context.Context) error {
 			goto shutdown
 		case <-discordTicker.C:
 			b.status.Refresh(b.session)
+			b.recordDiscordVisits(ctx)
 		case <-statusTicker.C:
 			b.rotateStatus()
 		}
@@ -277,6 +278,57 @@ shutdown:
 	}
 	b.database.Close()
 	return nil
+}
+
+// recordDiscordVisits writes a server_logs row for every roster member whose
+// Discord activity disagrees with the visit that source has open for them.
+//
+// The CR Roleplay webhook drops connect events when the game server's own
+// connection is poor, which leaves a player on the server with no visit and no
+// attendance. A member's Discord activity is a second witness to the same
+// visit, so it is recorded as one - under source 'discord', in the same table
+// and the same shape, so every reader already handles it.
+//
+// It rides the Discord poll tick because the snapshot is read out of the
+// gateway cache the same tick just refreshed: no network call, no second
+// cadence to tune.
+func (b *Bot) recordDiscordVisits(ctx context.Context) {
+	if !b.announces || b.serverLogs == nil || b.status == nil || b.session == nil {
+		return
+	}
+	snapshot, err := b.status.Snapshot(b.session)
+	if err != nil {
+		// A presence read that failed is not evidence that nobody is playing,
+		// so the tick is skipped rather than closing every open visit.
+		b.logger.Warn("skip Discord visit record: no presence snapshot", "error", err)
+		return
+	}
+	observed := make([]serverlog.DiscordPresence, 0, len(snapshot))
+	for _, entry := range snapshot {
+		observed = append(observed, serverlog.DiscordPresence{
+			DiscordUserID: entry.DiscordUserID,
+			Playing:       entry.Playing,
+			StartedAt:     startedAtOrZero(entry.StartedAt),
+		})
+	}
+
+	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	written, err := b.serverLogs.RecordDiscordPresence(requestContext, observed, b.status.ServerName())
+	if err != nil {
+		b.logger.Error("record Discord visits", "error", err)
+		return
+	}
+	if written > 0 {
+		b.logger.Info("Discord visits recorded", "transitions", written, "observed", len(observed))
+	}
+}
+
+func startedAtOrZero(startedAt *time.Time) time.Time {
+	if startedAt == nil {
+		return time.Time{}
+	}
+	return *startedAt
 }
 
 // serverLogPollInterval is how often the bot looks for new FiveM webhook
@@ -340,6 +392,7 @@ func (b *Bot) announceServerLogs(ctx context.Context) {
 			ServerID:   announcement.ServerID,
 			Reason:     announcement.Reason,
 			StartedAt:  announcement.StartedAt,
+			Source:     announcement.Source,
 			// The mention resolves to the live Discord handle, so a reader can
 			// chase an entry to the account without the bot storing a name.
 			DiscordUserID: announcement.DiscordUserID,

@@ -22,7 +22,7 @@ func TestServerLogEmbedShape(t *testing.T) {
 	if embed.Title != "" {
 		t.Errorf("Title = %q, want empty", embed.Title)
 	}
-	if embed.Footer == nil || embed.Footer.Text != "03 September 2026 at 09:00" {
+	if embed.Footer == nil || embed.Footer.Text != "03 September 2026 at 09:00 • Source: CR Roleplay" {
 		t.Errorf("Footer = %#v", embed.Footer)
 	}
 	// The embed timestamp is what Discord renders as "Today at 08.03"; the
@@ -148,22 +148,36 @@ func TestServerLogEmbedFooterPlaytime(t *testing.T) {
 		{
 			name:  "disconnect reports playtime",
 			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "disconnected", OccurredAt: start.Add(110 * time.Minute), StartedAt: start},
-			want:  "03 September 2026 at 10:50 • Playtime: 1h 50m",
+			want:  "03 September 2026 at 10:50 • Playtime: 1h 50m • Source: CR Roleplay",
 		},
 		{
 			name:  "disconnect without a known start",
 			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "disconnected", OccurredAt: start},
-			want:  "03 September 2026 at 09:00 • Playtime: Unavailable",
+			want:  "03 September 2026 at 09:00 • Playtime: Unavailable • Source: CR Roleplay",
 		},
 		{
 			name:  "connected reports none",
 			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "connected", OccurredAt: start, StartedAt: start},
-			want:  "03 September 2026 at 09:00",
+			want:  "03 September 2026 at 09:00 • Source: CR Roleplay",
 		},
 		{
 			name:  "connecting reports none",
 			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "connecting", OccurredAt: start},
-			want:  "03 September 2026 at 09:00",
+			want:  "03 September 2026 at 09:00 • Source: CR Roleplay",
+		},
+		{
+			// Discord sees an activity, not a connection, so a visit inferred
+			// from it must never read as a report from the game server.
+			name:  "Discord activity is named as the witness",
+			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "connected", OccurredAt: start, Source: "discord"},
+			want:  "03 September 2026 at 09:00 • Source: Discord activity",
+		},
+		{
+			// Every row stored before the source column existed came from the
+			// webhook, and the column defaulted them to it.
+			name:  "an unset source reads as the webhook",
+			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "connected", OccurredAt: start},
+			want:  "03 September 2026 at 09:00 • Source: CR Roleplay",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

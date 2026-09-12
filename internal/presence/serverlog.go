@@ -35,6 +35,12 @@ type ServerLogEvent struct {
 	// StartedAt is the first event of the visit, used for the play time a
 	// disconnect reports. Zero when unknown, which reads as unavailable.
 	StartedAt time.Time
+	// Source is which witness reported the event: "server" for the CR Roleplay
+	// webhook, "discord" for a visit inferred from the member's Discord
+	// activity. The channel carries both, and the two are not equally certain -
+	// Discord sees an activity, not a connection - so the footer says which one
+	// spoke rather than letting an inference read as a server report.
+	Source string
 }
 
 // serverLogPhase maps a stored status onto the phase vocabulary the Discord
@@ -159,12 +165,23 @@ func serverLogLine(event ServerLogEvent, phase playerPhase) string {
 // serverLogFooter carries the event time and - on a disconnect - how long the
 // visit lasted. The player is named in the body, not repeated here.
 func serverLogFooter(event ServerLogEvent, phase playerPhase) string {
-	parts := make([]string, 0, 2)
+	parts := make([]string, 0, 3)
 	parts = append(parts, event.OccurredAt.Format(serverLogTime))
 	if phase == phaseDisconnected {
 		parts = append(parts, fmt.Sprintf("Playtime: %s", elapsedPlaytime(event.StartedAt, event.OccurredAt)))
 	}
+	parts = append(parts, sourceLabel(event.Source))
 	return strings.Join(parts, " • ")
+}
+
+// sourceLabel names the witness in the footer. An unset source is the webhook:
+// it was the only writer before the column existed, and every stored row
+// defaulted to it.
+func sourceLabel(source string) string {
+	if source == "discord" {
+		return "Source: Discord activity"
+	}
+	return "Source: CR Roleplay"
 }
 
 // codeBlockSafe flattens a value for use inside a fenced block. Disconnect

@@ -32,6 +32,10 @@ type Announcement struct {
 	// report how long the player was on. Equal to OccurredAt for the opening
 	// event of a visit.
 	StartedAt time.Time
+	// Source is which witness reported the event, SourceServer or
+	// SourceDiscord. The channel carries both, so the embed says which one it
+	// heard it from rather than presenting an inference as a server report.
+	Source string
 }
 
 const latestEventID = `SELECT COALESCE(MAX(id), 0) FROM server_logs`
@@ -45,7 +49,8 @@ const announcementsAfter = `
 	       sl.payload->'player'->>'server_id',
 	       sl.payload->'event'->>'reason',
 	       sm.discord_user_id,
-	       (SELECT MIN(s2.occurred_at) FROM server_logs s2 WHERE s2.session_id = sl.session_id)
+	       (SELECT MIN(s2.occurred_at) FROM server_logs s2 WHERE s2.session_id = sl.session_id),
+	       sl.source
 	FROM server_logs sl
 	JOIN server_members sm ON sm.id = sl.server_member_id
 	WHERE sl.id > $1
@@ -79,7 +84,7 @@ func (r *Repository) AnnouncementsAfter(ctx context.Context, afterID int64, limi
 			reason        *string
 			discordUserID *string
 		)
-		if err := rows.Scan(&a.ID, &a.PlayerName, &a.Username, &a.Status, &a.OccurredAt, &serverID, &reason, &discordUserID, &a.StartedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.PlayerName, &a.Username, &a.Status, &a.OccurredAt, &serverID, &reason, &discordUserID, &a.StartedAt, &a.Source); err != nil {
 			return nil, fmt.Errorf("scan server log announcement: %w", err)
 		}
 		if serverID != nil {
