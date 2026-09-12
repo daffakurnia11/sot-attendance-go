@@ -17,6 +17,10 @@ func TestTransactRejectsInvalidRequestsBeforeDatabaseAccess(t *testing.T) {
 		{Safebox: "public", Action: ActionDeposit, Reason: "reason", ActorMemberID: 7, IdempotencyKey: "request", Items: []TransactionLine{{ItemKey: "iron", Quantity: 0}}},
 		{Safebox: "public", Action: ActionDeposit, Reason: "reason", ActorMemberID: 7, IdempotencyKey: "request", Items: []TransactionLine{{ItemKey: "iron", Quantity: MaxLineQuantity + 1}}},
 		{Safebox: "public", Action: ActionDeposit, Reason: "reason", ActorMemberID: 7, IdempotencyKey: "request", Items: []TransactionLine{{ItemKey: "iron", Quantity: 1}, {ItemKey: "iron", Quantity: 2}}},
+		// An adjustment carries a target balance: negative is meaningless and the
+		// balance cap, not the per-movement cap, is the ceiling.
+		{Safebox: "public", Action: ActionAdjustment, Reason: "reason", ActorMemberID: 7, IdempotencyKey: "request", Items: []TransactionLine{{ItemKey: "iron", Quantity: -1}}},
+		{Safebox: "public", Action: ActionAdjustment, Reason: "reason", ActorMemberID: 7, IdempotencyKey: "request", Items: []TransactionLine{{ItemKey: "iron", Quantity: MaxItemQuantity + 1}}},
 	}
 	for _, transaction := range tests {
 		if err := repository.Transact(context.Background(), transaction); !errors.Is(err, ErrInvalidTransaction) {

@@ -17,9 +17,13 @@ import (
 )
 
 const (
-	ActionDeposit   = "deposit"
-	ActionWithdraw  = "withdraw"
-	MaxLineQuantity = 10_000
+	ActionDeposit    = "deposit"
+	ActionWithdraw   = "withdraw"
+	ActionAdjustment = "adjustment"
+	MaxLineQuantity  = 10_000
+	// An adjustment carries the target balance rather than a delta, so it is
+	// bounded by what a balance may hold, not by what one movement may move.
+	MaxItemQuantity = 1_000_000
 )
 
 var (
@@ -149,7 +153,7 @@ func (r *Repository) Transact(ctx context.Context, transaction Transaction) erro
 	transaction.Reason = strings.TrimSpace(transaction.Reason)
 	transaction.IdempotencyKey = strings.TrimSpace(transaction.IdempotencyKey)
 	if (transaction.Safebox != "public" && transaction.Safebox != "boss") ||
-		(transaction.Action != ActionDeposit && transaction.Action != ActionWithdraw) ||
+		(transaction.Action != ActionDeposit && transaction.Action != ActionWithdraw && transaction.Action != ActionAdjustment) ||
 		transaction.ActorMemberID <= 0 || transaction.Reason == "" || len(transaction.Reason) > 500 ||
 		transaction.IdempotencyKey == "" || len(transaction.IdempotencyKey) > 128 ||
 		len(transaction.Items) == 0 || len(transaction.Items) > 100 {
@@ -159,7 +163,14 @@ func (r *Repository) Transact(ctx context.Context, transaction Transaction) erro
 	seen := make(map[string]struct{}, len(lines))
 	for index := range lines {
 		lines[index].ItemKey = strings.TrimSpace(lines[index].ItemKey)
-		if lines[index].ItemKey == "" || lines[index].Quantity <= 0 || lines[index].Quantity > MaxLineQuantity {
+		// A deposit or withdraw moves stock, so zero is meaningless and the
+		// per-movement cap applies. An adjustment sets the balance outright, so
+		// zero is a legitimate target and the balance cap applies instead.
+		if transaction.Action == ActionAdjustment {
+			if lines[index].ItemKey == "" || lines[index].Quantity < 0 || lines[index].Quantity > MaxItemQuantity {
+				return ErrInvalidTransaction
+			}
+		} else if lines[index].ItemKey == "" || lines[index].Quantity <= 0 || lines[index].Quantity > MaxLineQuantity {
 			return ErrInvalidTransaction
 		}
 		if _, exists := seen[lines[index].ItemKey]; exists {
@@ -232,12 +243,15 @@ func (r *Repository) Transact(ctx context.Context, transaction Transaction) erro
 			return fmt.Errorf("lock safebox stock balance: %w", err)
 		}
 		after := int64(before)
-		if transaction.Action == ActionDeposit {
+		switch transaction.Action {
+		case ActionAdjustment:
+			after = int64(line.Quantity)
+		case ActionDeposit:
 			after += int64(line.Quantity)
 			if after > math.MaxInt32 {
 				return ErrQuantityOverflow
 			}
-		} else {
+		default:
 			after -= int64(line.Quantity)
 			if after < 0 {
 				return ErrInsufficientStock
