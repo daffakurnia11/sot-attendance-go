@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func session(id string) *string { return &id }
+func visit(id, status string) *openVisit { return &openVisit{sessionID: id, status: status} }
 
 // Only a disagreement between Discord and the visit this source has open is
 // written. A poll where nothing changed must write nothing, or the table grows
@@ -16,13 +16,17 @@ func TestDiscordTransitionWritesOnlyChanges(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		entry      DiscordPresence
-		open       *string
+		open       *openVisit
 		wantWrite  bool
 		wantStatus string
 	}{
 		{name: "playing with no visit opens one", entry: DiscordPresence{Playing: true}, wantWrite: true, wantStatus: StatusConnected},
-		{name: "stopped playing closes the visit", entry: DiscordPresence{}, open: session("s1"), wantWrite: true, wantStatus: StatusDisconnected},
-		{name: "still playing writes nothing", entry: DiscordPresence{Playing: true}, open: session("s1")},
+		{name: "joining opens the visit as connecting", entry: DiscordPresence{Playing: true, Connecting: true}, wantWrite: true, wantStatus: StatusConnecting},
+		{name: "arriving upgrades the open visit", entry: DiscordPresence{Playing: true}, open: visit("s1", StatusConnecting), wantWrite: true, wantStatus: StatusConnected},
+		{name: "still connecting writes nothing", entry: DiscordPresence{Playing: true, Connecting: true}, open: visit("s1", StatusConnecting)},
+		{name: "stopped playing closes the visit", entry: DiscordPresence{}, open: visit("s1", StatusConnected), wantWrite: true, wantStatus: StatusDisconnected},
+		{name: "still playing writes nothing", entry: DiscordPresence{Playing: true}, open: visit("s1", StatusConnected)},
+		{name: "a flicker back to connecting does not reopen", entry: DiscordPresence{Playing: true, Connecting: true}, open: visit("s1", StatusConnected)},
 		{name: "still not playing writes nothing", entry: DiscordPresence{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -39,9 +43,14 @@ func TestDiscordTransitionWritesOnlyChanges(t *testing.T) {
 // the same way a webhook pair does.
 func TestDiscordTransitionClosesTheOpenSession(t *testing.T) {
 	t.Parallel()
-	_, got, _, _ := discordTransition(DiscordPresence{}, session("visit-1"))
+	_, got, _, _ := discordTransition(DiscordPresence{}, visit("visit-1", StatusConnected))
 	if got != "visit-1" {
 		t.Fatalf("session = %q, want visit-1", got)
+	}
+	// The arrival keeps the session its connecting event opened, so the pair
+	// reads as one visit rather than two.
+	if _, got, _, _ := discordTransition(DiscordPresence{Playing: true}, visit("visit-1", StatusConnecting)); got != "visit-1" {
+		t.Fatalf("session on upgrade = %q, want visit-1", got)
 	}
 	// An opening event has no session yet; the caller mints one.
 	if _, got, _, _ := discordTransition(DiscordPresence{Playing: true}, nil); got != "" {

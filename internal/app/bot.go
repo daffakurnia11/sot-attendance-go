@@ -82,6 +82,13 @@ type Bot struct {
 	// cfxRosterWindow holds the last rosterAbsenceStreak CFX reads, oldest
 	// first, and is touched only by the CFX poller goroutine.
 	cfxRosterWindow [][]string
+	// discordAbsence counts consecutive polls in which a member's activity did
+	// not name the server, keyed by Discord user id. Touched only by the
+	// Discord poll in Run, which is a single goroutine.
+	discordAbsence map[string]int
+	// discordObserved is how many presences the previous poll saw, used to
+	// spot a gateway cache that is still filling. Same single goroutine.
+	discordObserved int
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
@@ -303,11 +310,34 @@ func (b *Bot) recordDiscordVisits(ctx context.Context) {
 		b.logger.Warn("skip Discord visit record: no presence snapshot", "error", err)
 		return
 	}
+	if b.discordAbsence == nil {
+		b.discordAbsence = make(map[string]int)
+	}
+	// A snapshot smaller than the last one is a gateway cache that is still
+	// filling, not a guild that emptied: an offline member still has a presence
+	// entry, so the count only drops when entries have not arrived yet. Their
+	// absent activities read as "stopped playing" and would close live visits,
+	// which is what happened after a restart dropped the count from 21 to 5.
+	//
+	// Openings are still trusted from a partial snapshot. Someone the gateway
+	// does say is playing is playing, whatever it has not sent yet.
+	filling := b.presenceCacheFilling(len(snapshot))
+
 	observed := make([]serverlog.DiscordPresence, 0, len(snapshot))
 	for _, entry := range snapshot {
+		// Not playing in one read is not yet evidence the visit ended, so the
+		// member is left out until the streak is met and nothing is written
+		// for them meanwhile. See discordAbsenceStreak.
+		if !b.observeDiscordActivity(entry.DiscordUserID, entry.Playing) {
+			continue
+		}
+		if filling && !entry.Playing {
+			continue
+		}
 		observed = append(observed, serverlog.DiscordPresence{
 			DiscordUserID: entry.DiscordUserID,
 			Playing:       entry.Playing,
+			Connecting:    entry.Connecting,
 			StartedAt:     startedAtOrZero(entry.StartedAt),
 		})
 	}
@@ -324,12 +354,48 @@ func (b *Bot) recordDiscordVisits(ctx context.Context) {
 	}
 }
 
+// presenceCacheFilling records the size of this poll's snapshot and reports
+// whether it shrank, meaning entries the gateway has not re-sent rather than
+// members who left. Closures are held off while that is true.
+func (b *Bot) presenceCacheFilling(observed int) bool {
+	filling := observed < b.discordObserved
+	b.discordObserved = observed
+	return filling
+}
+
+// observeDiscordActivity records one read of a member's activity and reports
+// whether this poll should act on it. Seeing the activity clears the count and
+// always acts; not seeing it acts only once the streak is met.
+func (b *Bot) observeDiscordActivity(discordUserID string, playing bool) bool {
+	if playing {
+		delete(b.discordAbsence, discordUserID)
+		return true
+	}
+	b.discordAbsence[discordUserID]++
+	return b.discordAbsence[discordUserID] >= discordAbsenceStreak
+}
+
 func startedAtOrZero(startedAt *time.Time) time.Time {
 	if startedAt == nil {
 		return time.Time{}
 	}
 	return *startedAt
 }
+
+// discordAbsenceStreak is how many consecutive polls must fail to see a
+// member's activity before their visit is closed.
+//
+// One read is not enough, for the same reason rosterAbsenceStreak exists. A
+// FiveM activity is rewritten as the player moves between joining and playing,
+// and the rewrite is not atomic: a poll landing inside it sees an activity that
+// no longer names the server and reads as "stopped playing". That closed visits
+// one tick after opening them, with nothing between the connecting row and the
+// exiting row.
+//
+// It also bounds the damage when a second observer disagrees. Any process that
+// cannot match the activity would otherwise close a visit another one opened,
+// which is what happens while two builds of this bot run against one database.
+const discordAbsenceStreak = 3
 
 // serverLogPollInterval is how often the bot looks for new FiveM webhook
 // events to announce. The webhook writes to server_logs from cmd/api, which

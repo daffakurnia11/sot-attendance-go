@@ -115,6 +115,14 @@ func hasMatchingActivity(activities []*discordgo.Activity, serverName string) bo
 	return MatchingActivity(activities, serverName) != nil
 }
 
+// MatchingActivity finds the activity that names this server.
+//
+// Every text field of the activity is searched, because FiveM moves the server
+// name between them as the player's state changes: joining shows the launcher
+// in Name with the server in State, an established session can carry the server
+// in Name, and the icon hover text holds it in others. Searching a subset meant
+// the match was lost partway through a visit, and a lost match reads exactly
+// like the player leaving.
 func MatchingActivity(activities []*discordgo.Activity, serverName string) *discordgo.Activity {
 	target := normalizeActivityText(serverName)
 	if target == "" {
@@ -125,12 +133,24 @@ func MatchingActivity(activities []*discordgo.Activity, serverName string) *disc
 		if activity == nil {
 			continue
 		}
-		candidate := normalizeActivityText(activity.Name)
-		if strings.Contains(candidate, target) {
-			return activity
+		fields := []string{activity.Name, activity.Details, activity.State}
+		if activity.Assets != (discordgo.Assets{}) {
+			fields = append(fields, activity.Assets.LargeText, activity.Assets.SmallText)
+		}
+		for _, field := range fields {
+			if strings.Contains(normalizeActivityText(field), target) {
+				return activity
+			}
 		}
 	}
 	return nil
+}
+
+// activityConnecting reports whether the activity is still joining the server
+// rather than in it. FiveM writes the phase into Details, as "Connecting..."
+// while it loads and something else once the player is on.
+func activityConnecting(activity *discordgo.Activity) bool {
+	return activity != nil && strings.Contains(normalizeActivityText(activity.Details), "connecting")
 }
 
 func normalizeActivityText(value string) string {
@@ -150,10 +170,15 @@ func normalizeActivityText(value string) string {
 // same events over the webhook and reports them better, so presence is only
 // worth serving live.
 type MemberPresence struct {
-	DiscordUserID string     `json:"discord_user_id"`
-	Status        string     `json:"status"`
-	Playing       bool       `json:"playing"`
-	StartedAt     *time.Time `json:"started_at,omitempty"`
+	DiscordUserID string `json:"discord_user_id"`
+	Status        string `json:"status"`
+	Playing       bool   `json:"playing"`
+	// Connecting is true while the activity says the player is still joining
+	// rather than in the server. The two are one Discord activity but two
+	// states of a visit, and a log that called both "connected" reported a
+	// player as on the server before they had arrived.
+	Connecting bool       `json:"connecting"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
 }
 
 // Snapshot lists the live Discord presence of every eligible guild member.
@@ -196,6 +221,7 @@ func (c *Counter) Snapshot(session *discordgo.Session) ([]MemberPresence, error)
 		if presence.Status != discordgo.StatusOffline && presence.Status != discordgo.StatusInvisible {
 			if activity := MatchingActivity(presence.Activities, c.serverName); activity != nil {
 				entry.Playing = true
+				entry.Connecting = activityConnecting(activity)
 				if activity.Timestamps.StartTimestamp != 0 {
 					startedAt := time.UnixMilli(activity.Timestamps.StartTimestamp).UTC()
 					entry.StartedAt = &startedAt

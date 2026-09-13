@@ -79,9 +79,21 @@ func TestHasMatchingActivity(t *testing.T) {
 	}{
 		{name: "name exact", activities: []*discordgo.Activity{{Name: "CR Roleplay"}}, want: true},
 		{name: "case and punctuation", activities: []*discordgo.Activity{{Name: "cr-roleplay"}}, want: true},
-		{name: "details alone ignored", activities: []*discordgo.Activity{{Name: "FiveM", Details: "Playing CR Roleplay"}}},
-		{name: "state alone ignored", activities: []*discordgo.Activity{{Name: "FiveM", State: "CR Roleplay - Downtown"}}},
+		// Name alone used to be the only field searched. FiveM names the
+		// launcher there while joining and puts the server in State, so a
+		// player was invisible to the bot for the whole time they connected.
+		{name: "details name the server", activities: []*discordgo.Activity{{Name: "FiveM", Details: "Playing CR Roleplay"}}, want: true},
+		{name: "state names the server", activities: []*discordgo.Activity{{Name: "FiveM", State: "CR Roleplay - Downtown"}}, want: true},
+		{name: "joining, as the client reports it", activities: []*discordgo.Activity{{Name: "FiveM", Details: "Connecting...", State: "CR ROLEPLAY INDONESIA"}}, want: true},
+		// In-game, FiveM can move the server name into the icon hover text and
+		// leave Details and State describing the character instead. Losing the
+		// match partway through a visit reads exactly like the player leaving.
+		{name: "server named only in the icon hover text", activities: []*discordgo.Activity{{Name: "FiveM", Details: "SOT - Ayvix", State: "Los Santos", Assets: discordgo.Assets{LargeText: "CR Roleplay Indonesia"}}}, want: true},
+		{name: "server named only in the small icon text", activities: []*discordgo.Activity{{Name: "FiveM", Assets: discordgo.Assets{SmallText: "CR Roleplay"}}}, want: true},
+		// Widening the search must not start matching another server.
 		{name: "different server", activities: []*discordgo.Activity{{Name: "FiveM", Details: "Other Roleplay"}}},
+		{name: "different server in state", activities: []*discordgo.Activity{{Name: "FiveM", State: "Other Roleplay - Downtown"}}},
+		{name: "different server in the hover text", activities: []*discordgo.Activity{{Name: "FiveM", Assets: discordgo.Assets{LargeText: "Other Roleplay"}}}},
 		{name: "no activities"},
 	}
 
@@ -100,5 +112,28 @@ func presence(userID string, status discordgo.Status, activities ...*discordgo.A
 		User:       &discordgo.User{ID: userID},
 		Status:     status,
 		Activities: activities,
+	}
+}
+
+// The activity is one Discord entry but two states of a visit, and only Details
+// separates them.
+func TestActivityConnecting(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		activity *discordgo.Activity
+		want     bool
+	}{
+		{name: "joining", activity: &discordgo.Activity{Name: "FiveM", Details: "Connecting...", State: "CR ROLEPLAY INDONESIA"}, want: true},
+		{name: "in the server", activity: &discordgo.Activity{Name: "FiveM", Details: "Downtown", State: "CR ROLEPLAY INDONESIA"}},
+		{name: "no details", activity: &discordgo.Activity{Name: "CR Roleplay"}},
+		{name: "no activity", activity: nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := activityConnecting(test.activity); got != test.want {
+				t.Errorf("activityConnecting() = %v, want %v", got, test.want)
+			}
+		})
 	}
 }

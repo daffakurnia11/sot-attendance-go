@@ -22,6 +22,10 @@ const (
 type DiscordPresence struct {
 	DiscordUserID string
 	Playing       bool
+	// Connecting is true while the activity says the player is still joining.
+	// It is the same visit as the connected state that follows, so it opens the
+	// session and the arrival upgrades it in place.
+	Connecting bool
 	// StartedAt is when the Discord activity began, used as the visit start so
 	// a poll that first sees a member mid-session does not date the visit to
 	// the tick that noticed it. Zero when Discord supplied no timestamp.
@@ -45,7 +49,7 @@ const discordCharacters = `
 // and a poll must never close one of them. When both sources see the same
 // visit, each keeps its own pair of rows and the reader decides which to trust.
 const openDiscordVisit = `
-	SELECT sl.session_id, sl.occurred_at
+	SELECT sl.session_id, sl.status
 	FROM server_logs sl
 	WHERE sl.source = 'discord'
 		AND sl.server_member_id = $1
@@ -127,19 +131,18 @@ func (r *Repository) RecordDiscordPresence(ctx context.Context, observed []Disco
 		if !known {
 			continue
 		}
-		var openSession *string
-		var openedAt time.Time
-		var sessionID string
-		err := r.pool.QueryRow(ctx, openDiscordVisit, character.serverMemberID).Scan(&sessionID, &openedAt)
+		var open *openVisit
+		var found openVisit
+		err := r.pool.QueryRow(ctx, openDiscordVisit, character.serverMemberID).Scan(&found.sessionID, &found.status)
 		switch {
 		case err == nil:
-			openSession = &sessionID
+			open = &found
 		case errors.Is(err, pgx.ErrNoRows):
 		default:
 			return written, fmt.Errorf("read open Discord visit: %w", err)
 		}
 
-		status, session, occurredAt, write := discordTransition(entry, openSession)
+		status, session, occurredAt, write := discordTransition(entry, open)
 		if !write {
 			continue
 		}
@@ -167,15 +170,28 @@ func (r *Repository) RecordDiscordPresence(ctx context.Context, observed []Disco
 	return written, nil
 }
 
+// openVisit is the visit this source already has open for a character: which
+// session, and which of its phases was written last.
+type openVisit struct {
+	sessionID string
+	status    string
+}
+
 // discordTransition decides what a single observation should write.
 //
-// Playing with no visit open opens one; not playing with a visit open closes
-// it. Everything else is the state the table already holds, so nothing is
-// written and the poll stays silent.
-func discordTransition(entry DiscordPresence, openSession *string) (status, session string, occurredAt time.Time, write bool) {
+// A visit has three states and Discord reports two of them. Joining opens the
+// visit as connecting; arriving upgrades it to connected inside the same
+// session, the way a webhook pair does; the activity ending closes it. Anything
+// that matches what the table already holds writes nothing, so a poll where
+// nobody changed phase stays silent.
+func discordTransition(entry DiscordPresence, open *openVisit) (status, session string, occurredAt time.Time, write bool) {
 	now := time.Now().UTC()
+	observed := StatusConnected
+	if entry.Connecting {
+		observed = StatusConnecting
+	}
 	switch {
-	case entry.Playing && openSession == nil:
+	case entry.Playing && open == nil:
 		occurredAt = now
 		// Dating the visit to when Discord says the activity began, not to the
 		// tick that noticed it, so a poller started mid-session credits the
@@ -183,9 +199,14 @@ func discordTransition(entry DiscordPresence, openSession *string) (status, sess
 		if !entry.StartedAt.IsZero() && entry.StartedAt.Before(now) {
 			occurredAt = entry.StartedAt.UTC()
 		}
-		return StatusConnected, "", occurredAt, true
-	case !entry.Playing && openSession != nil:
-		return StatusDisconnected, *openSession, now, true
+		return observed, "", occurredAt, true
+	// The upgrade only ever runs forwards. A flicker back to connecting on an
+	// established visit is the activity restating itself, not the player
+	// leaving the server and joining it again.
+	case entry.Playing && open.status == StatusConnecting && observed == StatusConnected:
+		return StatusConnected, open.sessionID, now, true
+	case !entry.Playing && open != nil:
+		return StatusDisconnected, open.sessionID, now, true
 	default:
 		return "", "", time.Time{}, false
 	}
