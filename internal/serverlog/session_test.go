@@ -437,3 +437,51 @@ func storeVisit(t *testing.T, pool *pgxpool.Pool, username, cid, discordUserID s
 		t.Fatalf("Store(connected, %s) error = %v", username, err)
 	}
 }
+
+// The sweep supplies the disconnected event the game server failed to send, so
+// a visit the game server never opened is none of its business. Closing a
+// Discord visit here wrote a third exit for a player who already had one, and
+// labelled it as though CR Roleplay had reported it.
+func TestCloseAbsentSessionsLeavesDiscordVisitsAlone(t *testing.T) {
+	pool := sessionTestPool(t)
+	repository := NewRepository(pool)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// A webhook visit, so server_members exists to attribute the Discord one to.
+	storeEvent(t, pool, "connected", now.Add(-3*time.Hour), 400)
+	var serverMemberID int64
+	var username string
+	if err := pool.QueryRow(ctx, "SELECT id, username FROM server_members LIMIT 1").Scan(&serverMemberID, &username); err != nil {
+		t.Fatal(err)
+	}
+	// Close the webhook visit, leaving the Discord one as the only open visit.
+	if _, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now, ReconcileGrace); err != nil {
+		t.Fatal(err)
+	}
+
+	written, err := repository.RecordDiscordPresence(ctx,
+		[]DiscordPresence{{DiscordUserID: "1220326041067982941", Playing: true}}, "CR Roleplay")
+	if err != nil || written != 1 {
+		t.Fatalf("RecordDiscordPresence() = %d, %v; want 1", written, err)
+	}
+
+	// The player is absent from the roster and past the grace, which is exactly
+	// what would close a webhook visit. The Discord visit must survive it.
+	if closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now.Add(time.Hour), ReconcileGrace); err != nil || closed != 0 {
+		t.Fatalf("sweep closed %d Discord visits, %v; want 0", closed, err)
+	}
+
+	var open int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT session_id FROM server_logs WHERE source = 'discord'
+			GROUP BY session_id
+			HAVING COUNT(*) FILTER (WHERE status = 'disconnected') = 0
+		) still_open`).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	if open != 1 {
+		t.Fatalf("open Discord visits = %d, want 1", open)
+	}
+}

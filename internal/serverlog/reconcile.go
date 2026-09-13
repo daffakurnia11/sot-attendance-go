@@ -53,6 +53,12 @@ const closeAbsentSessions = `
 			MAX(sl.occurred_at) AS last_event_at
 		FROM server_logs sl
 		JOIN server_members sm ON sm.id = sl.server_member_id
+		-- Only the webhook's own visits. This sweep exists to supply the
+		-- disconnected event the game server failed to send, so a visit it
+		-- never opened is none of its business: a Discord visit is closed by
+		-- the poller that opened it, and closing one here wrote a third exit
+		-- for a player, labelled as though the game server had reported it.
+		WHERE sl.source = 'server'
 		GROUP BY sl.session_id, sl.server_member_id, sm.username, sm.player_name, sm.cid, sm.discord_user_id
 		HAVING COUNT(*) FILTER (WHERE sl.status = 'disconnected') = 0
 			AND COUNT(*) FILTER (WHERE sl.status = 'connected') > 0
@@ -65,7 +71,7 @@ const closeAbsentSessions = `
 			-- whatever a truncated CFX read says.
 			AND (discord_user_id IS NULL OR discord_user_id <> ALL($4::text[]))
 	)
-	INSERT INTO server_logs (payload, server_member_id, session_id, status, occurred_at)
+	INSERT INTO server_logs (payload, server_member_id, session_id, status, occurred_at, source)
 	SELECT jsonb_build_object(
 			'event', jsonb_build_object(
 				'type', 'disconnected',
@@ -79,15 +85,18 @@ const closeAbsentSessions = `
 				'session_id', session_id::text
 			)
 		),
-		server_member_id, session_id, 'disconnected', $2
+		server_member_id, session_id, 'disconnected', $2, 'server'
 	FROM absent
 	ON CONFLICT (payload) DO NOTHING
 	RETURNING session_id`
 
+// Counted over the same population the sweep may act on, so the share cap is
+// measured against webhook visits rather than diluted by Discord ones.
 const countOpenVisits = `
 	SELECT COUNT(*) FROM (
 		SELECT sl.session_id
 		FROM server_logs sl
+		WHERE sl.source = 'server'
 		GROUP BY sl.session_id
 		HAVING COUNT(*) FILTER (WHERE sl.status = 'disconnected') = 0
 			AND COUNT(*) FILTER (WHERE sl.status = 'connected') > 0
@@ -99,6 +108,10 @@ const countOpenVisits = `
 // sends closes them outright. The two pollers only get to agree that a player is
 // gone, and both must, because each is wrong in its own way - the CFX read can
 // come back truncated, and Discord presence cannot see an invisible member.
+//
+// Only visits the webhook opened are eligible. This is the backup for an exit
+// event that never arrived, so a visit that already has one is untouched, and
+// so is a visit from any other source.
 //
 // presentNames is every player the game server currently reports, matched
 // against server_members.username the same way the player log matches them:
