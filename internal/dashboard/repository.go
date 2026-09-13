@@ -32,10 +32,13 @@ type Player struct {
 	// member. DiscordPlaying reports whether their activity matches the
 	// configured server name. A reader showing a Discord column wants these,
 	// not Status.
-	DiscordStatus          string `json:"discord_status"`
-	DiscordPlaying         bool   `json:"discord_playing"`
-	CurrentPlaytimeSeconds int64  `json:"current_playtime_seconds"`
-	TotalPlaytimeSeconds   int64  `json:"total_playtime_seconds"`
+	DiscordStatus string `json:"discord_status"`
+	// DiscordConnecting narrows DiscordPlaying: true while the activity says
+	// the member is still joining rather than in the server.
+	DiscordConnecting      bool  `json:"discord_connecting"`
+	DiscordPlaying         bool  `json:"discord_playing"`
+	CurrentPlaytimeSeconds int64 `json:"current_playtime_seconds"`
+	TotalPlaytimeSeconds   int64 `json:"total_playtime_seconds"`
 	// CID identifies the character the game server last saw, and ServerID the
 	// slot it gave them on the visit that is open now. ServerID is null when no
 	// visit is open, since a slot means nothing once it is released.
@@ -326,6 +329,7 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 		if entry, found := presences[result.DiscordPlayers[index].DiscordUserID]; found {
 			result.DiscordPlayers[index].DiscordStatus = entry.Status
 			result.DiscordPlayers[index].DiscordPlaying = entry.Playing
+			result.DiscordPlayers[index].DiscordConnecting = entry.Connecting
 		}
 	}
 

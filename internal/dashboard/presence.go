@@ -10,10 +10,14 @@ import (
 
 // MemberPresence is one member's live Discord state as the bot reports it.
 type MemberPresence struct {
-	DiscordUserID string     `json:"discord_user_id"`
-	Status        string     `json:"status"`
-	Playing       bool       `json:"playing"`
-	StartedAt     *time.Time `json:"started_at,omitempty"`
+	DiscordUserID string `json:"discord_user_id"`
+	Status        string `json:"status"`
+	Playing       bool   `json:"playing"`
+	// Connecting is true while the activity says the member is still joining
+	// the server rather than in it. Playing covers both, so the two together
+	// are what separate a loading screen from a player who has arrived.
+	Connecting bool       `json:"connecting"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
 }
 
 // PresenceClient reads live Discord presence from the bot.
