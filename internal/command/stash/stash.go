@@ -93,23 +93,51 @@ func TransactionEmbed(safebox, action string, lines []Line, actorName, actorDisc
 
 // BalanceEmbed lists one safebox, one field per stock group. Items arrive
 // already ordered by group, so grouping is a scan rather than a sort.
+// balanceColumns is how many groups sit side by side in the balance embed.
+//
+// Discord packs inline fields three to a row, so two columns are made by
+// padding each row out with an empty field rather than by asking for a width.
+const balanceColumns = 2
+
+// spacerField pads a row so the next group starts on a new one. The zero-width
+// space is what Discord accepts as an empty field: a truly blank name or value
+// is rejected.
+func spacerField() *discordgo.MessageEmbedField {
+	return &discordgo.MessageEmbedField{Name: "\u200b", Value: "\u200b", Inline: true}
+}
+
 func BalanceEmbed(safebox string, items []Item) *discordgo.MessageEmbed {
-	fields := make([]*discordgo.MessageEmbedField, 0, 5)
-	group, lines := "", make([]string, 0, len(items))
+	groups := make([]*discordgo.MessageEmbedField, 0, 8)
+	group, lines, stocked := "", make([]string, 0, len(items)), false
 	flush := func() {
-		if group == "" || len(lines) == 0 {
+		// A group where every item reads zero says nothing a reader can act on,
+		// and there are enough of those to push the groups that do off the
+		// screen. The items still exist; the group is simply not shown until
+		// one of them is stocked.
+		if group == "" || len(lines) == 0 || !stocked {
 			return
 		}
-		fields = append(fields, &discordgo.MessageEmbedField{Name: GroupLabel(group), Value: BoundedLines(lines, 1024), Inline: true})
+		groups = append(groups, &discordgo.MessageEmbedField{Name: GroupLabel(group), Value: BoundedLines(lines, 1024), Inline: true})
 	}
 	for _, item := range items {
 		if item.Group != group {
 			flush()
-			group, lines = item.Group, make([]string, 0, len(items))
+			group, lines, stocked = item.Group, make([]string, 0, len(items)), false
+		}
+		if item.Quantity > 0 {
+			stocked = true
 		}
 		lines = append(lines, fmt.Sprintf("**%s** — %s", item.Name, FormatNumber(int64(item.Quantity))))
 	}
 	flush()
+
+	fields := make([]*discordgo.MessageEmbedField, 0, len(groups)+len(groups)/balanceColumns+1)
+	for index, field := range groups {
+		if index > 0 && index%balanceColumns == 0 {
+			fields = append(fields, spacerField())
+		}
+		fields = append(fields, field)
+	}
 	if len(fields) == 0 {
 		fields = append(fields, &discordgo.MessageEmbedField{Name: "Items", Value: "None"})
 	}
@@ -133,6 +161,10 @@ func GroupLabel(group string) string {
 		return "Blueprints"
 	case "crafting":
 		return "Crafting"
+	case "thief_tools":
+		return "Thief Tools"
+	case "weapon_accessories":
+		return "Weapon Accessories"
 	default:
 		return strings.ToUpper(group[:1]) + group[1:]
 	}

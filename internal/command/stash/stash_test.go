@@ -1,6 +1,7 @@
 package stash
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -120,5 +121,77 @@ func TestChannelWarningNamesTheSafeboxAndBothCommands(t *testing.T) {
 	// No prefix command is offered: there is no way to write an item name.
 	if strings.Contains(boss, "!stash") || strings.Contains(boss, ":1000") {
 		t.Fatalf("ChannelWarning() still offers a written command: %q", boss)
+	}
+}
+
+// Discord packs inline fields three to a row, so a second column is made by
+// padding each row out with an empty field.
+func TestBalanceEmbedLaysOutTwoColumns(t *testing.T) {
+	t.Parallel()
+	embed := BalanceEmbed("public", []stockdomain.Item{
+		{Group: "crafting", Name: "Copper", Quantity: 1},
+		{Group: "ammo", Name: "Ammo SMG", Quantity: 1},
+		{Group: "weapon", Name: "MP9", Quantity: 1},
+		{Group: "blueprint", Name: "Blueprint MP9", Quantity: 1},
+		{Group: "thief_tools", Name: "USB", Quantity: 1},
+	})
+	names := make([]string, 0, len(embed.Fields))
+	for _, field := range embed.Fields {
+		if !field.Inline {
+			t.Fatalf("field %q is not inline, so it cannot share a row", field.Name)
+		}
+		names = append(names, field.Name)
+	}
+	// A spacer after every second group, and none before the first or trailing
+	// the last: five groups fill two rows and open a third.
+	if want := []string{"Crafting", "Ammo", "​", "Weapons", "Blueprints", "​", "Thief Tools"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("field names = %#v, want %#v", names, want)
+	}
+}
+
+// A group where everything reads zero says nothing a reader can act on, and
+// there are enough of those to push the stocked groups off the screen.
+func TestBalanceEmbedHidesGroupsWithNoStock(t *testing.T) {
+	t.Parallel()
+	embed := BalanceEmbed("boss", []stockdomain.Item{
+		{Group: "crafting", Name: "Copper", Quantity: 0},
+		{Group: "crafting", Name: "Iron", Quantity: 0},
+		{Group: "ammo", Name: "Ammo SMG", Quantity: 0},
+		{Group: "ammo", Name: "Ammo Rifle", Quantity: 5},
+		{Group: "weapon", Name: "MP9", Quantity: 0},
+	})
+	if len(embed.Fields) != 1 || embed.Fields[0].Name != "Ammo" {
+		t.Fatalf("fields = %#v, want the ammo group alone", embed.Fields)
+	}
+	// The zero item stays listed inside a group that has any stock at all.
+	if embed.Fields[0].Value != "**Ammo SMG** — 0\n**Ammo Rifle** — 5" {
+		t.Fatalf("ammo field = %q", embed.Fields[0].Value)
+	}
+}
+
+// Every group empty is the same as having no items: the embed still says so
+// rather than rendering nothing.
+func TestBalanceEmbedWithEverythingAtZero(t *testing.T) {
+	t.Parallel()
+	embed := BalanceEmbed("boss", []stockdomain.Item{
+		{Group: "crafting", Name: "Copper", Quantity: 0},
+		{Group: "ammo", Name: "Ammo SMG", Quantity: 0},
+	})
+	if len(embed.Fields) != 1 || embed.Fields[0].Value != "None" {
+		t.Fatalf("fields = %#v, want the empty placeholder", embed.Fields)
+	}
+}
+
+// The new groups are named, not spelled out of their key.
+func TestGroupLabelNamesEveryGroup(t *testing.T) {
+	t.Parallel()
+	for group, want := range map[string]string{
+		"thief_tools":        "Thief Tools",
+		"weapon_accessories": "Weapon Accessories",
+		"body_drugs":         "Body & Drugs",
+	} {
+		if got := GroupLabel(group); got != want {
+			t.Errorf("GroupLabel(%q) = %q, want %q", group, got, want)
+		}
 	}
 }
