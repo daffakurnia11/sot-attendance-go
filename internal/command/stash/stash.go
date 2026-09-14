@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 	stockdomain "github.com/daffakurniawan/sot-discord-bot/internal/stock"
@@ -56,6 +57,42 @@ type Line struct {
 	After    int32
 }
 
+// transactionRows lays a movement out as name, the amount moved, and the
+// balance it left behind, each column padded to the widest in the message.
+//
+// The amount carries its sign rather than a multiplication cross: a line
+// quoted on its own said "x 50" whichever way the stock went, and the only
+// thing that distinguished a deposit from a withdrawal was the embed's colour.
+//
+// Widths count runes for the same reason balanceRows does.
+func transactionRows(lines []Line, action string) []string {
+	sign := "+"
+	if action == stockdomain.ActionWithdraw {
+		sign = "-"
+	}
+	nameWidth, movedWidth, afterWidth := 0, 0, 0
+	moved, after := make([]string, len(lines)), make([]string, len(lines))
+	for index, line := range lines {
+		moved[index] = sign + FormatNumber(int64(line.Quantity))
+		after[index] = FormatNumber(int64(line.After))
+		if width := utf8.RuneCountInString(line.Name); width > nameWidth {
+			nameWidth = width
+		}
+		if width := len(moved[index]); width > movedWidth {
+			movedWidth = width
+		}
+		if width := len(after[index]); width > afterWidth {
+			afterWidth = width
+		}
+	}
+	rows := make([]string, 0, len(lines))
+	for index, line := range lines {
+		padding := strings.Repeat(" ", nameWidth-utf8.RuneCountInString(line.Name))
+		rows = append(rows, fmt.Sprintf("%s%s  %*s  →  %*s", line.Name, padding, movedWidth, moved[index], afterWidth, after[index]))
+	}
+	return rows
+}
+
 func SafeboxLabel(safebox string) string {
 	if safebox == "boss" {
 		return "Boss Stash"
@@ -78,65 +115,110 @@ func TransactionEmbed(safebox, action string, lines []Line, actorName, actorDisc
 	if actorDiscordUserID != "" {
 		description += " · <@" + actorDiscordUserID + ">"
 	}
-	rendered := make([]string, 0, len(lines))
-	for _, line := range lines {
-		rendered = append(rendered, fmt.Sprintf("**%s** × %s → %s", line.Name, FormatNumber(int64(line.Quantity)), FormatNumber(int64(line.After))))
-	}
+	rows := BoundedLines(transactionRows(lines, action), 1024-2*len(balanceFence)-2)
 	return &discordgo.MessageEmbed{
 		Title:       title + " · " + SafeboxLabel(safebox),
 		Description: description,
 		Color:       color,
-		Fields:      []*discordgo.MessageEmbedField{{Name: "Items", Value: BoundedLines(rendered, 1024)}},
+		Fields:      []*discordgo.MessageEmbedField{{Name: "Items", Value: balanceFence + "\n" + rows + "\n" + balanceFence}},
 		Timestamp:   time.Now().Format(time.RFC3339),
 	}
 }
 
 // BalanceEmbed lists one safebox, one field per stock group. Items arrive
 // already ordered by group, so grouping is a scan rather than a sort.
-// balanceColumns is how many groups sit side by side in the balance embed.
-//
-// Discord packs inline fields three to a row, so two columns are made by
-// padding each row out with an empty field rather than by asking for a width.
-const balanceColumns = 2
+// balanceFence wraps a group's rows in a fenced block. Discord renders those
+// in a monospace face, which is what makes the padding in balanceRows line up;
+// the same trick already carries the player log line.
+const balanceFence = "```"
 
-// spacerField pads a row so the next group starts on a new one. The zero-width
-// space is what Discord accepts as an empty field: a truly blank name or value
-// is rejected.
-func spacerField() *discordgo.MessageEmbedField {
-	return &discordgo.MessageEmbedField{Name: "\u200b", Value: "\u200b", Inline: true}
+// balanceGroup is one heading and the items under it.
+type balanceGroup struct {
+	group string
+	items []Item
+}
+
+// balanceRows lays items out as name left, quantity right, padded to widths
+// measured across the whole balance rather than one group.
+//
+// A balance is read for its figures, and a per-group width put every group's
+// numbers at a different column, so the eye had to find the edge again at each
+// heading. One width for all of them means the figures form a single line down
+// the embed.
+//
+// Widths count runes rather than bytes: an item name is free to carry
+// non-ASCII, and counting its bytes would pad it into a crooked column.
+//
+// ponytail: a rune is assumed one column wide, which holds for the accented
+// Latin the catalog uses. A full-width script would still sit crooked; reach
+// for a display-width table only if an item is ever named in one.
+func balanceRows(items []Item, nameWidth, numberWidth int) []string {
+	rows := make([]string, 0, len(items))
+	for _, item := range items {
+		padding := strings.Repeat(" ", nameWidth-utf8.RuneCountInString(item.Name))
+		rows = append(rows, fmt.Sprintf("%s%s  %*s", item.Name, padding, numberWidth, FormatNumber(int64(item.Quantity))))
+	}
+	return rows
+}
+
+// balanceWidths measures the widest name and the widest figure across every
+// group that will be shown, so a group left out pads nothing.
+func balanceWidths(groups []balanceGroup) (nameWidth, numberWidth int) {
+	for _, entry := range groups {
+		for _, item := range entry.items {
+			if width := utf8.RuneCountInString(item.Name); width > nameWidth {
+				nameWidth = width
+			}
+			if width := len(FormatNumber(int64(item.Quantity))); width > numberWidth {
+				numberWidth = width
+			}
+		}
+	}
+	return nameWidth, numberWidth
+}
+
+// stockedGroups splits items into their groups, dropping any whose items all
+// read zero.
+//
+// A group where everything is zero says nothing a reader can act on, and there
+// are enough of those to push the groups that do off the screen. The items
+// still exist; the group is simply not shown until one of them is stocked.
+func stockedGroups(items []Item) []balanceGroup {
+	groups := make([]balanceGroup, 0, 8)
+	for _, item := range items {
+		if len(groups) == 0 || groups[len(groups)-1].group != item.Group {
+			groups = append(groups, balanceGroup{group: item.Group})
+		}
+		current := &groups[len(groups)-1]
+		current.items = append(current.items, item)
+	}
+	stocked := groups[:0]
+	for _, entry := range groups {
+		for _, item := range entry.items {
+			if item.Quantity > 0 {
+				stocked = append(stocked, entry)
+				break
+			}
+		}
+	}
+	return stocked
 }
 
 func BalanceEmbed(safebox string, items []Item) *discordgo.MessageEmbed {
-	groups := make([]*discordgo.MessageEmbedField, 0, 8)
-	group, lines, stocked := "", make([]string, 0, len(items)), false
-	flush := func() {
-		// A group where every item reads zero says nothing a reader can act on,
-		// and there are enough of those to push the groups that do off the
-		// screen. The items still exist; the group is simply not shown until
-		// one of them is stocked.
-		if group == "" || len(lines) == 0 || !stocked {
-			return
-		}
-		groups = append(groups, &discordgo.MessageEmbedField{Name: GroupLabel(group), Value: BoundedLines(lines, 1024), Inline: true})
-	}
-	for _, item := range items {
-		if item.Group != group {
-			flush()
-			group, lines, stocked = item.Group, make([]string, 0, len(items)), false
-		}
-		if item.Quantity > 0 {
-			stocked = true
-		}
-		lines = append(lines, fmt.Sprintf("**%s** — %s", item.Name, FormatNumber(int64(item.Quantity))))
-	}
-	flush()
+	groups := stockedGroups(items)
+	nameWidth, numberWidth := balanceWidths(groups)
 
-	fields := make([]*discordgo.MessageEmbedField, 0, len(groups)+len(groups)/balanceColumns+1)
-	for index, field := range groups {
-		if index > 0 && index%balanceColumns == 0 {
-			fields = append(fields, spacerField())
-		}
-		fields = append(fields, field)
+	// One group per row, full width. Side by side, a nine-item group beside a
+	// four-item one left a gap the height of the difference, and the two
+	// columns of figures never lined up with each other.
+	fields := make([]*discordgo.MessageEmbedField, 0, len(groups))
+	for _, entry := range groups {
+		// The fences and their newlines come out of the field's own budget.
+		rows := BoundedLines(balanceRows(entry.items, nameWidth, numberWidth), 1024-2*len(balanceFence)-2)
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name:  GroupLabel(entry.group),
+			Value: balanceFence + "\n" + rows + "\n" + balanceFence,
+		})
 	}
 	if len(fields) == 0 {
 		fields = append(fields, &discordgo.MessageEmbedField{Name: "Items", Value: "None"})
@@ -165,6 +247,8 @@ func GroupLabel(group string) string {
 		return "Thief Tools"
 	case "weapon_accessories":
 		return "Weapon Accessories"
+	case "electronic_tools":
+		return "Electronic Tools"
 	default:
 		return strings.ToUpper(group[:1]) + group[1:]
 	}

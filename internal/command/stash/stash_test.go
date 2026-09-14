@@ -73,8 +73,27 @@ func TestTransactionEmbedShowsResultingQuantity(t *testing.T) {
 	if embed.Description != "Purpose: boss order\nBy **Kenji Nakamura** · <@123>" {
 		t.Fatalf("unexpected description: %q", embed.Description)
 	}
-	if len(embed.Fields) != 1 || embed.Fields[0].Value != "**Ammo SMG** × 1,000 → 4,611" {
-		t.Fatalf("unexpected fields: %#v", embed.Fields)
+	// The amount carries its sign: a line quoted on its own used to read the
+	// same whichever way the stock went.
+	if len(embed.Fields) != 1 || embed.Fields[0].Value != "```\nAmmo SMG  -1,000  →  4,611\n```" {
+		t.Fatalf("unexpected fields: %q", embed.Fields[0].Value)
+	}
+}
+
+// Columns pad to the widest in the message, so the amounts and the balances
+// each line up down a multi-item movement.
+func TestTransactionRowsAlignColumns(t *testing.T) {
+	t.Parallel()
+	rows := transactionRows([]Line{
+		{Name: "Chicken Feather", Quantity: 1200, After: 7275},
+		{Name: "Iron", Quantity: 5, After: 12},
+	}, stockdomain.ActionDeposit)
+	want := []string{
+		"Chicken Feather  +1,200  →  7,275",
+		"Iron                 +5  →     12",
+	}
+	if !reflect.DeepEqual(rows, want) {
+		t.Fatalf("rows =\n%s\nwant\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
 	}
 }
 
@@ -88,11 +107,14 @@ func TestBalanceEmbedGroupsItems(t *testing.T) {
 	if embed.Title != "Public Stash Balance" || len(embed.Fields) != 2 {
 		t.Fatalf("unexpected embed: %#v", embed)
 	}
-	if embed.Fields[0].Name != "Crafting" || embed.Fields[0].Value != "**Copper** — 7,346\n**Iron** — 6,074" {
-		t.Fatalf("unexpected crafting field: %#v", embed.Fields[0])
+	// Names padded to the widest across the balance - "Ammo SMG" here, from the
+	// other group - and figures right-aligned, inside a fenced block so Discord
+	// renders it monospace and the padding holds.
+	if embed.Fields[0].Name != "Crafting" || embed.Fields[0].Value != "```\nCopper    7,346\nIron      6,074\n```" {
+		t.Fatalf("unexpected crafting field: %q", embed.Fields[0].Value)
 	}
-	if embed.Fields[1].Name != "Ammo" || embed.Fields[1].Value != "**Ammo SMG** — 6,150" {
-		t.Fatalf("unexpected ammo field: %#v", embed.Fields[1])
+	if embed.Fields[1].Name != "Ammo" || embed.Fields[1].Value != "```\nAmmo SMG  6,150\n```" {
+		t.Fatalf("unexpected ammo field: %q", embed.Fields[1].Value)
 	}
 }
 
@@ -124,28 +146,47 @@ func TestChannelWarningNamesTheSafeboxAndBothCommands(t *testing.T) {
 	}
 }
 
-// Discord packs inline fields three to a row, so a second column is made by
-// padding each row out with an empty field.
-func TestBalanceEmbedLaysOutTwoColumns(t *testing.T) {
+// Groups stack full width. Side by side, a nine-item group beside a four-item
+// one left a gap the height of the difference.
+func TestBalanceEmbedStacksGroups(t *testing.T) {
 	t.Parallel()
 	embed := BalanceEmbed("public", []stockdomain.Item{
 		{Group: "crafting", Name: "Copper", Quantity: 1},
 		{Group: "ammo", Name: "Ammo SMG", Quantity: 1},
-		{Group: "weapon", Name: "MP9", Quantity: 1},
-		{Group: "blueprint", Name: "Blueprint MP9", Quantity: 1},
 		{Group: "thief_tools", Name: "USB", Quantity: 1},
 	})
 	names := make([]string, 0, len(embed.Fields))
 	for _, field := range embed.Fields {
-		if !field.Inline {
-			t.Fatalf("field %q is not inline, so it cannot share a row", field.Name)
+		if field.Inline {
+			t.Fatalf("field %q is inline, so it shares a row", field.Name)
 		}
 		names = append(names, field.Name)
 	}
-	// A spacer after every second group, and none before the first or trailing
-	// the last: five groups fill two rows and open a third.
-	if want := []string{"Crafting", "Ammo", "​", "Weapons", "Blueprints", "​", "Thief Tools"}; !reflect.DeepEqual(names, want) {
+	if want := []string{"Crafting", "Ammo", "Thief Tools"}; !reflect.DeepEqual(names, want) {
 		t.Fatalf("field names = %#v, want %#v", names, want)
+	}
+}
+
+// One width for the whole balance, not one per group: a per-group width put
+// every group's figures at a different column, so the eye had to find the edge
+// again at each heading.
+func TestBalanceEmbedAlignsFiguresAcrossGroups(t *testing.T) {
+	t.Parallel()
+	embed := BalanceEmbed("public", []stockdomain.Item{
+		{Group: "ammo", Name: "Ammo SMG", Quantity: 5950},
+		{Group: "crafting", Name: "Chicken Feather", Quantity: 7275},
+		{Group: "thief_tools", Name: "USB", Quantity: 2},
+	})
+	// Padded to "Chicken Feather" and to "5,950" throughout, so every figure
+	// ends on the same column whichever group it sits in.
+	for index, want := range []string{
+		"```\nAmmo SMG         5,950\n```",
+		"```\nChicken Feather  7,275\n```",
+		"```\nUSB                  2\n```",
+	} {
+		if embed.Fields[index].Value != want {
+			t.Errorf("field %d = %q, want %q", index, embed.Fields[index].Value, want)
+		}
 	}
 }
 
@@ -164,7 +205,7 @@ func TestBalanceEmbedHidesGroupsWithNoStock(t *testing.T) {
 		t.Fatalf("fields = %#v, want the ammo group alone", embed.Fields)
 	}
 	// The zero item stays listed inside a group that has any stock at all.
-	if embed.Fields[0].Value != "**Ammo SMG** — 0\n**Ammo Rifle** — 5" {
+	if embed.Fields[0].Value != "```\nAmmo SMG    0\nAmmo Rifle  5\n```" {
 		t.Fatalf("ammo field = %q", embed.Fields[0].Value)
 	}
 }
@@ -187,11 +228,34 @@ func TestGroupLabelNamesEveryGroup(t *testing.T) {
 	t.Parallel()
 	for group, want := range map[string]string{
 		"thief_tools":        "Thief Tools",
+		"electronic_tools":   "Electronic Tools",
 		"weapon_accessories": "Weapon Accessories",
 		"body_drugs":         "Body & Drugs",
 	} {
 		if got := GroupLabel(group); got != want {
 			t.Errorf("GroupLabel(%q) = %q, want %q", group, got, want)
 		}
+	}
+}
+
+// Width is counted in runes, not bytes: an item name carrying non-ASCII would
+// otherwise be padded by its byte length and sit in a crooked column.
+func TestBalanceRowsAlignOnRuneWidth(t *testing.T) {
+	t.Parallel()
+	items := []stockdomain.Item{
+		{Name: "Ammo Karet", Quantity: 467},
+		// Five bytes, four runes, four columns wide: padding by its byte
+		// length would leave this row a space short of the others.
+		{Name: "Café", Quantity: 8},
+		{Name: "USB", Quantity: 10},
+	}
+	rows := balanceRows(items, 10, 3)
+	want := []string{
+		"Ammo Karet  467",
+		"Café          8",
+		"USB          10",
+	}
+	if !reflect.DeepEqual(rows, want) {
+		t.Fatalf("rows =\n%s\nwant\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
 	}
 }
