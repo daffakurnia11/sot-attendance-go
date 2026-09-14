@@ -1,15 +1,36 @@
 -- Electronic tools, held in the public stash.
 -- Startup migration runner is re-runnable; keep all statements idempotent.
 
--- Dropped by what it checks rather than by what it is called, for the reason
--- 000036 gives: a database restored from a TablePlus dump carries this rule
--- under a generated name, and naming only one of the two leaves the old
--- value list in place to reject the new group.
+-- Rebuilt only when it does not already permit this migration's groups.
+--
+-- The runner replays every migration on each startup, and this rule is
+-- rewritten by each migration that adds a group. Dropping and re-adding it
+-- unconditionally meant a replay of an older migration narrowed the rule back
+-- to the values it knew, which the rows a later migration had already inserted
+-- then violated. Checking first makes the replay a no-op.
+--
+-- Dropped by what it checks rather than by what it is called: a database
+-- restored from a TablePlus dump carries this rule under a generated name, and
+-- naming only one of the two leaves the old value list in place.
 DO $$
 DECLARE
-    constraint_name TEXT;
+    existing TEXT;
+    stale TEXT;
 BEGIN
-    FOR constraint_name IN
+    SELECT pg_get_constraintdef(con.oid) INTO existing
+    FROM pg_constraint con
+    JOIN pg_class rel ON rel.oid = con.conrelid
+    WHERE rel.relname = 'safebox_stock_items'
+        AND con.contype = 'c'
+        AND pg_get_constraintdef(con.oid) ILIKE '%stock_group%'
+    LIMIT 1;
+
+    IF existing IS NOT NULL
+            AND existing LIKE '%electronic_tools%' THEN
+        RETURN;
+    END IF;
+
+    FOR stale IN
         SELECT con.conname
         FROM pg_constraint con
         JOIN pg_class rel ON rel.oid = con.conrelid
@@ -17,17 +38,14 @@ BEGIN
             AND con.contype = 'c'
             AND pg_get_constraintdef(con.oid) ILIKE '%stock_group%'
     LOOP
-        EXECUTE format('ALTER TABLE safebox_stock_items DROP CONSTRAINT %I', constraint_name);
+        EXECUTE format('ALTER TABLE safebox_stock_items DROP CONSTRAINT %I', stale);
     END LOOP;
-END $$;
 
-ALTER TABLE safebox_stock_items
-    ADD CONSTRAINT safebox_stock_items_group_valid CHECK (
-        stock_group IN (
-            'crafting', 'ammo', 'body_drugs', 'weapon', 'blueprint',
-            'thief_tools', 'weapon_accessories', 'electronic_tools'
-        )
-    );
+    ALTER TABLE safebox_stock_items
+        ADD CONSTRAINT safebox_stock_items_group_valid CHECK (
+            stock_group IN ('crafting', 'ammo', 'body_drugs', 'weapon', 'blueprint', 'thief_tools', 'weapon_accessories', 'electronic_tools')
+        );
+END $$;
 
 INSERT INTO safebox_stock_items (item_key, name, stock_group)
 VALUES
