@@ -249,6 +249,8 @@ func GroupLabel(group string) string {
 		return "Weapon Accessories"
 	case "electronic_tools":
 		return "Electronic Tools"
+	case "robbery_item":
+		return "Robbery Item"
 	default:
 		return strings.ToUpper(group[:1]) + group[1:]
 	}

@@ -229,6 +229,7 @@ func TestGroupLabelNamesEveryGroup(t *testing.T) {
 	for group, want := range map[string]string{
 		"thief_tools":        "Thief Tools",
 		"electronic_tools":   "Electronic Tools",
+		"robbery_item":       "Robbery Item",
 		"weapon_accessories": "Weapon Accessories",
 		"body_drugs":         "Body & Drugs",
 	} {
