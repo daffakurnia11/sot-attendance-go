@@ -21,8 +21,8 @@ func (s stubCFXPlayers) Players(context.Context) ([]dashboard.CFXPlayer, error) 
 
 // The reconciliation sweep needs the full roster, not only the configured
 // family, so the reader exposes both.
-func (s stubCFXPlayers) Rosters(context.Context) ([]dashboard.CFXPlayer, []dashboard.CFXPlayer, error) {
-	return s.players, s.players, s.err
+func (s stubCFXPlayers) Rosters(context.Context) ([]dashboard.CFXPlayer, []dashboard.CFXPlayer, int, error) {
+	return s.players, s.players, len(s.players), s.err
 }
 
 func TestRotatingStatusAlternatesDiscordAndCFX(t *testing.T) {

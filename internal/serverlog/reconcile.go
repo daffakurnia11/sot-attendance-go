@@ -7,13 +7,12 @@ import (
 	"time"
 )
 
-// ReconcileGrace is how long a visit is left alone before the CFX roster is
-// allowed to contradict it.
+// ReconcileGrace is the floor on a visit's age before the sweep may consider
+// it at all, whatever the pollers have seen.
 //
-// The roster is polled, so a player who has just connected is legitimately
-// absent from it for up to one poll interval - that gap is what the player log
-// shows as "polling". Closing a visit inside it would end a session that had
-// only just begun.
+// The caller's idle timeout is the real control. This only stops a visit being
+// closed in the minutes after it opens, before any poller has had the chance
+// to report the player even once.
 const ReconcileGrace = 4 * time.Minute
 
 // MaxClosedShare caps how much of the open population one sweep may end.
@@ -65,11 +64,16 @@ const closeAbsentSessions = `
 	), absent AS (
 		SELECT * FROM open_visits
 		WHERE last_event_at < $2::timestamptz - make_interval(secs => $3::double precision)
+			-- Neither list is a claim that anybody left. Both are lists of
+			-- players a source positively placed on the server inside the idle
+			-- window, so a name in either one keeps its visit alive.
 			AND LOWER(BTRIM(username)) <> ALL($1::text[])
-			-- Both pollers have to agree. Discord rich presence is the second
-			-- opinion: a member whose activity still names the server is on it,
-			-- whatever a truncated CFX read says.
 			AND (discord_user_id IS NULL OR discord_user_id <> ALL($4::text[]))
+			-- And CFX has placed them there at least once. A player it has
+			-- never listed - because it lagged behind their connect, or because
+			-- their in-game name never matched - cannot be absent from a list
+			-- they were never on, so their visit is left to the twelve hour cap.
+			AND LOWER(BTRIM(username)) = ANY($5::text[])
 	)
 	INSERT INTO server_logs (payload, server_member_id, session_id, status, occurred_at, source)
 	SELECT jsonb_build_object(
@@ -102,36 +106,47 @@ const countOpenVisits = `
 			AND COUNT(*) FILTER (WHERE sl.status = 'connected') > 0
 	) open_visits`
 
-// CloseAbsentSessions closes open visits for players missing from the roster.
+// CloseIdleSessions closes open visits no source has seen for the idle window.
 //
 // The webhook stays the authority: it opens visits, and a disconnected event it
-// sends closes them outright. The two pollers only get to agree that a player is
-// gone, and both must, because each is wrong in its own way - the CFX read can
-// come back truncated, and Discord presence cannot see an invisible member.
+// sends closes them outright. No other source may claim a player left. The two
+// pollers only report players they have seen, and any sighting inside the
+// window keeps a visit alive, because each poller is blind in its own way - a
+// CFX read can come back truncated or lag behind a connect, and Discord
+// presence cannot see an invisible member.
 //
 // Only visits the webhook opened are eligible. This is the backup for an exit
 // event that never arrived, so a visit that already has one is untouched, and
 // so is a visit from any other source.
 //
-// presentNames is every player the game server currently reports, matched
-// against server_members.username the same way the player log matches them:
+// seenRecentlyNames is every player a source placed on the server inside the
+// idle window, and seenEverNames every player it has placed there at all, both
+// matched against server_members.username the way the player log matches them:
 // trimmed and case-insensitive. playingDiscordUserIDs is every member whose
 // Discord activity currently names the server.
 //
-// An empty roster closes nothing. A failed or empty upstream read is not
-// evidence that the server emptied, and acting on it would end every open visit
+// seenEverNames is the guard against the connect-lag case: a player CFX has
+// never listed cannot be absent from a list they were never on, so their visit
+// is left to the twelve hour cap rather than closed minutes after it opened.
+//
+// Nothing seen recently closes nothing. A failed or empty upstream read looks
+// exactly like an emptied server, and acting on it would end every open visit
 // at once - the same reasoning that stops an empty admin list demoting the
-// roster. Missing evidence never closes a visit; only agreement does.
-func (r *Repository) CloseAbsentSessions(ctx context.Context, presentNames, playingDiscordUserIDs []string, observedAt time.Time, grace time.Duration) (int64, error) {
-	if len(presentNames) == 0 {
+// roster. Missing evidence never closes a visit; only a sighting elsewhere,
+// long enough ago, does.
+func (r *Repository) CloseIdleSessions(ctx context.Context, seenRecentlyNames, seenEverNames, playingDiscordUserIDs []string, observedAt time.Time, idle time.Duration) (int64, error) {
+	// No player has ever been seen, so there is no baseline to be absent from
+	// and nothing can be judged idle. A freshly started process sits here until
+	// its first healthy roster read.
+	everSeen := lowered(seenEverNames)
+	if len(everSeen) == 0 {
 		return 0, nil
 	}
-	normalized := make([]string, 0, len(presentNames))
-	for _, name := range presentNames {
-		if trimmed := strings.ToLower(strings.TrimSpace(name)); trimmed != "" {
-			normalized = append(normalized, trimmed)
-		}
-	}
+	// Nobody has been seen inside the idle window. That is what a failed or
+	// empty upstream read looks like, and it is indistinguishable from the
+	// server genuinely emptying, so it closes nothing: missing evidence never
+	// ends a visit. A truly empty server ages out on the twelve hour cap.
+	normalized := lowered(seenRecentlyNames)
 	if len(normalized) == 0 {
 		return 0, nil
 	}
@@ -154,7 +169,7 @@ func (r *Repository) CloseAbsentSessions(ctx context.Context, presentNames, play
 		return 0, fmt.Errorf("count open server sessions: %w", err)
 	}
 
-	rows, err := transaction.Query(ctx, closeAbsentSessions, normalized, observedAt, grace.Seconds(), playing)
+	rows, err := transaction.Query(ctx, closeAbsentSessions, normalized, observedAt, idle.Seconds(), playing, everSeen)
 	if err != nil {
 		return 0, fmt.Errorf("close absent server sessions: %w", err)
 	}
@@ -179,4 +194,16 @@ func (r *Repository) CloseAbsentSessions(ctx context.Context, presentNames, play
 		return 0, fmt.Errorf("commit absent session sweep: %w", err)
 	}
 	return closed, nil
+}
+
+// lowered trims and lowercases, dropping blanks, so a roster name matches
+// server_members.username the same way the player log matches it.
+func lowered(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.ToLower(strings.TrimSpace(value)); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }

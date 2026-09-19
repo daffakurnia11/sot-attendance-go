@@ -38,7 +38,7 @@ type cfxPlayerReader interface {
 	// Rosters also returns every player on the server, not only the
 	// configured family. Reconciliation has to match against all of them: a
 	// member absent from the full roster has really left.
-	Rosters(context.Context) ([]dashboard.CFXPlayer, []dashboard.CFXPlayer, error)
+	Rosters(context.Context) ([]dashboard.CFXPlayer, []dashboard.CFXPlayer, int, error)
 }
 
 type Bot struct {
@@ -79,9 +79,15 @@ type Bot struct {
 	ready                atomic.Bool
 	cfxCount             atomic.Int64
 	showCFXStatus        bool
-	// cfxRosterWindow holds the last rosterAbsenceStreak CFX reads, oldest
-	// first, and is touched only by the CFX poller goroutine.
-	cfxRosterWindow [][]string
+	// cfxSeen and discordSeen are the last time each source positively placed a
+	// player on the server: roster name lowercased for CFX, Discord user id for
+	// presence. Both are touched only by the CFX poller goroutine.
+	//
+	// They exist because absence is not evidence. A source can say "I saw him",
+	// and that keeps a visit alive; no source is allowed to say "he left". A
+	// visit ends when nobody has seen the player for serverVisitIdleTimeout.
+	cfxSeen     map[string]time.Time
+	discordSeen map[string]time.Time
 	// discordAbsence counts consecutive polls in which a member's activity did
 	// not name the server, keyed by Discord user id. Touched only by the
 	// Discord poll in Run, which is a single goroutine.
@@ -385,7 +391,8 @@ func startedAtOrZero(startedAt *time.Time) time.Time {
 // discordAbsenceStreak is how many consecutive polls must fail to see a
 // member's activity before their visit is closed.
 //
-// One read is not enough, for the same reason rosterAbsenceStreak exists. A
+// One read is not enough, for the same reason the session sweep waits out
+// serverVisitIdleTimeout before believing a player is gone. A
 // FiveM activity is rewritten as the player moves between joining and playing,
 // and the rewrite is not atomic: a poll landing inside it sees an activity that
 // no longer names the server and reads as "stopped playing". That closed visits
@@ -491,7 +498,7 @@ func (b *Bot) runCFXPoller(ctx context.Context) {
 func (b *Bot) refreshCFX(ctx context.Context) {
 	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	players, roster, err := b.cfx.Rosters(requestContext)
+	players, roster, reported, err := b.cfx.Rosters(requestContext)
 	if err != nil {
 		b.logger.Warn("refresh CFX player count", "error", err)
 		return
@@ -501,107 +508,119 @@ func (b *Bot) refreshCFX(ctx context.Context) {
 	if previous != count {
 		b.logger.Info("CFX player count updated", "count", count)
 	}
-	b.reconcileServerSessions(ctx, roster)
+	b.reconcileServerSessions(ctx, roster, reported)
 }
 
-// reconcileServerSessions closes visits the game server no longer lists.
+// serverVisitIdleTimeout is how long every source must be silent about a
+// player before the sweep ends their visit.
+//
+// It is measured from the last positive sighting by any source, not from the
+// last webhook event, so it has to be generous: the webhook is edge triggered
+// and says nothing at all while a player simply keeps playing. Four minutes
+// from the last event closed live sessions, including one only four minutes
+// old whose player CFX had not listed yet.
+const serverVisitIdleTimeout = 25 * time.Minute
+
+// reconcileServerSessions closes visits nobody can still see.
 //
 // A disconnected event that never arrives leaves a visit open for twelve hours
-// and credits the player attendance for the whole window. The roster already
-// polled above answers the question that event would have, so it is used to
-// close what it contradicts.
+// and credits the player attendance for the whole window. This sweep supplies
+// the event the game server failed to send.
 //
-// The FiveM webhook stays the authority on visits: it opens them, and a
-// disconnected event it sends closes them immediately. This sweep only handles
-// the events that never arrive, and it demands three separate agreements before
-// writing one, because a wrong closure ends a live visit and nothing later
-// reopens it:
+// The rule is that no source may claim a player left; a source may only report
+// having seen them. The webhook's own disconnected event closes a visit
+// outright, and everything else is a timeout on the most recent sighting from
+// any source. That is what keeps the three failure modes from compounding:
 //
-//   - absent from the CFX roster in every one of the last rosterAbsenceStreak
-//     polls, so one truncated read cannot end anybody's visit;
-//   - absent from live Discord presence, meaning no activity naming the server;
-//   - and, in the query, past ReconcileGrace and within MaxClosedShare.
+//   - CFX lags behind a player who just connected, so it has not listed them
+//     yet. Never having seen them, it gets no say.
+//   - Discord presence cannot see an invisible member. Seeing nothing
+//     contributes nothing, rather than counting as agreement that they left.
+//   - The webhook goes quiet, which means nothing changed, not that the player
+//     is gone.
 //
-// Discord presence is a second source rather than the deciding one because it
-// is blind to an invisible member, so it can only ever veto a closure. Both
-// sources have to say gone; either saying present, or failing to answer at all,
-// leaves the visit open.
-func (b *Bot) reconcileServerSessions(ctx context.Context, roster []dashboard.CFXPlayer) {
-	if !b.announces || b.serverLogs == nil || len(roster) == 0 {
+// Measured over fourteen days, the previous rule - absent from the roster,
+// therefore gone - ended at least fifteen live sessions out of a hundred and
+// forty six, five of them in a single minute from one truncated read.
+func (b *Bot) reconcileServerSessions(ctx context.Context, roster []dashboard.CFXPlayer, reported int) {
+	if !b.announces || b.serverLogs == nil {
+		return
+	}
+	// Lazily, like discordAbsence above: one goroutine owns both.
+	if b.cfxSeen == nil {
+		b.cfxSeen = make(map[string]time.Time)
+	}
+	if b.discordSeen == nil {
+		b.discordSeen = make(map[string]time.Time)
+	}
+
+	// A read whose list disagrees with the count the server reports for itself
+	// is incomplete, and absence from an incomplete list is not absence. CFX
+	// answers 200 with whatever it has cached, so this is the only way to tell
+	// the difference.
+	if reported != len(roster) {
+		b.logger.Warn("skip server session reconcile: CFX roster looks truncated",
+			"listed", len(roster), "reported", reported)
+		return
+	}
+	if len(roster) == 0 {
 		return
 	}
 
-	present := b.rosterWindow(roster)
+	now := time.Now().UTC()
+	for _, player := range roster {
+		if name := strings.ToLower(strings.TrimSpace(player.Name)); name != "" {
+			b.cfxSeen[name] = now
+		}
+	}
 
-	// A presence read that fails is not evidence of absence, so it stops the
-	// sweep instead of being treated as an empty set of players.
+	// A presence read that fails is not evidence of absence. It costs the
+	// sweep its second source, so the sweep stops rather than proceeding with
+	// one eye shut.
 	presences, err := b.status.Snapshot(b.session)
 	if err != nil {
 		b.logger.Warn("skip server session reconcile: no Discord presence to validate against", "error", err)
 		return
 	}
-	playing := make([]string, 0, len(presences))
 	for _, entry := range presences {
 		if entry.Playing {
-			playing = append(playing, entry.DiscordUserID)
+			b.discordSeen[entry.DiscordUserID] = now
 		}
 	}
 
+	cutoff := now.Add(-serverVisitIdleTimeout)
+	recentNames, everNames := sightings(b.cfxSeen, cutoff)
+	recentDiscord, _ := sightings(b.discordSeen, cutoff)
+
 	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	closed, err := b.serverLogs.CloseAbsentSessions(requestContext, present, playing, time.Now().UTC(), serverlog.ReconcileGrace)
+	closed, err := b.serverLogs.CloseIdleSessions(requestContext, recentNames, everNames, recentDiscord, now, serverVisitIdleTimeout)
 	if err != nil {
 		b.logger.Error("reconcile open server sessions", "error", err)
 		return
 	}
 	if closed > 0 {
-		b.logger.Info("open server sessions closed from the CFX roster",
-			"sessions", closed, "roster", len(roster), "discord_playing", len(playing))
+		b.logger.Info("open server sessions closed after every source went quiet",
+			"sessions", closed, "roster", len(roster), "seen_recently", len(recentNames))
 	}
 }
 
-// rosterAbsenceStreak is how many consecutive CFX reads must omit a player
-// before the sweep believes they left.
+// sightings splits a last-seen map into the keys seen since cutoff and every
+// key ever seen.
 //
-// CFX is a third party HTTP API that can answer 200 with a stale or partial
-// player list, and one such answer used to be enough to close every visit it
-// omitted. Requiring a streak costs a few poll intervals of delay on a genuine
-// lost disconnect - which has already been open for minutes by then - and buys
-// immunity to a single bad read.
-const rosterAbsenceStreak = 3
-
-// rosterWindow records this roster and returns every name seen across the last
-// rosterAbsenceStreak reads, lowercased.
-//
-// Treating the union as present is what enforces the streak: a name has to be
-// missing from all of them to count as absent.
-func (b *Bot) rosterWindow(roster []dashboard.CFXPlayer) []string {
-	current := make([]string, 0, len(roster))
-	for _, player := range roster {
-		current = append(current, player.Name)
-	}
-
-	b.cfxRosterWindow = append(b.cfxRosterWindow, current)
-	if len(b.cfxRosterWindow) > rosterAbsenceStreak {
-		b.cfxRosterWindow = b.cfxRosterWindow[len(b.cfxRosterWindow)-rosterAbsenceStreak:]
-	}
-
-	seen := make(map[string]struct{})
-	union := make([]string, 0, len(current)*len(b.cfxRosterWindow))
-	for _, read := range b.cfxRosterWindow {
-		for _, name := range read {
-			key := strings.ToLower(strings.TrimSpace(name))
-			if key == "" {
-				continue
-			}
-			if _, duplicate := seen[key]; duplicate {
-				continue
-			}
-			seen[key] = struct{}{}
-			union = append(union, name)
+// The second list is the guard that matters: a player no source has ever
+// placed on the server cannot be closed by their absence from it, because
+// there is nothing to be absent from.
+func sightings(seen map[string]time.Time, cutoff time.Time) (recent, ever []string) {
+	recent = make([]string, 0, len(seen))
+	ever = make([]string, 0, len(seen))
+	for key, at := range seen {
+		ever = append(ever, key)
+		if at.After(cutoff) {
+			recent = append(recent, key)
 		}
 	}
-	return union
+	return recent, ever
 }
 
 func (b *Bot) rotateStatus() {

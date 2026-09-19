@@ -37,18 +37,25 @@ func TestCFXClientFiltersPlayerNamesCaseInsensitively(t *testing.T) {
 
 func TestCFXClientReturnsCompleteRosterWithoutPlayerFilter(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"Data":{"players":[
+		// clients disagrees with the list on purpose: a CFX read can come back
+		// truncated, and the count is how a caller notices.
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"Data":{"clients":3,"players":[
 			{"id":12,"name":"SOT - Paw","ping":48},
 			{"id":7,"name":"Unrelated","ping":20}
 		]}}`)), Header: make(http.Header)}, nil
 	})}
 
-	filtered, all, err := NewCFXClient(client, "kr7k7d", "SOT").Rosters(context.Background())
+	filtered, all, reported, err := NewCFXClient(client, "kr7k7d", "SOT").Rosters(context.Background())
 	if err != nil {
 		t.Fatalf("Rosters() error = %v", err)
 	}
 	if len(filtered) != 1 || len(all) != 2 || all[1].Name != "Unrelated" {
 		t.Fatalf("Rosters() filtered = %#v, all = %#v", filtered, all)
+	}
+	// The server's own count is decoded so callers can spot a truncated read:
+	// this fixture claims three players and lists two.
+	if reported != 3 {
+		t.Fatalf("Rosters() reported = %d, want 3", reported)
 	}
 }
 

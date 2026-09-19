@@ -93,7 +93,7 @@ type MemberRecords struct {
 }
 
 type cfxPlayerReader interface {
-	Rosters(context.Context) ([]CFXPlayer, []CFXPlayer, error)
+	Rosters(context.Context) ([]CFXPlayer, []CFXPlayer, int, error)
 }
 type presenceReader interface {
 	Presences(context.Context) (map[string]MemberPresence, error)
@@ -333,7 +333,7 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 		}
 	}
 
-	result.CFXPlayers, result.AllCFXPlayers, err = r.cfx.Rosters(ctx)
+	result.CFXPlayers, result.AllCFXPlayers, _, err = r.cfx.Rosters(ctx)
 	if err != nil {
 		r.logger.Warn("CFX players unavailable", "error", err)
 		result.CFXPlayers = make([]CFXPlayer, 0)

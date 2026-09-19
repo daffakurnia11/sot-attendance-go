@@ -280,7 +280,7 @@ func lockTestSchema(t *testing.T, databaseURL string) {
 	})
 }
 
-func TestCloseAbsentSessions(t *testing.T) {
+func TestCloseIdleSessions(t *testing.T) {
 	pool := sessionTestPool(t)
 	repository := NewRepository(pool)
 	ctx := context.Background()
@@ -295,23 +295,23 @@ func TestCloseAbsentSessions(t *testing.T) {
 	}
 
 	// An empty roster is not evidence the server emptied.
-	if closed, err := repository.CloseAbsentSessions(ctx, nil, nil, now, ReconcileGrace); err != nil || closed != 0 {
+	if closed, err := repository.CloseIdleSessions(ctx, nil, everSeen(t, pool), nil, now, ReconcileGrace); err != nil || closed != 0 {
 		t.Fatalf("empty roster closed = %d, %v; want 0", closed, err)
 	}
 
 	// Present on the roster, matched case-insensitively and untrimmed: left open.
-	if closed, err := repository.CloseAbsentSessions(ctx, []string{"  " + strings.ToUpper(username) + " "}, nil, now, ReconcileGrace); err != nil || closed != 0 {
+	if closed, err := repository.CloseIdleSessions(ctx, []string{"  " + strings.ToUpper(username) + " "}, everSeen(t, pool), nil, now, ReconcileGrace); err != nil || closed != 0 {
 		t.Fatalf("present player closed = %d, %v; want 0", closed, err)
 	}
 
 	// Absent, but still inside the grace: the roster is polled, so a visit that
 	// has just begun is legitimately missing from it.
-	if closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now, 4*time.Hour); err != nil || closed != 0 {
+	if closed, err := repository.CloseIdleSessions(ctx, []string{"someone else"}, everSeen(t, pool), nil, now, 4*time.Hour); err != nil || closed != 0 {
 		t.Fatalf("in-grace player closed = %d, %v; want 0", closed, err)
 	}
 
 	// Absent and past the grace: closed.
-	closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now, ReconcileGrace)
+	closed, err := repository.CloseIdleSessions(ctx, []string{"someone else"}, everSeen(t, pool), nil, now, ReconcileGrace)
 	if err != nil || closed != 1 {
 		t.Fatalf("absent player closed = %d, %v; want 1", closed, err)
 	}
@@ -327,14 +327,14 @@ func TestCloseAbsentSessions(t *testing.T) {
 	}
 
 	// Idempotent: the visit is closed, so a second sweep finds nothing.
-	if closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now, ReconcileGrace); err != nil || closed != 0 {
+	if closed, err := repository.CloseIdleSessions(ctx, []string{"someone else"}, everSeen(t, pool), nil, now, ReconcileGrace); err != nil || closed != 0 {
 		t.Fatalf("second sweep closed = %d, %v; want 0", closed, err)
 	}
 }
 
 // A visit that only ever reported connecting is a loading screen, not a player
 // on the server, so the roster has nothing to say about it.
-func TestCloseAbsentSessionsIgnoresConnectingOnlyVisits(t *testing.T) {
+func TestCloseIdleSessionsIgnoresConnectingOnlyVisits(t *testing.T) {
 	pool := sessionTestPool(t)
 	repository := NewRepository(pool)
 	ctx := context.Background()
@@ -342,7 +342,7 @@ func TestCloseAbsentSessionsIgnoresConnectingOnlyVisits(t *testing.T) {
 
 	storeEvent(t, pool, "connecting", now.Add(-3*time.Hour), 66401)
 
-	closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now, ReconcileGrace)
+	closed, err := repository.CloseIdleSessions(ctx, []string{"someone else"}, everSeen(t, pool), nil, now, ReconcileGrace)
 	if err != nil || closed != 0 {
 		t.Fatalf("connecting-only closed = %d, %v; want 0", closed, err)
 	}
@@ -352,7 +352,7 @@ func TestCloseAbsentSessionsIgnoresConnectingOnlyVisits(t *testing.T) {
 // whose presence still names the server stays connected however the CFX roster
 // reads, because a partial roster is far likelier than a player who is on the
 // server and absent from it.
-func TestCloseAbsentSessionsKeepsPlayersDiscordStillSeesPlaying(t *testing.T) {
+func TestCloseIdleSessionsKeepsPlayersDiscordStillSeesPlaying(t *testing.T) {
 	pool := sessionTestPool(t)
 	repository := NewRepository(pool)
 	ctx := context.Background()
@@ -366,12 +366,12 @@ func TestCloseAbsentSessionsKeepsPlayersDiscordStillSeesPlaying(t *testing.T) {
 	}
 
 	// Absent from CFX and past the grace, but Discord says they are playing.
-	if closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, []string{discordUserID}, now, ReconcileGrace); err != nil || closed != 0 {
+	if closed, err := repository.CloseIdleSessions(ctx, []string{"someone else"}, everSeen(t, pool), []string{discordUserID}, now, ReconcileGrace); err != nil || closed != 0 {
 		t.Fatalf("player Discord sees playing closed = %d, %v; want 0", closed, err)
 	}
 
 	// Same sweep once Discord stops seeing them: both sources now agree.
-	closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, []string{"999"}, now, ReconcileGrace)
+	closed, err := repository.CloseIdleSessions(ctx, []string{"someone else"}, everSeen(t, pool), []string{"999"}, now, ReconcileGrace)
 	if err != nil || closed != 1 {
 		t.Fatalf("player absent from both sources closed = %d, %v; want 1", closed, err)
 	}
@@ -380,7 +380,7 @@ func TestCloseAbsentSessionsKeepsPlayersDiscordStillSeesPlaying(t *testing.T) {
 // A truncated roster read looks identical to everyone leaving at once, so a
 // sweep that would end most of the open population is refused whole rather
 // than trusted.
-func TestCloseAbsentSessionsRefusesMassClosure(t *testing.T) {
+func TestCloseIdleSessionsRefusesMassClosure(t *testing.T) {
 	pool := sessionTestPool(t)
 	repository := NewRepository(pool)
 	ctx := context.Background()
@@ -392,7 +392,7 @@ func TestCloseAbsentSessionsRefusesMassClosure(t *testing.T) {
 			fmt.Sprintf("11111111111111%04d", index), now.Add(-3*time.Hour), 500+index)
 	}
 
-	if _, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now, ReconcileGrace); err == nil {
+	if _, err := repository.CloseIdleSessions(ctx, []string{"someone else"}, everSeen(t, pool), nil, now, ReconcileGrace); err == nil {
 		t.Fatal("a roster omitting every open visit must be refused, not obeyed")
 	}
 
@@ -407,7 +407,7 @@ func TestCloseAbsentSessionsRefusesMassClosure(t *testing.T) {
 
 	// Two of the six missing is an ordinary pair of lost disconnects.
 	present := []string{"SOT - Player0", "SOT - Player1", "SOT - Player2", "SOT - Player3"}
-	closed, err := repository.CloseAbsentSessions(ctx, present, nil, now, ReconcileGrace)
+	closed, err := repository.CloseIdleSessions(ctx, present, everSeen(t, pool), nil, now, ReconcileGrace)
 	if err != nil || closed != 2 {
 		t.Fatalf("two absent players closed = %d, %v; want 2", closed, err)
 	}
@@ -442,7 +442,7 @@ func storeVisit(t *testing.T, pool *pgxpool.Pool, username, cid, discordUserID s
 // a visit the game server never opened is none of its business. Closing a
 // Discord visit here wrote a third exit for a player who already had one, and
 // labelled it as though CR Roleplay had reported it.
-func TestCloseAbsentSessionsLeavesDiscordVisitsAlone(t *testing.T) {
+func TestCloseIdleSessionsLeavesDiscordVisitsAlone(t *testing.T) {
 	pool := sessionTestPool(t)
 	repository := NewRepository(pool)
 	ctx := context.Background()
@@ -456,7 +456,7 @@ func TestCloseAbsentSessionsLeavesDiscordVisitsAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Close the webhook visit, leaving the Discord one as the only open visit.
-	if _, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now, ReconcileGrace); err != nil {
+	if _, err := repository.CloseIdleSessions(ctx, []string{"someone else"}, everSeen(t, pool), nil, now, ReconcileGrace); err != nil {
 		t.Fatal(err)
 	}
 
@@ -468,7 +468,7 @@ func TestCloseAbsentSessionsLeavesDiscordVisitsAlone(t *testing.T) {
 
 	// The player is absent from the roster and past the grace, which is exactly
 	// what would close a webhook visit. The Discord visit must survive it.
-	if closed, err := repository.CloseAbsentSessions(ctx, []string{"someone else"}, nil, now.Add(time.Hour), ReconcileGrace); err != nil || closed != 0 {
+	if closed, err := repository.CloseIdleSessions(ctx, []string{"someone else"}, everSeen(t, pool), nil, now.Add(time.Hour), ReconcileGrace); err != nil || closed != 0 {
 		t.Fatalf("sweep closed %d Discord visits, %v; want 0", closed, err)
 	}
 
@@ -483,5 +483,64 @@ func TestCloseAbsentSessionsLeavesDiscordVisitsAlone(t *testing.T) {
 	}
 	if open != 1 {
 		t.Fatalf("open Discord visits = %d, want 1", open)
+	}
+}
+
+// everSeen is every username in the table, standing in for "CFX has listed
+// this player at some point".
+func everSeen(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), "SELECT username FROM server_members")
+	if err != nil {
+		t.Fatalf("read usernames: %v", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan username: %v", err)
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// A player no source has ever placed on the server cannot be closed by their
+// absence from it. This is the connect-lag case: CFX has not listed them yet,
+// and four minutes later the old rule ended a live session.
+func TestCloseIdleSessionsSparesPlayersNeverSeen(t *testing.T) {
+	pool := sessionTestPool(t)
+	repository := NewRepository(pool)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	storeEvent(t, pool, "connected", now.Add(-3*time.Hour), 400)
+
+	// Somebody else is on the roster, so the read is healthy and the sweep
+	// runs - but it has never seen this player.
+	closed, err := repository.CloseIdleSessions(ctx, []string{"someone else"}, []string{"someone else"}, nil, now, ReconcileGrace)
+	if err != nil {
+		t.Fatalf("CloseIdleSessions() error = %v", err)
+	}
+	if closed != 0 {
+		t.Fatalf("closed = %d, want 0: a player never seen has nothing to be absent from", closed)
+	}
+}
+
+// Nothing seen yet at all, which is a process that has just started.
+func TestCloseIdleSessionsWaitsForItsFirstSighting(t *testing.T) {
+	pool := sessionTestPool(t)
+	repository := NewRepository(pool)
+	now := time.Now().UTC()
+
+	storeEvent(t, pool, "connected", now.Add(-3*time.Hour), 400)
+
+	closed, err := repository.CloseIdleSessions(context.Background(), nil, nil, nil, now, ReconcileGrace)
+	if err != nil {
+		t.Fatalf("CloseIdleSessions() error = %v", err)
+	}
+	if closed != 0 {
+		t.Fatalf("closed = %d, want 0", closed)
 	}
 }

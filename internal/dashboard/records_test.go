@@ -309,8 +309,8 @@ func TestDashboardPlayerStatusPrefersServerLogs(t *testing.T) {
 
 type stubCFX struct{}
 
-func (stubCFX) Rosters(context.Context) ([]CFXPlayer, []CFXPlayer, error) {
-	return []CFXPlayer{}, []CFXPlayer{}, nil
+func (stubCFX) Rosters(context.Context) ([]CFXPlayer, []CFXPlayer, int, error) {
+	return []CFXPlayer{}, []CFXPlayer{}, 0, nil
 }
 
 // A player still on the loading screen has reported connecting and nothing
