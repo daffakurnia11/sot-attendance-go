@@ -11,10 +11,23 @@
 -- cid is NOT NULL, so the composite index cannot be defeated by NULLs failing
 -- to collide.
 --
--- Both statements are idempotent, which the startup runner requires: it
+-- Superseded by 000023, which re-keyed identity to (cid, steamhex) because a
+-- player holds several rows under one Discord id and a license changes on
+-- reinstall.
+--
+-- The CREATE UNIQUE INDEX on (license_id, cid) that lived here is gone. Once
+-- 000023 allowed two rows to share a license and cid with different steamhex,
+-- production grew such a pair, and the runner replaying this file could no
+-- longer build the index: every boot failed with a duplicate key error. The
+-- statement is dropped rather than guarded, because 000023 drops the index
+-- anyway - a fresh database ends up identical either way.
+--
+-- IF NOT EXISTS was never the right guard: it asks whether the index is there,
+-- not whether the data still permits it. Third time this shape has broken a
+-- deploy, after 000017 and 000015, and the first that a replay on an empty
+-- database could not catch, because the conflict lives in the rows.
+--
+-- The remaining statement is idempotent, which the startup runner requires: it
 -- re-executes every *.up.sql on every boot.
 
 ALTER TABLE server_members DROP CONSTRAINT IF EXISTS server_members_license_id_unique;
-
-CREATE UNIQUE INDEX IF NOT EXISTS server_members_license_cid_unique
-    ON server_members (license_id, cid);
