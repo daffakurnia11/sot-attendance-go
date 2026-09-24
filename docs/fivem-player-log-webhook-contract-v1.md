@@ -22,11 +22,11 @@ Use a 5 second client-side timeout. SOT targets a p99 response under 500 ms, so 
 
 One shared secret, sent in a header on every request:
 
-| Header | Value |
-|---|---|
-| `Content-Type` | `application/json` |
-| `X-SOT-Contract-Version` | `1.0` |
-| `X-SOT-Secret` | The shared secret |
+| Header                   | Value              |
+| ------------------------ | ------------------ |
+| `Content-Type`           | `application/json` |
+| `X-SOT-Contract-Version` | `1.0`              |
+| `X-SOT-Secret`           | The shared secret  |
 
 The secret is delivered out of band and is never written in this document, in the repository, or in any chat transcript. Ask the SOT owner for it.
 
@@ -69,31 +69,31 @@ Unknown fields are rejected. There is no `contract_version` in the body — the 
 
 ### `player`
 
-| Field | Type | Required | Rule |
-|---|---|---:|---|
-| `server_id` | integer | yes | FiveM source/server ID. Accepted as sent |
-| `name` | string | yes | 1-128 characters. Current FiveM display name |
-| `username` | string | yes | 1-128 characters. Passport or character name |
-| `cid` | string | yes | 1-64 characters. Character ID. **Must be stable for the life of a character** - half the identity key |
-| `identifiers` | object | yes | See below. Three of the four fields are required |
-| `ping` | integer | yes | Accepted as sent. Send it on every status, including `disconnected` |
+| Field         | Type    | Required | Rule                                                                                                  |
+| ------------- | ------- | -------: | ----------------------------------------------------------------------------------------------------- |
+| `server_id`   | integer |      yes | FiveM source/server ID. Accepted as sent                                                              |
+| `name`        | string  |      yes | 1-128 characters. Current FiveM display name                                                          |
+| `username`    | string  |      yes | 1-128 characters. Passport or character name                                                          |
+| `cid`         | string  |      yes | 1-64 characters. Character ID. **Must be stable for the life of a character** - half the identity key |
+| `identifiers` | object  |      yes | See below. Three of the four fields are required                                                      |
+| `ping`        | integer |      yes | Accepted as sent. Send it on every status, including `disconnected`                                   |
 
 `cid` and `steamhex` together are the identity SOT stores: a player is one **character on one Steam account**, so an account with several framework characters is tracked as several players, each with its own visits and playtime.
 
 Both must be stable. Send the framework's real character identifier for `cid`, never a per-session or per-slot value that changes between logins. A change to either reads as a different player and starts a fresh history.
 
-`license` is deliberately *not* part of the identity - it changes on a reinstall - so it is stored as data and follows the latest event. A license that differs from the one on file for the same character is accepted and flagged for review on our side; you need do nothing.
+`license` is deliberately _not_ part of the identity - it changes on a reinstall - so it is stored as data and follows the latest event. A license that differs from the one on file for the same character is accepted and flagged for review on our side; you need do nothing.
 
 ### `player.identifiers`
 
 `license`, `discord` and `steamhex` are **required**: a missing key, a JSON `null`, and `""` are rejected identically. `fivem` is **optional**.
 
-| Field | Required | Rule |
-|---|---:|---|
-| `license` | yes | 9-128 characters, must start with `license:` |
-| `discord` | yes | 17-20 digits. A `discord:` prefix is stripped if you send it |
-| `steamhex` | yes | 7-64 characters, must start with `steam:`. **The other half of the identity key**, so it must be stable |
-| `fivem` | no | Stored as sent, up to 64 characters. No format rule. Absent, `null` and `""` are all treated as "not supplied" |
+| Field      | Required | Rule                                                                                                           |
+| ---------- | -------: | -------------------------------------------------------------------------------------------------------------- |
+| `license`  |      yes | 9-128 characters, must start with `license:`                                                                   |
+| `discord`  |      yes | 17-20 digits. A `discord:` prefix is stripped if you send it                                                   |
+| `steamhex` |      yes | 7-64 characters, must start with `steam:`. **The other half of the identity key**, so it must be stable        |
+| `fivem`    |       no | Stored as sent, up to 64 characters. No format rule. Absent, `null` and `""` are all treated as "not supplied" |
 
 > The resource must **abort the call** when `GetPlayerIdentifiers` does not yield `license`, `discord` and `steamhex`, rather than send a partial payload. A partial payload returns `422` and the event is not stored at all — the player will not appear in attendance in any form.
 >
@@ -103,11 +103,11 @@ Both must be stable. Send the framework's real character identifier for `cid`, n
 
 ### `event`
 
-| Field | Required | Rule |
-|---|---:|---|
-| `type` | yes | `connecting`, `connected`, or `disconnected`. The older `player.connecting` spellings are also accepted |
-| `timestamp` | yes | UTC, within **300 seconds** of SOT server time. RFC3339 (`2026-09-03T02:29:46Z`) preferred; `2026-09-03T02:29:46` and `2026-09-03 02:29:46` are also accepted and read as UTC |
-| `reason` | no | Disconnect reason. `null` or absent is fine. Meaningful only on `disconnected` |
+| Field       | Required | Rule                                                                                                                                                                          |
+| ----------- | -------: | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `type`      |      yes | `connecting`, `connected`, or `disconnected`. The older `player.connecting` spellings are also accepted                                                                       |
+| `timestamp` |      yes | UTC, within **300 seconds** of SOT server time. RFC3339 (`2026-09-03T02:29:46Z`) preferred; `2026-09-03T02:29:46` and `2026-09-03 02:29:46` are also accepted and read as UTC |
+| `reason`    |       no | Disconnect reason. `null` or absent is fine. Meaningful only on `disconnected`                                                                                                |
 
 In Lua the timestamp is `os.date("!%Y-%m-%dT%H:%M:%SZ")`. The leading `!` is what makes it UTC — omitting it yields server-local time and returns `401 EXPIRED_TIMESTAMP` for any server not on UTC.
 
@@ -132,7 +132,7 @@ A visit missing an event is stored and remains queryable.
 
 **The request body is the idempotency key.** Re-send the same event and SOT returns `202` with `"duplicate": true`, writing nothing new.
 
-The comparison is on JSON *content*, not bytes, so a retry still dedupes when your JSON encoder reorders keys or changes whitespace. You do not need to preserve the exact original string — though keeping it is cheaper than rebuilding it.
+The comparison is on JSON _content_, not bytes, so a retry still dedupes when your JSON encoder reorders keys or changes whitespace. You do not need to preserve the exact original string — though keeping it is cheaper than rebuilding it.
 
 What does **not** dedupe: a retry with a refreshed `event.timestamp`. That is a different event as far as SOT is concerned, and it will be stored twice. **Retry the original body, with its original timestamp.**
 
@@ -140,10 +140,10 @@ Because `event.timestamp` must stay within 300 seconds, a retry queued longer th
 
 ## 6. Rate limits
 
-| Limit | Value |
-|---|---|
+| Limit     | Value                   |
+| --------- | ----------------------- |
 | Sustained | 100 requests per second |
-| Burst | 500 requests |
+| Burst     | 500 requests            |
 
 A restart reconnecting 250 players produces roughly 750 events, which the burst plus one second of sustained allowance absorbs.
 
@@ -182,32 +182,32 @@ Every non-2xx response uses this envelope:
 
 Branch on `error.code`, never on `error.message`. Message text may change without a version bump.
 
-| Status | `error.code` | Meaning |
-|---|---|---|
-| 400 | `INVALID_JSON` | Body unreadable, not a single JSON object, or carries an unknown field |
-| 400 | `UNSUPPORTED_CONTRACT_VERSION` | `X-SOT-Contract-Version` missing or not served |
-| 401 | `INVALID_SECRET` | `X-SOT-Secret` missing or does not match |
-| 401 | `EXPIRED_TIMESTAMP` | `event.timestamp` more than 300 seconds from SOT server time |
-| 413 | `PAYLOAD_TOO_LARGE` | Body over 16 KiB |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | Content type is not `application/json` |
-| 422 | `INVALID_EVENT` | A field fails a rule in section 3. `error.message` names the field |
-| 429 | `RATE_LIMITED` | Limit from section 6 exceeded |
-| 500 | `INTERNAL_ERROR` | SOT-side failure |
-| 503 | `SERVER_LOGS_UNAVAILABLE` | Ingestion not configured on the SOT side |
+| Status | `error.code`                   | Meaning                                                                |
+| ------ | ------------------------------ | ---------------------------------------------------------------------- |
+| 400    | `INVALID_JSON`                 | Body unreadable, not a single JSON object, or carries an unknown field |
+| 400    | `UNSUPPORTED_CONTRACT_VERSION` | `X-SOT-Contract-Version` missing or not served                         |
+| 401    | `INVALID_SECRET`               | `X-SOT-Secret` missing or does not match                               |
+| 401    | `EXPIRED_TIMESTAMP`            | `event.timestamp` more than 300 seconds from SOT server time           |
+| 413    | `PAYLOAD_TOO_LARGE`            | Body over 16 KiB                                                       |
+| 415    | `UNSUPPORTED_MEDIA_TYPE`       | Content type is not `application/json`                                 |
+| 422    | `INVALID_EVENT`                | A field fails a rule in section 3. `error.message` names the field     |
+| 429    | `RATE_LIMITED`                 | Limit from section 6 exceeded                                          |
+| 500    | `INTERNAL_ERROR`               | SOT-side failure                                                       |
+| 503    | `SERVER_LOGS_UNAVAILABLE`      | Ingestion not configured on the SOT side                               |
 
 There is no error code for conflicting player identity. If reported identifiers disagree with what SOT already holds for a license, the event is still accepted with `202`; SOT flags it for operator review. Identity questions never block ingestion and never require sender action.
 
 ## 8. Retries
 
-| Result | Action |
-|---|---|
-| Network failure or timeout | Retry with backoff |
-| `429 RATE_LIMITED` | Retry, honouring `Retry-After` |
-| HTTP 5xx | Retry with backoff |
-| `401 INVALID_SECRET` | Do not retry. Fix configuration and alert an operator |
-| `401 EXPIRED_TIMESTAMP` | Do not retry. The body cannot be re-timestamped without becoming a new event. Drop it |
-| Other HTTP 4xx | Do not retry. Log and alert; this indicates a sender bug |
-| HTTP 2xx | Stop retrying |
+| Result                     | Action                                                                                |
+| -------------------------- | ------------------------------------------------------------------------------------- |
+| Network failure or timeout | Retry with backoff                                                                    |
+| `429 RATE_LIMITED`         | Retry, honouring `Retry-After`                                                        |
+| HTTP 5xx                   | Retry with backoff                                                                    |
+| `401 INVALID_SECRET`       | Do not retry. Fix configuration and alert an operator                                 |
+| `401 EXPIRED_TIMESTAMP`    | Do not retry. The body cannot be re-timestamped without becoming a new event. Drop it |
+| Other HTTP 4xx             | Do not retry. Log and alert; this indicates a sender bug                              |
+| HTTP 2xx                   | Stop retrying                                                                         |
 
 Suggested delays: 1, 2, 4, 8, 16, then 30 seconds with jitter. Maximum 10 attempts, which finishes inside the 300 second timestamp window. Reuse the original body for every retry.
 

@@ -10,12 +10,12 @@
 
 Detect players active on the CR Roleplay FiveM server but not visible on Discord, and vice versa, so attendance reflects actual presence.
 
-| Discord source | FiveM source | Result |
-|---|---|---|
-| Connected | Connected | Connected |
-| Missing or invisible | Connected | Invisible |
-| Connected | Missing or disconnected | Mismatched |
-| No member match | Connected | Mismatched |
+| Discord source       | FiveM source            | Result     |
+| -------------------- | ----------------------- | ---------- |
+| Connected            | Connected               | Connected  |
+| Missing or invisible | Connected               | Invisible  |
+| Connected            | Missing or disconnected | Mismatched |
+| No member match      | Connected               | Mismatched |
 
 To support it: receive shared-secret-authenticated lifecycle events, store player identity in `server_members`, store one row per event in `server_logs`, and link server players to existing `members` rows.
 
@@ -25,18 +25,18 @@ Existing `player_logs` is untouched. It holds Discord-presence events and drives
 
 Everything below was chosen against one constraint: **the FiveM Lua resource must stay trivial.** It holds no state, generates no ids, and computes no digests.
 
-| Decision | Reason |
-|---|---|
+| Decision                                                         | Reason                                                                                                                                                                                                                                                      |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Identity keyed on `(cid, steamhex)`, no foreign key to `members` | The character plus the Steam account it played from. Discord id is not unique per player and a license changes on reinstall, so both are mutable data. `server_members` is standalone reference data: it records who the game server saw, registered or not |
-| Two tables, not three | An earlier revision added `server_sessions`. Removed: session state and playtime derive from `server_logs` at read time, which needs no extra table, no status update, and no view |
-| Ingestion is append-only and order-independent | The sender delivers asynchronously with independent retries, so reordering is routine. Rejecting a reordered event returned a non-retryable 422 and lost it permanently |
-| No locks beyond one advisory lock per body | Order-independence removed the need. The pool is capped at `MaxConns = 5`, so lock contention during a restart burst was a real risk |
-| Session id derived server-side | The sender has no session concept and asked not to manage one. Correlated by license instead |
-| Idempotency key is the payload | The sender generates no event id. `UNIQUE (payload)` on `jsonb` compares canonicalised content, so a retry dedupes even when the encoder reorders keys — which a hash of raw bytes could not do |
-| Shared secret in a header, not an HMAC | Owner decision. FiveM has no built-in HMAC-SHA256, so signing meant bundling a pure-Lua SHA-2 implementation. Traded for TLS-only transport; see section 5 |
-| Whole request body stored in `payload` | Debugging and logging, and it means dropping a column never loses data |
-| `license`, `discord` and `steamhex` required; `fivem` optional | Owner decision. `fivem` is absent whenever the player has no CFX account and nothing matches on it, so refusing the event over it lost the player for no gain. Consequence of the other three in section 4 |
-| Identity conflicts never reject | A non-retryable 422 the sender could not fix would lose the event. Conflicts log at warn and store anyway |
+| Two tables, not three                                            | An earlier revision added `server_sessions`. Removed: session state and playtime derive from `server_logs` at read time, which needs no extra table, no status update, and no view                                                                          |
+| Ingestion is append-only and order-independent                   | The sender delivers asynchronously with independent retries, so reordering is routine. Rejecting a reordered event returned a non-retryable 422 and lost it permanently                                                                                     |
+| No locks beyond one advisory lock per body                       | Order-independence removed the need. The pool is capped at `MaxConns = 5`, so lock contention during a restart burst was a real risk                                                                                                                        |
+| Session id derived server-side                                   | The sender has no session concept and asked not to manage one. Correlated by license instead                                                                                                                                                                |
+| Idempotency key is the payload                                   | The sender generates no event id. `UNIQUE (payload)` on `jsonb` compares canonicalised content, so a retry dedupes even when the encoder reorders keys — which a hash of raw bytes could not do                                                             |
+| Shared secret in a header, not an HMAC                           | Owner decision. FiveM has no built-in HMAC-SHA256, so signing meant bundling a pure-Lua SHA-2 implementation. Traded for TLS-only transport; see section 5                                                                                                  |
+| Whole request body stored in `payload`                           | Debugging and logging, and it means dropping a column never loses data                                                                                                                                                                                      |
+| `license`, `discord` and `steamhex` required; `fivem` optional   | Owner decision. `fivem` is absent whenever the player has no CFX account and nothing matches on it, so refusing the event over it lost the player for no gain. Consequence of the other three in section 4                                                  |
+| Identity conflicts never reject                                  | A non-retryable 422 the sender could not fix would lose the event. Conflicts log at warn and store anyway                                                                                                                                                   |
 
 ## 3. Data model
 
@@ -75,19 +75,19 @@ Every migration in this feature has been applied to production and re-applied to
 
 One row per stable player identity.
 
-| Column | Type | Rule |
-|---|---|---|
-| `id` | `BIGINT IDENTITY` | Primary key |
-| `license_id` | `TEXT` | Required. Mutable: follows the latest event |
-| `discord_user_id` | `TEXT` | The only matching key besides `license_id` |
-| `fivem_id` | `TEXT` | Operator reference, never matched on |
-| `steamhex` | `TEXT` | Required, `NOT NULL`. The other half of the identity key. Never overwritten |
-| `player_name` | `TEXT` | Latest FiveM display name |
-| `username` | `TEXT` | Latest passport/character name |
-| `cid` | `TEXT` | Required. Half of the identity key. Never overwritten |
-| `last_status` | `TEXT` | Latest event status. Nullable until the player's first event |
-| `created_at` | `TIMESTAMPTZ` | Default `NOW()` |
-| `updated_at` | `TIMESTAMPTZ` | Default `NOW()`. Doubles as "last seen" |
+| Column            | Type              | Rule                                                                        |
+| ----------------- | ----------------- | --------------------------------------------------------------------------- |
+| `id`              | `BIGINT IDENTITY` | Primary key                                                                 |
+| `license_id`      | `TEXT`            | Required. Mutable: follows the latest event                                 |
+| `discord_user_id` | `TEXT`            | The only matching key besides `license_id`                                  |
+| `fivem_id`        | `TEXT`            | Operator reference, never matched on                                        |
+| `steamhex`        | `TEXT`            | Required, `NOT NULL`. The other half of the identity key. Never overwritten |
+| `player_name`     | `TEXT`            | Latest FiveM display name                                                   |
+| `username`        | `TEXT`            | Latest passport/character name                                              |
+| `cid`             | `TEXT`            | Required. Half of the identity key. Never overwritten                       |
+| `last_status`     | `TEXT`            | Latest event status. Nullable until the player's first event                |
+| `created_at`      | `TIMESTAMPTZ`     | Default `NOW()`                                                             |
+| `updated_at`      | `TIMESTAMPTZ`     | Default `NOW()`. Doubles as "last seen"                                     |
 
 - **`UNIQUE (cid, steamhex)` is the identity key: one row per character per Steam account.** Neither `discord_user_id` nor `license_id` is stable enough to key on - one person legitimately holds several rows under one Discord id, and a license changes on reinstall - so both are mutable data that follow the latest event. `steamhex` is `NOT NULL` precisely because it is half the key: left nullable, two rows with a NULL would not collide and duplicates would accumulate silently.
 - **No link to `members` is stored at all.** `server_members` is standalone: it records who the game server saw, registered or not. The matched member is derived from `discord_user_id` at the point of use:
@@ -96,7 +96,8 @@ One row per stable player identity.
 JOIN members m ON m.user_id = server_members.discord_user_id
 ```
 
-  Storing it as a column meant a cached answer that rotted once the foreign key was gone, and needed a sweep to refill. Deriving it is always current, costs one join on an indexed column, and retired both the sweep and the operator unlink path.
+Storing it as a column meant a cached answer that rotted once the foreign key was gone, and needed a sweep to refill. Deriving it is always current, costs one join on an indexed column, and retired both the sweep and the operator unlink path.
+
 - A license arriving that differs from the one on file for the same `(cid, steamhex)` is stored and flagged as an identity mismatch. Legitimate after a reinstall, worth a look otherwise.
 - Session correlation follows from this: `findOpenSession` keys on `server_member_id`, so a visit belongs to a character rather than an account. Two characters on one account get separate visits.
 - No unique index on `discord_user_id`, `fivem_id`, or `steamhex`. **One member legitimately owns many rows** - several characters, and several licenses over time if they use more than one Steam or Rockstar account. Any per-member aggregation must sum across those rows.
@@ -107,14 +108,14 @@ JOIN members m ON m.user_id = server_members.discord_user_id
 
 One row per event, append-only. Nothing is ever updated.
 
-| Column | Type | Rule |
-|---|---|---|
-| `id` | `BIGINT IDENTITY` | Primary key, and the ordering tiebreaker |
-| `server_member_id` | `BIGINT` | Required foreign key to `server_members.id` |
-| `session_id` | `UUID` | Derived. Groups one visit |
-| `status` | `TEXT` | `connecting`, `connected`, or `disconnected` |
-| `occurred_at` | `TIMESTAMPTZ` | From `event.timestamp` |
-| `payload` | `JSONB` | The exact request body. Also the idempotency key |
+| Column             | Type              | Rule                                             |
+| ------------------ | ----------------- | ------------------------------------------------ |
+| `id`               | `BIGINT IDENTITY` | Primary key, and the ordering tiebreaker         |
+| `server_member_id` | `BIGINT`          | Required foreign key to `server_members.id`      |
+| `session_id`       | `UUID`            | Derived. Groups one visit                        |
+| `status`           | `TEXT`            | `connecting`, `connected`, or `disconnected`     |
+| `occurred_at`      | `TIMESTAMPTZ`     | From `event.timestamp`                           |
+| `payload`          | `JSONB`           | The exact request body. Also the idempotency key |
 
 - `UNIQUE (payload)` provides idempotency. This is the only thing stopping a retry from inserting a second row.
 - `payload` is nullable: rows written before `000019` have no body to backfill, and NULLs do not collide in a unique index. Every new row carries it.
@@ -314,18 +315,18 @@ Generated per request from `crypto/rand`, set on `X-SOT-Request-Id` for **every*
 
 ### Error mapping
 
-| Condition | HTTP | `error.code` |
-|---|---|---|
-| Unreadable body, not one JSON object, or unknown field | 400 | `INVALID_JSON` |
-| Version header missing or not served | 400 | `UNSUPPORTED_CONTRACT_VERSION` |
-| Secret missing or wrong | 401 | `INVALID_SECRET` |
-| `event.timestamp` outside the window | 401 | `EXPIRED_TIMESTAMP` |
-| Body over 16 KiB | 413 | `PAYLOAD_TOO_LARGE` |
-| Wrong content type | 415 | `UNSUPPORTED_MEDIA_TYPE` |
-| Field validation failure | 422 | `INVALID_EVENT` |
-| Rate limit exceeded | 429 | `RATE_LIMITED` |
-| Database or internal failure | 500 | `INTERNAL_ERROR` |
-| Store or authenticator not wired | 503 | `SERVER_LOGS_UNAVAILABLE` |
+| Condition                                              | HTTP | `error.code`                   |
+| ------------------------------------------------------ | ---- | ------------------------------ |
+| Unreadable body, not one JSON object, or unknown field | 400  | `INVALID_JSON`                 |
+| Version header missing or not served                   | 400  | `UNSUPPORTED_CONTRACT_VERSION` |
+| Secret missing or wrong                                | 401  | `INVALID_SECRET`               |
+| `event.timestamp` outside the window                   | 401  | `EXPIRED_TIMESTAMP`            |
+| Body over 16 KiB                                       | 413  | `PAYLOAD_TOO_LARGE`            |
+| Wrong content type                                     | 415  | `UNSUPPORTED_MEDIA_TYPE`       |
+| Field validation failure                               | 422  | `INVALID_EVENT`                |
+| Rate limit exceeded                                    | 429  | `RATE_LIMITED`                 |
+| Database or internal failure                           | 500  | `INTERNAL_ERROR`               |
+| Store or authenticator not wired                       | 503  | `SERVER_LOGS_UNAVAILABLE`      |
 
 `error.message` must never contain the secret, a full license identifier, or raw body content. A test asserts a 500 leaks no connection string.
 

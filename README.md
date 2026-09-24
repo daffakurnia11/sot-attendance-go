@@ -111,8 +111,6 @@ Events the FiveM server reports over the webhook are announced to `DISCORD_SERVE
 
 A pending disconnect is delayed for at least 15 seconds (or two poll intervals when longer). If Discord replaces the `FiveM` activity with the server activity during that window, the pending disconnect is cancelled, preventing a false disconnect between `Connecting..` and `Connected`.
 
-
-
 `DISCORD_COMMAND_PREFIX` controls message commands.
 
 The bot also registers guild-scoped `/craft`, `/check`, `/recap`, `/money`, and `/stash` application commands at gateway startup. All but `/stash` mirror a prefix-command equivalent; `/stash` has none on purpose, for the reason below.
