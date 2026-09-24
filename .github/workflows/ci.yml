@@ -15,8 +15,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Runs on pushes to main too, not only pull requests: build-app needs it, so a
+  # push straight to main cannot reach production without passing these checks.
+  # The job id is kept so existing required status checks still match.
   pull-request:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -83,7 +85,7 @@ jobs:
 
   build-app:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: migrations
+    needs: [pull-request, migrations]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
