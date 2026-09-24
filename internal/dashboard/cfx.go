@@ -3,17 +3,13 @@ package dashboard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 )
-
-// cfxServerEndpoint is the public Cfx.re server directory. It is reached over
-// the internet rather than by connecting to the game server directly, so the
-// host running this only needs outbound HTTPS.
-const cfxServerEndpoint = "https://frontend.cfx-services.net/api/servers/single/"
 
 type CFXPlayer struct {
 	ID   int    `json:"id"`
@@ -27,12 +23,29 @@ type CFXClient struct {
 	playerID string
 }
 
-// NewCFXClient reads the roster from the Cfx.re directory by server code, the
-// short identifier in a server's join link.
-func NewCFXClient(client *http.Client, cfxServerID, playerID string) *CFXClient {
+// ParseCFXEndpoint validates FIVEM_SERVER_CFX_URL: the full Cfx.re directory
+// URL for one server, such as
+// https://frontend.cfx-services.net/api/servers/single/kr7k7d. The directory is
+// reached over the internet rather than by connecting to the game server
+// directly, so the host running this only needs outbound HTTPS.
+func ParseCFXEndpoint(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("FIVEM_SERVER_CFX_URL is required")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+		return "", errors.New("FIVEM_SERVER_CFX_URL must be an absolute http(s) URL such as https://frontend.cfx-services.net/api/servers/single/kr7k7d")
+	}
+	return raw, nil
+}
+
+// NewCFXClient reads the roster from the Cfx.re directory endpoint validated
+// by ParseCFXEndpoint.
+func NewCFXClient(client *http.Client, endpoint, playerID string) *CFXClient {
 	return &CFXClient{
 		client:   client,
-		endpoint: cfxServerEndpoint + url.PathEscape(cfxServerID),
+		endpoint: endpoint,
 		playerID: strings.ToLower(playerID),
 	}
 }

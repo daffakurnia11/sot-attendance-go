@@ -175,7 +175,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		cfxPollInterval:      cfg.CFXPollInterval,
 		statusPollInterval:   cfg.StatusPollInterval,
 		attendance:           attendance,
-		cfx:                  dashboard.NewCFXClient(&http.Client{Timeout: 5 * time.Second}, cfg.CFXServerID, cfg.CFXPlayerID),
+		cfx:                  dashboard.NewCFXClient(&http.Client{Timeout: 5 * time.Second}, cfg.CFXEndpoint, cfg.CFXPlayerID),
 		members:              members,
 		settings:             settingsRepository,
 		crafting:             craftingRepository,

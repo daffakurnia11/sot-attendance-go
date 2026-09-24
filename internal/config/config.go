@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 )
 
 type Config struct {
@@ -18,7 +20,7 @@ type Config struct {
 	DiscordAdminRoleIDs  []string
 	ServerName           string
 	PollInterval         time.Duration
-	CFXServerID          string
+	CFXEndpoint          string
 	CFXPlayerID          string
 	CFXPollInterval      time.Duration
 	StatusPollInterval   time.Duration
@@ -80,7 +82,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return withStatusPolling(config, os.Getenv("FIVEM_SERVER_CFX_ID"), os.Getenv("FIVEM_PLAYER_ID"), os.Getenv("FIVEM_SERVER_CFX_POLL_INTERVAL"), os.Getenv("DISCORD_POLL_STATUS"))
+	return withStatusPolling(config, os.Getenv("FIVEM_SERVER_CFX_URL"), os.Getenv("FIVEM_PLAYER_ID"), os.Getenv("FIVEM_SERVER_CFX_POLL_INTERVAL"), os.Getenv("DISCORD_POLL_STATUS"))
 }
 
 func withMoneyChannels(config Config, officeChannelID, dirtyChannelID string) (Config, error) {
@@ -133,15 +135,10 @@ func withServerLogChannel(config Config, serverLogChannelID string) (Config, err
 	return config, nil
 }
 
-func withStatusPolling(config Config, cfxServerID, cfxPlayerID, cfxPollInterval, statusPollInterval string) (Config, error) {
-	cfxServerID = strings.TrimSpace(cfxServerID)
-	if cfxServerID == "" {
-		return Config{}, errors.New("FIVEM_SERVER_CFX_ID is required")
-	}
-	for _, character := range cfxServerID {
-		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z')) {
-			return Config{}, errors.New("FIVEM_SERVER_CFX_ID must contain letters and digits only")
-		}
+func withStatusPolling(config Config, cfxEndpoint, cfxPlayerID, cfxPollInterval, statusPollInterval string) (Config, error) {
+	cfxEndpoint, err := dashboard.ParseCFXEndpoint(cfxEndpoint)
+	if err != nil {
+		return Config{}, err
 	}
 	cfxPlayerID = strings.TrimSpace(cfxPlayerID)
 	if cfxPlayerID == "" {
@@ -155,7 +152,7 @@ func withStatusPolling(config Config, cfxServerID, cfxPlayerID, cfxPollInterval,
 	if err != nil {
 		return Config{}, err
 	}
-	config.CFXServerID = cfxServerID
+	config.CFXEndpoint = cfxEndpoint
 	config.CFXPlayerID = cfxPlayerID
 	config.CFXPollInterval = cfxPoll
 	config.StatusPollInterval = statusPoll

@@ -8,13 +8,15 @@ import (
 	"testing"
 )
 
+const testCFXEndpoint = "https://frontend.cfx-services.net/api/servers/single/kr7k7d"
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return fn(request) }
 
 func TestCFXClientFiltersPlayerNamesCaseInsensitively(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.URL.String() != cfxServerEndpoint+"kr7k7d" {
+		if request.URL.String() != testCFXEndpoint {
 			t.Fatalf("url = %q", request.URL.String())
 		}
 		// The directory nests the roster under Data, unlike the game server's
@@ -26,7 +28,7 @@ func TestCFXClientFiltersPlayerNamesCaseInsensitively(t *testing.T) {
 		]}}`)), Header: make(http.Header)}, nil
 	})}
 
-	players, err := NewCFXClient(client, "kr7k7d", "SOT").Players(context.Background())
+	players, err := NewCFXClient(client, testCFXEndpoint, "SOT").Players(context.Background())
 	if err != nil {
 		t.Fatalf("Players() error = %v", err)
 	}
@@ -45,7 +47,7 @@ func TestCFXClientReturnsCompleteRosterWithoutPlayerFilter(t *testing.T) {
 		]}}`)), Header: make(http.Header)}, nil
 	})}
 
-	filtered, all, reported, err := NewCFXClient(client, "kr7k7d", "SOT").Rosters(context.Background())
+	filtered, all, reported, err := NewCFXClient(client, testCFXEndpoint, "SOT").Rosters(context.Background())
 	if err != nil {
 		t.Fatalf("Rosters() error = %v", err)
 	}
@@ -67,7 +69,7 @@ func TestCFXClientReturnsEmptyRosterWhenServerIsOffline(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"Data":{"players":[]}}`)), Header: make(http.Header)}, nil
 	})}
 
-	players, err := NewCFXClient(client, "kr7k7d", "SOT").Players(context.Background())
+	players, err := NewCFXClient(client, testCFXEndpoint, "SOT").Players(context.Background())
 	if err != nil {
 		t.Fatalf("Players() error = %v", err)
 	}
@@ -81,7 +83,21 @@ func TestCFXClientRejectsUpstreamFailure(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
 	})}
 
-	if _, err := NewCFXClient(client, "kr7k7d", "SOT").Players(context.Background()); err == nil {
+	if _, err := NewCFXClient(client, testCFXEndpoint, "SOT").Players(context.Background()); err == nil {
 		t.Fatal("Players() error = nil")
+	}
+}
+
+func TestParseCFXEndpoint(t *testing.T) {
+	t.Parallel()
+
+	endpoint, err := ParseCFXEndpoint(" " + testCFXEndpoint + " ")
+	if err != nil || endpoint != testCFXEndpoint {
+		t.Fatalf("ParseCFXEndpoint() = %q, %v", endpoint, err)
+	}
+	for _, bad := range []string{"", "kr7k7d", "/api/servers/single/kr7k7d", "ftp://frontend.cfx-services.net/x", "https://", "://nope"} {
+		if _, err := ParseCFXEndpoint(bad); err == nil {
+			t.Fatalf("ParseCFXEndpoint(%q) error = nil", bad)
+		}
 	}
 }
