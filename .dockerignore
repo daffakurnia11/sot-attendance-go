@@ -1,6 +1,11 @@
 .git
 .env
+.env.*
 .air
 tmp
+tmp-api
+node_modules
+.cache
+.config
 coverage.out
 README.md
