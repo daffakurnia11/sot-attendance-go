@@ -120,3 +120,16 @@ func TestCheckSlashTargetUserID(t *testing.T) {
 		t.Fatalf("selected target = %q, error = %v", got, err)
 	}
 }
+
+func TestQuietBotIgnoresInteractions(t *testing.T) {
+	t.Parallel()
+
+	// A nil session panics on first use, so returning cleanly proves the quiet
+	// bot neither responded to nor posted for the interaction.
+	quiet := &Bot{guildID: "1"}
+	quiet.onInteractionCreate(nil, &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		GuildID: "1",
+		Type:    discordgo.InteractionApplicationCommand,
+		Data:    discordgo.ApplicationCommandInteractionData{Name: "craft"},
+	}})
+}

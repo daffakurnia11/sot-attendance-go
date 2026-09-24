@@ -104,6 +104,13 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 	if event == nil || event.Interaction == nil || event.GuildID != b.guildID {
 		return
 	}
+	// Discord delivers every interaction to every session holding the token, so
+	// a local bot would race the deployed one to answer it and post the craft or
+	// stash embed a second time. A quiet bot answers nothing, as with prefix
+	// commands.
+	if !b.announces {
+		return
+	}
 	if event.Type == discordgo.InteractionMessageComponent || event.Type == discordgo.InteractionModalSubmit {
 		switch {
 		case isCraftInteraction(event.Interaction):
