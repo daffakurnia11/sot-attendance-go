@@ -95,6 +95,12 @@ type Bot struct {
 	// discordObserved is how many presences the previous poll saw, used to
 	// spot a gateway cache that is still filling. Same single goroutine.
 	discordObserved int
+	// cfxVisits turns roster reads into CFX visits; owned by the CFX poller
+	// goroutine like cfxSeen.
+	cfxVisits cfxWitness
+	// serverLogMerger folds several witnesses' reports of one change into one
+	// channel message; owned by the announcer goroutine.
+	serverLogMerger announcementMerger
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
@@ -470,14 +476,34 @@ func (b *Bot) announceServerLogs(ctx context.Context) {
 			// chase an entry to the account without the bot storing a name.
 			DiscordUserID: announcement.DiscordUserID,
 		}
-		if _, err := b.session.ChannelMessageSendEmbed(b.serverLogChannelID, presence.ServerLogEmbed(event)); err != nil {
-			// Stop at the first failure and leave the cursor behind it, so the
-			// next tick retries this event instead of skipping past it.
-			b.logger.Error("send server log", "channel_id", b.serverLogChannelID, "event_id", announcement.ID, "error", err)
-			return
+		action, rendered, messageID := b.serverLogMerger.plan(announcement, event)
+		switch action {
+		case announceSkip:
+			b.logger.Info("server log not announced: a more trusted source still has the player on the server",
+				"event_id", announcement.ID, "source", announcement.Source, "status", announcement.Status)
+		case announceEdit:
+			_, err := b.session.ChannelMessageEditEmbed(b.serverLogChannelID, messageID, presence.ServerLogEmbed(rendered))
+			if err == nil {
+				b.serverLogMerger.record(announcement, rendered, messageID)
+				break
+			}
+			// The message may have been deleted; a fresh one still reports the
+			// change.
+			b.logger.Warn("edit server log", "message_id", messageID, "event_id", announcement.ID, "error", err)
+			fallthrough
+		case announcePost:
+			message, err := b.session.ChannelMessageSendEmbed(b.serverLogChannelID, presence.ServerLogEmbed(rendered))
+			if err != nil {
+				// Stop at the first failure and leave the cursor behind it, so
+				// the next tick retries this event instead of skipping past it.
+				b.logger.Error("send server log", "channel_id", b.serverLogChannelID, "event_id", announcement.ID, "error", err)
+				return
+			}
+			b.serverLogMerger.record(announcement, rendered, message.ID)
 		}
 		b.serverLogCursor = announcement.ID
 	}
+	b.serverLogMerger.prune(time.Now())
 	b.logger.Info("server logs announced", "count", len(announcements), "cursor", b.serverLogCursor)
 }
 
@@ -507,6 +533,11 @@ func (b *Bot) refreshCFX(ctx context.Context) {
 	previous := b.cfxCount.Swap(count)
 	if previous != count {
 		b.logger.Info("CFX player count updated", "count", count)
+	}
+	// Only a list that matches the count the server reports for itself is
+	// complete enough to read absence from; see reconcileServerSessions.
+	if reported == len(roster) {
+		b.recordCFXVisits(ctx, roster)
 	}
 	b.reconcileServerSessions(ctx, roster, reported)
 }

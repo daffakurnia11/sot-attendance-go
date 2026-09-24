@@ -3,7 +3,6 @@ package serverlog
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -201,7 +200,7 @@ func (r *Repository) CloseIdleSessions(ctx context.Context, seenRecentlyNames, s
 func lowered(values []string) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
-		if trimmed := strings.ToLower(strings.TrimSpace(value)); trimmed != "" {
+		if trimmed := normalizedName(value); trimmed != "" {
 			out = append(out, trimmed)
 		}
 	}

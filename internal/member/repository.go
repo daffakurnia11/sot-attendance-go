@@ -111,12 +111,10 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 			FROM members m
 			LEFT JOIN handovers h ON h.discord_user_id = m.discord_user_id
 		), visits AS (
-			SELECT sl.server_member_id,
-				MIN(sl.occurred_at) FILTER (WHERE sl.status = 'connected') AS connected_at,
-				MAX(sl.occurred_at) FILTER (WHERE sl.status = 'disconnected') AS disconnected_at,
-				MAX(sl.occurred_at) AS last_event_at
-			FROM server_logs sl
-			GROUP BY sl.session_id, sl.server_member_id
+			-- Every witness's visits, edges already snapped to the webhook's
+			-- where it reported them; see migration 000040.
+			SELECT server_member_id, connected_at, disconnected_at, last_event_at
+			FROM server_visits
 		), bounded AS (
 			SELECT server_member_id,
 				GREATEST(connected_at, $1) AS starts,

@@ -41,6 +41,10 @@ type ServerLogEvent struct {
 	// Discord sees an activity, not a connection - so the footer says which one
 	// spoke rather than letting an inference read as a server report.
 	Source string
+	// Sources is every witness that reported this change, when more than one
+	// did and the announcer merged them into one message. It replaces Source
+	// in the footer; empty means Source alone.
+	Sources []string
 }
 
 // serverLogPhase maps a stored status onto the phase vocabulary the Discord
@@ -170,18 +174,30 @@ func serverLogFooter(event ServerLogEvent, phase playerPhase) string {
 	if phase == phaseDisconnected {
 		parts = append(parts, fmt.Sprintf("Playtime: %s", elapsedPlaytime(event.StartedAt, event.OccurredAt)))
 	}
-	parts = append(parts, sourceLabel(event.Source))
+	sources := event.Sources
+	if len(sources) == 0 {
+		sources = []string{event.Source}
+	}
+	labels := make([]string, 0, len(sources))
+	for _, source := range sources {
+		labels = append(labels, sourceLabel(source))
+	}
+	parts = append(parts, "Source: "+strings.Join(labels, " + "))
 	return strings.Join(parts, " • ")
 }
 
-// sourceLabel names the witness in the footer. An unset source is the webhook:
+// sourceLabel names a witness in the footer. An unset source is the webhook:
 // it was the only writer before the column existed, and every stored row
 // defaulted to it.
 func sourceLabel(source string) string {
-	if source == "discord" {
-		return "Source: Discord activity"
+	switch source {
+	case "discord":
+		return "Discord activity"
+	case "cfx":
+		return "CFX roster"
+	default:
+		return "CR Roleplay"
 	}
-	return "Source: CR Roleplay"
 }
 
 // codeBlockSafe flattens a value for use inside a fenced block. Disconnect

@@ -170,47 +170,55 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 			JOIN server_members sm ON sm.id = sl.server_member_id
 			GROUP BY sm.discord_user_id
 		), visits AS (
-			SELECT sl.server_member_id, sl.session_id,
-				MIN(sl.occurred_at) FILTER (WHERE sl.status = 'connected') AS connected_at,
-				MAX(sl.occurred_at) FILTER (WHERE sl.status = 'disconnected') AS disconnected_at,
-				MAX(sl.occurred_at) AS last_event_at,
-				-- The slot the game server assigned, from the visit's own
-				-- connected event. A connecting event carries a temporary
-				-- deferral number instead, which names nothing.
-				(ARRAY_AGG(sl.payload->'player'->>'server_id' ORDER BY sl.occurred_at)
-					FILTER (WHERE sl.status = 'connected'))[1] AS server_id
-			FROM server_logs sl
-			GROUP BY sl.server_member_id, sl.session_id
+			-- Every witness's visits, edges snapped to the webhook's where it
+			-- reported them; see migration 000040.
+			SELECT server_member_id, session_id, source, server_id,
+				connected_at, disconnected_at, first_event_at, last_event_at,
+				CASE source WHEN 'server' THEN 0 WHEN 'cfx' THEN 1 ELSE 2 END AS trust
+			FROM server_visits
+		), latest_server AS (
+			SELECT DISTINCT ON (server_member_id) server_member_id, disconnected_at
+			FROM visits
+			WHERE source = 'server'
+			ORDER BY server_member_id, last_event_at DESC
+		), live AS (
+			-- Visits still open and not aged out, including one that has only
+			-- reported connecting: deriving status from connected sessions
+			-- alone left a player on the loading screen off the page.
+			--
+			-- A discord or cfx visit that opened before the webhook's latest
+			-- disconnect is that same visit's lagging tail, not a new one, so
+			-- it cannot hold the player online after the game server said
+			-- they left. One opened after it is a visit the webhook missed.
+			SELECT v.server_member_id, v.server_id, v.connected_at, v.last_event_at, v.trust,
+				CASE WHEN v.connected_at IS NOT NULL THEN 'connected' ELSE 'connecting' END AS status
+			FROM visits v
+			LEFT JOIN latest_server ls ON ls.server_member_id = v.server_member_id
+			WHERE v.disconnected_at IS NULL
+				AND (
+					(v.connected_at IS NOT NULL AND v.last_event_at + make_interval(secs => $1::double precision) > NOW())
+					OR (v.connected_at IS NULL AND v.last_event_at + make_interval(secs => $2::double precision) > NOW())
+				)
+				AND (v.source = 'server' OR ls.disconnected_at IS NULL OR v.first_event_at > ls.disconnected_at)
 		), latest_session AS (
-			-- Every session, including one that has only reported connecting.
-			-- Deriving status from connected sessions alone meant a player
-			-- still on the loading screen had no status at all and never
-			-- reached the page.
-			SELECT DISTINCT ON (server_member_id)
-				server_member_id, server_id, connected_at, disconnected_at, last_event_at
+			-- Any witness that saw the player arrive beats one still showing
+			-- them connecting; among equals the most trusted source decides.
+			SELECT DISTINCT ON (server_member_id) server_member_id, server_id, connected_at, status
+			FROM live
+			ORDER BY server_member_id, (status = 'connected') DESC, trust, last_event_at DESC
+		), latest_any AS (
+			SELECT DISTINCT ON (server_member_id) server_member_id, server_id
 			FROM visits
 			ORDER BY server_member_id, last_event_at DESC
 		), character_status AS (
-			SELECT server_member_id, server_id,
-				CASE
-					WHEN disconnected_at IS NOT NULL THEN 'offline'
-					WHEN connected_at IS NOT NULL
-						AND last_event_at + make_interval(secs => $1::double precision) > NOW()
-					THEN 'connected'
-					WHEN connected_at IS NULL
-						AND last_event_at + make_interval(secs => $2::double precision) > NOW()
-					THEN 'connecting'
-					ELSE 'offline'
-				END AS status,
+			SELECT a.server_member_id,
+				CASE WHEN l.server_member_id IS NOT NULL THEN l.server_id ELSE a.server_id END AS server_id,
+				COALESCE(l.status, 'offline') AS status,
 				-- Playtime starts at the connected event, so an arriving
 				-- player has no start yet.
-				CASE
-					WHEN disconnected_at IS NULL
-						AND connected_at IS NOT NULL
-						AND last_event_at + make_interval(secs => $1::double precision) > NOW()
-					THEN connected_at
-				END AS started_at
-			FROM latest_session
+				CASE WHEN l.status = 'connected' THEN l.connected_at END AS started_at
+			FROM latest_any a
+			LEFT JOIN latest_session l ON l.server_member_id = a.server_member_id
 		), bounded AS (
 			SELECT server_member_id, server_id, connected_at AS starts,
 				LEAST(COALESCE(disconnected_at, last_event_at + make_interval(secs => $1::double precision)), NOW()) AS ends,
@@ -394,12 +402,9 @@ func (r *Repository) GetMemberRecords(ctx context.Context, memberID int64) (Memb
 			FROM server_logs sl
 			WHERE sl.server_member_id IN (SELECT id FROM characters)
 		), visits AS (
-			SELECT MIN(sl.occurred_at) FILTER (WHERE sl.status = 'connected') AS starts,
-				MAX(sl.occurred_at) FILTER (WHERE sl.status = 'disconnected') AS disconnected_at,
-				MAX(sl.occurred_at) AS last_event_at
-			FROM server_logs sl
-			WHERE sl.server_member_id IN (SELECT id FROM characters)
-			GROUP BY sl.session_id
+			SELECT connected_at AS starts, disconnected_at, last_event_at
+			FROM server_visits
+			WHERE server_member_id IN (SELECT id FROM characters)
 		), bounded AS (
 			SELECT starts,
 				LEAST(COALESCE(disconnected_at, last_event_at + make_interval(secs => $2::double precision)), NOW()) AS ends

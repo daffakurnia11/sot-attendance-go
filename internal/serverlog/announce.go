@@ -33,9 +33,18 @@ type Announcement struct {
 	// event of a visit.
 	StartedAt time.Time
 	// Source is which witness reported the event, SourceServer or
-	// SourceDiscord. The channel carries both, so the embed says which one it
-	// heard it from rather than presenting an inference as a server report.
+	// SourceDiscord or SourceCFX. The channel carries all three, so the embed
+	// says which one it heard it from rather than presenting an inference as a
+	// server report.
 	Source string
+	// ServerMemberID is the character, which is what lets the announcer tell
+	// that two witnesses reported the same change.
+	ServerMemberID int64
+	// TrustedOpenSince is set on a discord or cfx row when a more trusted
+	// source already had a visit open for the character at the row's time,
+	// and is when that visit began. The announcer uses it to drop a weaker
+	// witness's exit while the webhook still has the player on the server.
+	TrustedOpenSince *time.Time
 }
 
 const latestEventID = `SELECT COALESCE(MAX(id), 0) FROM server_logs`
@@ -50,7 +59,24 @@ const announcementsAfter = `
 	       sl.payload->'event'->>'reason',
 	       sm.discord_user_id,
 	       (SELECT MIN(s2.occurred_at) FROM server_logs s2 WHERE s2.session_id = sl.session_id),
-	       sl.source
+	       sl.source,
+	       sl.server_member_id,
+	       -- Trust runs server, then cfx, then discord. A visit is open at the
+	       -- row's time when it began before it and had no disconnect by then;
+	       -- the twelve hours bound it like every other open visit.
+	       CASE WHEN sl.source <> 'server' THEN (
+	           SELECT MIN(opened.first_at) FROM (
+	               SELECT MIN(o.occurred_at) AS first_at
+	               FROM server_logs o
+	               WHERE o.server_member_id = sl.server_member_id
+	                   AND o.session_id <> sl.session_id
+	                   AND (o.source = 'server' OR (sl.source = 'discord' AND o.source = 'cfx'))
+	                   AND o.occurred_at <= sl.occurred_at
+	                   AND o.occurred_at > sl.occurred_at - INTERVAL '12 hours'
+	               GROUP BY o.session_id
+	               HAVING COUNT(*) FILTER (WHERE o.status = 'disconnected') = 0
+	           ) opened
+	       ) END
 	FROM server_logs sl
 	JOIN server_members sm ON sm.id = sl.server_member_id
 	WHERE sl.id > $1
@@ -84,7 +110,7 @@ func (r *Repository) AnnouncementsAfter(ctx context.Context, afterID int64, limi
 			reason        *string
 			discordUserID *string
 		)
-		if err := rows.Scan(&a.ID, &a.PlayerName, &a.Username, &a.Status, &a.OccurredAt, &serverID, &reason, &discordUserID, &a.StartedAt, &a.Source); err != nil {
+		if err := rows.Scan(&a.ID, &a.PlayerName, &a.Username, &a.Status, &a.OccurredAt, &serverID, &reason, &discordUserID, &a.StartedAt, &a.Source, &a.ServerMemberID, &a.TrustedOpenSince); err != nil {
 			return nil, fmt.Errorf("scan server log announcement: %w", err)
 		}
 		if serverID != nil {

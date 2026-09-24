@@ -32,27 +32,46 @@ type DiscordPresence struct {
 	StartedAt time.Time
 }
 
-// discordCharacters lists the characters a Discord account has on
-// server_members, newest visit first, so a member with several characters has
-// their activity attributed to the one the game server saw most recently.
+// discordCharacters picks the character a Discord account's activity belongs
+// to. One the webhook or the CFX roster currently has on the server comes
+// first, since that is the character actually being played; otherwise the one
+// the game server saw most recently. Attributing to the newest alone credited
+// a member's hours to whichever character they last used, which is the wrong
+// one whenever they switch back.
 const discordCharacters = `
 	SELECT DISTINCT ON (sm.discord_user_id)
 		sm.discord_user_id, sm.id, sm.player_name, sm.username, sm.cid
 	FROM server_members sm
 	WHERE sm.discord_user_id = ANY($1::text[])
-	ORDER BY sm.discord_user_id, sm.updated_at DESC, sm.id DESC`
+	ORDER BY sm.discord_user_id,
+		EXISTS (
+			SELECT 1 FROM server_logs sl
+			WHERE sl.server_member_id = sm.id
+				AND sl.source IN ('server', 'cfx')
+				AND sl.occurred_at > NOW() - INTERVAL '12 hours'
+				AND NOT EXISTS (
+					SELECT 1 FROM server_logs d
+					WHERE d.session_id = sl.session_id AND d.status = 'disconnected'
+				)
+		) DESC,
+		sm.updated_at DESC, sm.id DESC`
 
-// openDiscordVisit finds the visit this source already has open for a
-// character, so a disconnect closes the session its connect opened.
+// openDiscordVisit finds the visit this source already has open for a Discord
+// account, so a disconnect closes the session its connect opened.
+//
+// Looked up by account rather than by character: the character a member's
+// activity is attributed to can change while the visit is open, and a lookup
+// by the new one found nothing, leaving the old visit open for twelve hours.
 //
 // Scoped to source = 'discord' on purpose: the webhook owns its own sessions
 // and a poll must never close one of them. When both sources see the same
 // visit, each keeps its own pair of rows and the reader decides which to trust.
 const openDiscordVisit = `
-	SELECT sl.session_id, sl.status
+	SELECT sl.session_id, sl.status, sm.id, sm.player_name, sm.username, sm.cid
 	FROM server_logs sl
+	JOIN server_members sm ON sm.id = sl.server_member_id
 	WHERE sl.source = 'discord'
-		AND sl.server_member_id = $1
+		AND sm.discord_user_id = $1
 		AND sl.status IN ('connecting', 'connected')
 		AND NOT EXISTS (
 			SELECT 1 FROM server_logs closed
@@ -133,10 +152,13 @@ func (r *Repository) RecordDiscordPresence(ctx context.Context, observed []Disco
 		}
 		var open *openVisit
 		var found openVisit
-		err := r.pool.QueryRow(ctx, openDiscordVisit, character.serverMemberID).Scan(&found.sessionID, &found.status)
+		var openCharacter discordCharacter
+		err := r.pool.QueryRow(ctx, openDiscordVisit, entry.DiscordUserID).Scan(&found.sessionID, &found.status, &openCharacter.serverMemberID, &openCharacter.playerName, &openCharacter.username, &openCharacter.cid)
 		switch {
 		case err == nil:
 			open = &found
+			// An open visit is continued on the character it opened on.
+			character = openCharacter
 		case errors.Is(err, pgx.ErrNoRows):
 		default:
 			return written, fmt.Errorf("read open Discord visit: %w", err)

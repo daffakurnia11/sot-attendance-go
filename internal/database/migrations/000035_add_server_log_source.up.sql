@@ -8,11 +8,20 @@
 ALTER TABLE server_logs
     ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'server';
 
-ALTER TABLE server_logs
-    DROP CONSTRAINT IF EXISTS server_logs_source_valid;
-
-ALTER TABLE server_logs
-    ADD CONSTRAINT server_logs_source_valid CHECK (source IN ('server', 'discord'));
+-- Added only when absent. The runner replays every migration on each boot and
+-- 000039 widens this rule to admit 'cfx'; dropping and re-adding it here
+-- unconditionally would narrow it back on every replay, and the 'cfx' rows
+-- already stored would then violate it and abort startup.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'server_logs'::regclass AND conname = 'server_logs_source_valid'
+    ) THEN
+        ALTER TABLE server_logs
+            ADD CONSTRAINT server_logs_source_valid CHECK (source IN ('server', 'discord'));
+    END IF;
+END $$;
 
 -- The poller reads the open visit per character per source on every tick.
 CREATE INDEX IF NOT EXISTS server_logs_source_member_occurred_at_idx

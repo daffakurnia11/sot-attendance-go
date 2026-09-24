@@ -125,10 +125,15 @@ const (
 // its own connecting event finds no open session and starts a new one. That
 // splits one visit into two rows instead of losing it, which is the better
 // failure of the two.
+//
+// Scoped to the webhook's own sessions. Discord and CFX write theirs into the
+// same table, and a webhook event that joined one - a disconnect closing the
+// Discord visit, say - left the webhook's real visit open with no exit.
 const findOpenSession = `
 	SELECT sl.session_id
 	FROM server_logs sl
 	WHERE sl.server_member_id = $1
+		AND sl.source = 'server'
 		AND NOT EXISTS (
 			SELECT 1 FROM server_logs d
 			WHERE d.session_id = sl.session_id AND d.status = 'disconnected'

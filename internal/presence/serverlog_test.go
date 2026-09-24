@@ -173,6 +173,18 @@ func TestServerLogEmbedFooterPlaytime(t *testing.T) {
 			want:  "03 September 2026 at 09:00 • Source: Discord activity",
 		},
 		{
+			name:  "the CFX roster is named as the witness",
+			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "connected", OccurredAt: start, Source: "cfx"},
+			want:  "03 September 2026 at 09:00 • Source: CFX roster",
+		},
+		{
+			// One message for a change several witnesses reported names them
+			// all, most trusted first as the announcer ordered them.
+			name:  "merged witnesses are all named",
+			event: ServerLogEvent{PlayerName: "Prince Lim", Status: "connected", OccurredAt: start, Source: "server", Sources: []string{"server", "cfx", "discord"}},
+			want:  "03 September 2026 at 09:00 • Source: CR Roleplay + CFX roster + Discord activity",
+		},
+		{
 			// Every row stored before the source column existed came from the
 			// webhook, and the column defaulted them to it.
 			name:  "an unset source reads as the webhook",
