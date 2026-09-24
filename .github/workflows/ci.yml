@@ -74,14 +74,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test ./internal/database/ -run TestMigrate -v
-      # Session resolution is a property of the stored rows, so its tests need
-      # a database and skip without one. This is the only job that has one.
-      - run: go test ./internal/serverlog/ -run TestSession -v
-      # Attendance playtime is arithmetic over stored rows, and needs one too.
-      - run: go test ./internal/member/ -run TestPlaytimeRecap -v
-      # Member records split two feeds at a per-member handover; same reason.
-      - run: go test ./internal/dashboard/ -run TestGetMemberRecords -v
+      # Every test that needs a database skips without one, and this is the
+      # only job that has one, so it runs those packages whole rather than a
+      # list of test names that silently missed every test added since.
+      - run: go test ./internal/database/ ./internal/serverlog/ ./internal/member/ ./internal/dashboard/ -v
 
   build-app:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
