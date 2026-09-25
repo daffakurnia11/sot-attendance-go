@@ -174,3 +174,56 @@ func TestAnnouncementsCarryTrustedOpenSince(t *testing.T) {
 		t.Errorf("Discord exit after the webhook's: trusted open since = %v, want none", since)
 	}
 }
+
+// A lost exit is dated to the last time any source saw the player, not to the
+// sweep. The first sweep ever run dated exits a day late, and those visits
+// then counted a whole extra day of playtime.
+func TestCloseIdleSessionsDatesTheExitAtTheLastSighting(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	connected := now.Add(-3 * time.Hour)
+	cfxLastSeen := now.Add(-2 * time.Hour)
+	discordLastSeen := now.Add(-100 * time.Minute)
+
+	for _, test := range []struct {
+		name     string
+		lastSeen func(username string) LastSightings
+		want     time.Time
+	}{
+		{
+			name: "the later of the CFX and Discord sightings",
+			lastSeen: func(username string) LastSightings {
+				return LastSightings{
+					Names:   map[string]time.Time{username: cfxLastSeen},
+					Discord: map[string]time.Time{kenjiDiscord: discordLastSeen},
+				}
+			},
+			want: discordLastSeen,
+		},
+		{
+			name:     "no sighting falls back to the last webhook event",
+			lastSeen: func(string) LastSightings { return LastSightings{} },
+			want:     connected,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pool := sessionTestPool(t)
+			storeEvent(t, pool, StatusConnected, connected, 400)
+			var username string
+			if err := pool.QueryRow(ctx, "SELECT username FROM server_members LIMIT 1").Scan(&username); err != nil {
+				t.Fatal(err)
+			}
+			closed, err := NewRepository(pool).CloseIdleSessions(ctx, []string{"someone else"}, everSeen(t, pool), nil, now, ReconcileGrace, test.lastSeen(username))
+			if err != nil || closed != 1 {
+				t.Fatalf("CloseIdleSessions() = %d, %v; want 1", closed, err)
+			}
+			var exit time.Time
+			if err := pool.QueryRow(ctx, `SELECT occurred_at FROM server_logs WHERE status = 'disconnected'`).Scan(&exit); err != nil {
+				t.Fatal(err)
+			}
+			if !exit.Equal(test.want) {
+				t.Errorf("exit dated %s, want %s", exit, test.want)
+			}
+		})
+	}
+}

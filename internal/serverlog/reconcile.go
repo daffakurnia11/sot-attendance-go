@@ -73,13 +73,25 @@ const closeAbsentSessions = `
 			-- their in-game name never matched - cannot be absent from a list
 			-- they were never on, so their visit is left to the twelve hour cap.
 			AND LOWER(BTRIM(username)) = ANY($5::text[])
+	), dated AS (
+		-- The exit is dated to the last time anyone saw the player, not to
+		-- this sweep. Dating it to the sweep credited every lost exit with
+		-- the idle wait on top, and the first sweep ever run closed visits
+		-- left open for a day at the moment it ran, crediting them all of it.
+		SELECT absent.*,
+			LEAST($2::timestamptz, GREATEST(absent.last_event_at, cfx.at, discord.at)) AS closed_at
+		FROM absent
+		LEFT JOIN unnest($6::text[], $7::timestamptz[]) AS cfx(name, at)
+			ON cfx.name = LOWER(BTRIM(absent.username))
+		LEFT JOIN unnest($8::text[], $9::timestamptz[]) AS discord(id, at)
+			ON discord.id = absent.discord_user_id
 	)
 	INSERT INTO server_logs (payload, server_member_id, session_id, status, occurred_at, source)
 	SELECT jsonb_build_object(
 			'event', jsonb_build_object(
 				'type', 'disconnected',
 				'reason', 'Reconciled: absent from the CFX roster',
-				'timestamp', to_char($2::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+				'timestamp', to_char(closed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
 			),
 			'player', jsonb_build_object(
 				'name', player_name,
@@ -88,8 +100,8 @@ const closeAbsentSessions = `
 				'session_id', session_id::text
 			)
 		),
-		server_member_id, session_id, 'disconnected', $2, 'server'
-	FROM absent
+		server_member_id, session_id, 'disconnected', closed_at, 'server'
+	FROM dated
 	ON CONFLICT (payload) DO NOTHING
 	RETURNING session_id`
 
@@ -133,7 +145,26 @@ const countOpenVisits = `
 // at once - the same reasoning that stops an empty admin list demoting the
 // roster. Missing evidence never closes a visit; only a sighting elsewhere,
 // long enough ago, does.
-func (r *Repository) CloseIdleSessions(ctx context.Context, seenRecentlyNames, seenEverNames, playingDiscordUserIDs []string, observedAt time.Time, idle time.Duration) (int64, error) {
+// LastSightings is when each source last placed a player on the server: CFX
+// by roster name (trimmed, lowercased), Discord by user id. The sweep dates the
+// exit it writes to the latest of these, so a lost exit ends when the player
+// was last seen rather than when the sweep noticed.
+type LastSightings struct {
+	Names   map[string]time.Time
+	Discord map[string]time.Time
+}
+
+func (s LastSightings) arrays() (names []string, nameTimes []time.Time, ids []string, idTimes []time.Time) {
+	for name, at := range s.Names {
+		names, nameTimes = append(names, normalizedName(name)), append(nameTimes, at)
+	}
+	for id, at := range s.Discord {
+		ids, idTimes = append(ids, id), append(idTimes, at)
+	}
+	return names, nameTimes, ids, idTimes
+}
+
+func (r *Repository) CloseIdleSessions(ctx context.Context, seenRecentlyNames, seenEverNames, playingDiscordUserIDs []string, observedAt time.Time, idle time.Duration, lastSeen LastSightings) (int64, error) {
 	// No player has ever been seen, so there is no baseline to be absent from
 	// and nothing can be judged idle. A freshly started process sits here until
 	// its first healthy roster read.
@@ -168,7 +199,8 @@ func (r *Repository) CloseIdleSessions(ctx context.Context, seenRecentlyNames, s
 		return 0, fmt.Errorf("count open server sessions: %w", err)
 	}
 
-	rows, err := transaction.Query(ctx, closeAbsentSessions, normalized, observedAt, idle.Seconds(), playing, everSeen)
+	names, nameTimes, ids, idTimes := lastSeen.arrays()
+	rows, err := transaction.Query(ctx, closeAbsentSessions, normalized, observedAt, idle.Seconds(), playing, everSeen, names, nameTimes, ids, idTimes)
 	if err != nil {
 		return 0, fmt.Errorf("close absent server sessions: %w", err)
 	}

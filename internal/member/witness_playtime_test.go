@@ -138,3 +138,83 @@ func TestPlaytimeRecapAcrossWitnesses(t *testing.T) {
 		})
 	}
 }
+
+// reconciledExit stores the exit the session sweep writes when the webhook's
+// never arrived.
+func reconciledExit(t *testing.T, pool *pgxpool.Pool, serverMemberID int64, session string, at time.Time) {
+	t.Helper()
+	payload := fmt.Sprintf(`{"session":%q,"event":{"type":"disconnected","reason":"Reconciled: absent from the CFX roster","timestamp":%q}}`, session, at.Format(time.RFC3339Nano))
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO server_logs (payload, server_member_id, session_id, status, occurred_at)
+		VALUES ($1::jsonb, $2, $3, 'disconnected', $4)`, payload, serverMemberID, session, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Replays two rows from the 2026-09 export. The sweep's first run, on the
+// morning of 8 September, closed visits whose exits had been lost the day
+// before and dated those exits to itself, so !jo's visit from 6 September
+// read as covering the whole of the 7 September window. A reconciled exit
+// now counts no later than twelve hours past the visit's last real event.
+func TestPlaytimeRecapCapsReconciledExits(t *testing.T) {
+	pool := playtimeTestPool(t)
+	ctx := context.Background()
+	jakarta := time.FixedZone("WIB", 7*60*60)
+	at := func(day, hour, minute, second int) time.Time {
+		return time.Date(2026, 9, day, hour, minute, second, 0, jakarta)
+	}
+	window := func(day int) (time.Time, time.Time) { return at(day, 21, 0, 0), at(day+1, 2, 0, 0) }
+	recap := func(day int) time.Duration {
+		t.Helper()
+		start, end := window(day)
+		recaps, err := NewRepository(pool).PlaytimeRecap(ctx, start, end)
+		if err != nil {
+			t.Fatalf("PlaytimeRecap() error = %v", err)
+		}
+		if len(recaps) == 0 {
+			return 0
+		}
+		return recaps[0].Playtime
+	}
+
+	t.Run("!jo on 7 September", func(t *testing.T) {
+		serverMemberID := witnessCharacter(t, pool)
+		stale := "00000000-0000-4000-8000-00000000f001"
+		witnessVisitSession(t, pool, serverMemberID, stale, at(6, 19, 29, 51))
+		reconciledExit(t, pool, serverMemberID, stale, at(8, 9, 11, 15))
+		witnessVisit(t, pool, serverMemberID, "server", at(8, 0, 17, 24), at(8, 4, 59, 3))
+
+		// The stored figure for that night, and what the second visit alone
+		// gives inside the window.
+		if got, want := recap(7), time.Hour+42*time.Minute+36*time.Second; got != want {
+			t.Errorf("7 September = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("KANG PRI on 6 and 7 September", func(t *testing.T) {
+		serverMemberID := witnessCharacter(t, pool)
+		stale := "00000000-0000-4000-8000-00000000f002"
+		witnessVisitSession(t, pool, serverMemberID, stale, at(6, 23, 52, 25))
+		reconciledExit(t, pool, serverMemberID, stale, at(8, 8, 17, 40))
+
+		// The lost exit still counts to the end of the night it began in;
+		// it no longer reaches the next night.
+		if got, want := recap(6), 2*time.Hour+7*time.Minute+35*time.Second; got != want {
+			t.Errorf("6 September = %s, want %s", got, want)
+		}
+		if got := recap(7); got != 0 {
+			t.Errorf("7 September = %s, want 0: the visit's last real event was a day earlier", got)
+		}
+	})
+}
+
+// witnessVisitSession stores a webhook connected row in a named session.
+func witnessVisitSession(t *testing.T, pool *pgxpool.Pool, serverMemberID int64, session string, connectedAt time.Time) {
+	t.Helper()
+	payload := fmt.Sprintf(`{"session":%q,"event":{"type":"connected","timestamp":%q}}`, session, connectedAt.Format(time.RFC3339Nano))
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO server_logs (payload, server_member_id, session_id, status, occurred_at)
+		VALUES ($1::jsonb, $2, $3, 'connected', $4)`, payload, serverMemberID, session, connectedAt); err != nil {
+		t.Fatal(err)
+	}
+}

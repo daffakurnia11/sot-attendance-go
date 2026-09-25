@@ -625,7 +625,8 @@ func (b *Bot) reconcileServerSessions(ctx context.Context, roster []dashboard.CF
 
 	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	closed, err := b.serverLogs.CloseIdleSessions(requestContext, recentNames, everNames, recentDiscord, now, serverVisitIdleTimeout)
+	closed, err := b.serverLogs.CloseIdleSessions(requestContext, recentNames, everNames, recentDiscord, now, serverVisitIdleTimeout,
+		serverlog.LastSightings{Names: b.cfxSeen, Discord: b.discordSeen})
 	if err != nil {
 		b.logger.Error("reconcile open server sessions", "error", err)
 		return

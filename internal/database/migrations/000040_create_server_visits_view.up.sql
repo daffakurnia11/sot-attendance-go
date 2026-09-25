@@ -12,22 +12,39 @@
 -- webhook's time; the same for disconnects. Where the webhook said nothing, the
 -- weaker witness stands on its own, which is the case it exists for.
 --
+-- An exit the session sweep supplied (reason 'Reconciled: ...') is an
+-- estimate, not a report. The sweep's first run dated such exits a day or
+-- more after the player was last seen, so those visits counted a whole day.
+-- A reconciled exit therefore ends the visit no later than twelve hours past
+-- its last real event: the same cap every reader already puts on a visit whose
+-- exit never arrived, so a guessed exit can never credit more than none.
+-- The stored rows are untouched; only how they are read changes.
+--
 -- Recreated on every boot: the runner replays migrations and a view has no
 -- data to lose. DROP first because CREATE OR REPLACE cannot change columns.
 DROP VIEW IF EXISTS server_visits;
 
 CREATE VIEW server_visits AS
-WITH raw AS (
+WITH tagged AS (
+    SELECT sl.*,
+        sl.status = 'disconnected' AND sl.payload->'event'->>'reason' LIKE 'Reconciled:%' AS reconciled
+    FROM server_logs sl
+), raw AS (
     SELECT sl.session_id, sl.server_member_id, sl.source,
         MIN(sl.occurred_at) FILTER (WHERE sl.status = 'connected') AS connected_at,
-        MAX(sl.occurred_at) FILTER (WHERE sl.status = 'disconnected') AS disconnected_at,
+        CASE
+            WHEN BOOL_OR(sl.reconciled) THEN LEAST(
+                MAX(sl.occurred_at) FILTER (WHERE sl.status = 'disconnected'),
+                MAX(sl.occurred_at) FILTER (WHERE NOT sl.reconciled) + INTERVAL '12 hours')
+            ELSE MAX(sl.occurred_at) FILTER (WHERE sl.status = 'disconnected')
+        END AS disconnected_at,
         MIN(sl.occurred_at) AS first_event_at,
         MAX(sl.occurred_at) AS last_event_at,
         -- The slot from the visit's own connected event. A connecting event
         -- carries a temporary deferral number instead, which names nothing.
         (ARRAY_AGG(sl.payload->'player'->>'server_id' ORDER BY sl.occurred_at)
             FILTER (WHERE sl.status = 'connected'))[1] AS server_id
-    FROM server_logs sl
+    FROM tagged sl
     GROUP BY sl.session_id, sl.server_member_id, sl.source
 ), start_snap AS (
     SELECT DISTINCT ON (w.session_id) w.session_id, s.connected_at
