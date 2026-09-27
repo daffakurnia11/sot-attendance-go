@@ -11,8 +11,6 @@ import (
 	stockdomain "github.com/daffakurniawan/sot-discord-bot/internal/stock"
 )
 
-var errStashAdminRequired = errors.New("stash command requires administrator permission")
-
 // stashChannelError is raised when a stash command runs outside the two
 // configured safebox channels. The channel is the only thing naming the
 // safebox, so there is nothing to fall back on.
@@ -92,12 +90,11 @@ func (b *Bot) stashResponse(ctx context.Context, userID, channelID, idempotencyK
 		}
 		seen[line.ItemKey] = struct{}{}
 	}
+	// Any registered member may move stock; the channel and the audit row
+	// carry who did it. Only /money stays admin-only.
 	currentMember, err := b.members.FindByDiscordUserID(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("find stash command member: %w", err)
-	}
-	if !currentMember.IsAdmin {
-		return nil, errStashAdminRequired
 	}
 	if err := b.stock.Transact(ctx, stockdomain.Transaction{
 		Safebox:        safebox,
@@ -152,8 +149,6 @@ func stashUserError(err error) (string, bool) {
 		return "That stash builder is no longer active. Run `/stash deposit` or `/stash withdraw` to start again.", true
 	case errors.As(err, &itemError):
 		return "`" + itemError.itemKey + "` is no longer in this stash. Run `/stash balance`, then start again.", true
-	case errors.Is(err, errStashAdminRequired):
-		return "Administrator permission is required to change stash stock.", true
 	case errors.Is(err, stockdomain.ErrInsufficientStock):
 		return "Insufficient stock for that withdrawal.", true
 	case errors.Is(err, stockdomain.ErrQuantityOverflow):

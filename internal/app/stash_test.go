@@ -49,7 +49,6 @@ func TestStashUserErrorNamesTheFix(t *testing.T) {
 		{name: "wrong channel", err: stashChannelError{channels: testStashChannels()}, contains: "<#3>"},
 		{name: "expired draft", err: errStashDraftExpired, contains: "/stash deposit"},
 		{name: "vanished item", err: stashItemError{itemKey: "coper"}, contains: "`coper`"},
-		{name: "not admin", err: errStashAdminRequired, contains: "Administrator"},
 		{name: "insufficient", err: stockdomain.ErrInsufficientStock, contains: "Insufficient stock"},
 		{name: "overflow", err: stockdomain.ErrQuantityOverflow, contains: "supported quantity"},
 		{name: "idempotency", err: stockdomain.ErrIdempotencyConflict, contains: "already recorded"},
@@ -77,7 +76,7 @@ func TestStashItemErrorUnwrapsToItemNotFound(t *testing.T) {
 
 func TestSlashUserErrorCoversStash(t *testing.T) {
 	t.Parallel()
-	if got := slashUserError(errStashAdminRequired); !strings.Contains(got, "stash stock") {
+	if got := slashUserError(stockdomain.ErrInsufficientStock); !strings.Contains(got, "Insufficient stock") {
 		t.Fatalf("slashUserError() = %q", got)
 	}
 }
