@@ -75,3 +75,24 @@ func TestCalculateRejectsInvalidSettings(t *testing.T) {
 		t.Fatal("expected invalid settings error")
 	}
 }
+
+func TestCalculateExcludesGuestsFromPayoutPool(t *testing.T) {
+	report, err := Calculate(attendance.MonthlyReport{Members: []attendance.MemberRecord{
+		{MemberID: 1, DiscordUserID: "111", TotalAttended: 26},
+		{MemberID: 2, DiscordUserID: "222", TotalAttended: 26},
+		{MemberID: 3, DiscordUserID: "left-guild", TotalAttended: 26},
+	}}, settings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "20", AttendanceMaximum: "26", StartDateContract: "28"}, map[string]GuildMemberRoles{
+		"111": {Roles: []string{"SOT CR"}}, "222": {Roles: []string{"SOT CR Guest"}, Excluded: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.TotalPlayers != 1 || report.EligiblePlayers != 1 || report.TotalPayout != "8000000" || report.Players[0].Payout != "8000000" {
+		t.Fatalf("payout pool = %+v", report)
+	}
+	for _, player := range report.Players[1:] {
+		if !player.Excluded || player.Eligible || player.Payout != "0" {
+			t.Fatalf("excluded player = %+v", player)
+		}
+	}
+}

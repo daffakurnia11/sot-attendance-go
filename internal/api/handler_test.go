@@ -17,6 +17,7 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
 	moneydomain "github.com/daffakurniawan/sot-discord-bot/internal/money"
+	"github.com/daffakurniawan/sot-discord-bot/internal/payslip"
 	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
 	"github.com/daffakurniawan/sot-discord-bot/internal/stock"
 )
@@ -451,7 +452,7 @@ func TestMonthlyPayslipsRequiresAuthAndCalculatesEveryMember(t *testing.T) {
 		{MemberID: 2, CharacterName: "Qualified", TotalAttended: 24},
 	}}}
 	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
-	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: &stubDashboard{}, Attendance: reader, Settings: store, Logger: testLogger()})
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: &stubDashboard{}, Attendance: reader, Settings: store, GuildRoles: stubGuildRoles{roles: map[string]payslip.GuildMemberRoles{"": {Roles: []string{"SOT CR"}}}}, Logger: testLogger()})
 
 	unauthorized := request(handler, http.MethodGet, "/api/v1/payslips?month=2026-08", "")
 	if unauthorized.Code != http.StatusUnauthorized {
@@ -593,5 +594,25 @@ func TestSelectedMemberRecordsRequiresAuthAndRosterIdentity(t *testing.T) {
 	dashboards.err = errors.New("database unavailable")
 	if got := request(handler, http.MethodGet, path, "Bearer app-token"); got.Code != http.StatusInternalServerError {
 		t.Fatalf("upstream error: %d", got.Code)
+	}
+}
+
+type stubGuildRoles struct {
+	roles map[string]payslip.GuildMemberRoles
+	err   error
+}
+
+func (s stubGuildRoles) Load(context.Context) (map[string]payslip.GuildMemberRoles, error) {
+	return s.roles, s.err
+}
+
+func TestPayslipsDoNotCalculateWhenGuildRolesUnavailable(t *testing.T) {
+	store := &stubSettings{values: dbsettings.Values{StartAttendance: "21:00", EndAttendance: "01:00", PlaytimeThreshold: "90m", PlayerThreshold: "15", PaymentContract: "8000000", AttendanceMinimum: "24", AttendanceMaximum: "30", StartDateContract: "28"}}
+	for _, roles := range []guildRoleReader{nil, stubGuildRoles{err: errors.New("Discord unavailable")}} {
+		handler := NewHandler(Deps{Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Members: &stubMembers{found: member.Member{ID: 7, IsAdmin: true}}, Attendance: &stubAttendance{}, Settings: store, GuildRoles: roles, Logger: testLogger()})
+		got := request(handler, http.MethodGet, "/api/v1/payslips", "Bearer app-token")
+		if got.Code != http.StatusServiceUnavailable || !strings.Contains(got.Body.String(), "GUILD_ROLES_UNAVAILABLE") {
+			t.Fatalf("response = %d %s", got.Code, got.Body.String())
+		}
 	}
 }

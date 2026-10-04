@@ -9,13 +9,15 @@ import (
 )
 
 type Player struct {
-	MemberID      int64  `json:"member_id"`
-	Username      string `json:"username"`
-	DisplayName   string `json:"display_name"`
-	CharacterName string `json:"character_name"`
-	AttendedDays  int    `json:"attended_days"`
-	Eligible      bool   `json:"eligible"`
-	Payout        string `json:"payout"`
+	MemberID      int64    `json:"member_id"`
+	Username      string   `json:"username"`
+	DisplayName   string   `json:"display_name"`
+	CharacterName string   `json:"character_name"`
+	AttendedDays  int      `json:"attended_days"`
+	Eligible      bool     `json:"eligible"`
+	Payout        string   `json:"payout"`
+	Roles         []string `json:"roles"`
+	Excluded      bool     `json:"excluded"`
 }
 
 type Report struct {
@@ -31,7 +33,7 @@ type Report struct {
 	Players           []Player `json:"players"`
 }
 
-func Calculate(attendanceReport attendance.MonthlyReport, values settings.Values) (Report, error) {
+func Calculate(attendanceReport attendance.MonthlyReport, values settings.Values, guildRoles ...map[string]GuildMemberRoles) (Report, error) {
 	validated, err := settings.Validate(values)
 	if err != nil {
 		return Report{}, fmt.Errorf("validate payslip settings: %w", err)
@@ -47,7 +49,7 @@ func Calculate(attendanceReport attendance.MonthlyReport, values settings.Values
 		PaymentContract:   validated.PaymentContract,
 		AttendanceMinimum: minimum,
 		AttendanceMaximum: maximum,
-		TotalPlayers:      len(attendanceReport.Members),
+		TotalPlayers:      0,
 		Players:           make([]Player, 0, len(attendanceReport.Members)),
 	}
 	// The contract is shared out by attended days rather than split evenly, so
@@ -60,21 +62,36 @@ func Calculate(attendanceReport attendance.MonthlyReport, values settings.Values
 	// attendance_minimum still gates eligibility outright, and days beyond
 	// attendance_maximum stop accruing, so no one can dilute the pool by
 	// attending more often than the contract allows for.
+	roleFor := func(discordUserID string) GuildMemberRoles {
+		if len(guildRoles) == 0 {
+			return GuildMemberRoles{Roles: []string{}}
+		}
+		entry, found := guildRoles[0][discordUserID]
+		// A player who left the guild cannot receive a guild contract payout.
+		if !found {
+			return GuildMemberRoles{Roles: []string{}, Excluded: true}
+		}
+		return entry
+	}
 	var countedDays int64
 	for _, member := range attendanceReport.Members {
-		if member.TotalAttended >= minimum {
+		if !roleFor(member.DiscordUserID).Excluded {
+			report.TotalPlayers++
+		}
+		if !roleFor(member.DiscordUserID).Excluded && member.TotalAttended >= minimum {
 			report.EligiblePlayers++
 			countedDays += int64(min(member.TotalAttended, maximum))
 		}
 	}
 	var total int64
 	for _, member := range attendanceReport.Members {
+		role := roleFor(member.DiscordUserID)
 		player := Player{
 			MemberID: member.MemberID, Username: member.Username, DisplayName: member.DisplayName,
-			CharacterName: member.CharacterName, AttendedDays: member.TotalAttended,
+			CharacterName: member.CharacterName, AttendedDays: member.TotalAttended, Roles: role.Roles, Excluded: role.Excluded,
 		}
 		player.Payout = "0"
-		if member.TotalAttended >= minimum && countedDays > 0 {
+		if !player.Excluded && member.TotalAttended >= minimum && countedDays > 0 {
 			player.Eligible = true
 			// Rounded down to the nearest 1000 rupiah per player, as before.
 			payout := (payment * int64(min(member.TotalAttended, maximum)) / countedDays / 1000) * 1000

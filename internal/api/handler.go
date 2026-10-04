@@ -42,6 +42,10 @@ type dashboardReader interface {
 	GetMemberRecords(context.Context, int64) (dashboard.MemberRecords, error)
 	GetDiscordMemberRecords(context.Context, string) (dashboard.MemberRecords, error)
 }
+type guildRoleReader interface {
+	Load(context.Context) (map[string]payslip.GuildMemberRoles, error)
+}
+
 type attendanceReader interface {
 	GetMonthly(context.Context, int, time.Month, int) (attendancehistory.MonthlyReport, error)
 }
@@ -73,6 +77,7 @@ type Handler struct {
 	dashboard   dashboardReader
 	attendance  attendanceReader
 	settings    settingsStore
+	guildRoles  guildRoleReader
 	crafting    crafting.Store
 	money       moneyLedgerReader
 	serverLogs  *ServerLogWebhook
@@ -92,6 +97,7 @@ type Deps struct {
 	Dashboard   dashboardReader
 	Attendance  attendanceReader
 	Settings    settingsStore
+	GuildRoles  guildRoleReader
 	Crafting    crafting.Store
 	Money       moneyLedgerReader
 	ServerLogs  *ServerLogWebhook
@@ -109,6 +115,7 @@ func NewHandler(deps Deps) http.Handler {
 		dashboard:   deps.Dashboard,
 		attendance:  deps.Attendance,
 		settings:    deps.Settings,
+		guildRoles:  deps.GuildRoles,
 		crafting:    deps.Crafting,
 		money:       deps.Money,
 		serverLogs:  deps.ServerLogs,
@@ -204,7 +211,19 @@ func (h *Handler) monthlyPayslips(response http.ResponseWriter, request *http.Re
 		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Payslips could not be loaded")
 		return
 	}
-	payslipReport, err := payslip.Calculate(report, values)
+	if h.guildRoles == nil {
+		writeError(response, http.StatusServiceUnavailable, "GUILD_ROLES_UNAVAILABLE", "Guild roles are unavailable")
+		return
+	}
+	roleContext, cancelRoles := context.WithTimeout(request.Context(), 4*time.Second)
+	roles, err := h.guildRoles.Load(roleContext)
+	cancelRoles()
+	if err != nil {
+		h.logger.Error("load payslip guild roles", "member_id", claims.MemberID, "error", err)
+		writeError(response, http.StatusServiceUnavailable, "GUILD_ROLES_UNAVAILABLE", "Guild roles could not be loaded")
+		return
+	}
+	payslipReport, err := payslip.Calculate(report, values, roles)
 	if err != nil {
 		h.logger.Error("calculate payslips", "member_id", claims.MemberID, "month", report.Month, "error", err)
 		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Payslips could not be calculated")
