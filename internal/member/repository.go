@@ -174,12 +174,12 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 			FROM (SELECT * FROM presence_closed UNION ALL SELECT * FROM presence_open) sources
 			GROUP BY member_id
 		)
-		SELECT m.id, m.discord_user_id, m.display_name,
+		SELECT COALESCE(m.id, 0), sm.discord_user_id, sm.player_name,
 			sm.player_name, sm.id, sm.cid, FLOOR(c.seconds)::bigint
 		FROM character_seconds c
 		JOIN server_members sm ON sm.id = c.server_member_id
-		JOIN members m ON m.discord_user_id = sm.discord_user_id
-		WHERE c.seconds > 0
+		LEFT JOIN members m ON m.discord_user_id = sm.discord_user_id
+		WHERE COALESCE(sm.discord_user_id, '') <> '' AND c.seconds > 0
 		UNION ALL
 		SELECT m.id, m.discord_user_id, m.display_name,
 			'Unregistered', 0, '', FLOOR(p.seconds)::bigint
@@ -213,20 +213,22 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 
 // SaveAttendanceRecap stores one row per character per window.
 //
-// The conflict target folds a null character to zero, matching the unique index
-// 000032 created: a member the game server never reported has no character, and
-// a plain unique constraint treats nulls as distinct, which would let the same
-// window be written for them twice.
+// Character windows are keyed by server_member_id, independent of whether the
+// owner has an auth account. Negative member ids preserve the identity of legacy
+// Discord-only windows, which have no character.
 func (r *Repository) SaveAttendanceRecap(ctx context.Context, recaps []PlaytimeRecap, attendanceStart, attendanceEnd time.Time, requiredPlaytime time.Duration) error {
 	if len(recaps) == 0 {
 		return nil
 	}
-	memberIDs := make([]int64, len(recaps))
+	memberIDs := make([]*int64, len(recaps))
 	serverMemberIDs := make([]*int64, len(recaps))
 	playtimeSeconds := make([]int64, len(recaps))
 	isAttended := make([]bool, len(recaps))
 	for index, recap := range recaps {
-		memberIDs[index] = recap.MemberID
+		if recap.MemberID != 0 {
+			memberID := recap.MemberID
+			memberIDs[index] = &memberID
+		}
 		if recap.ServerMemberID != 0 {
 			serverMemberID := recap.ServerMemberID
 			serverMemberIDs[index] = &serverMemberID
@@ -245,7 +247,7 @@ func (r *Repository) SaveAttendanceRecap(ctx context.Context, recaps []PlaytimeR
 			$7::bigint * INTERVAL '1 second', data.is_attended
 		FROM unnest($1::bigint[], $2::bigint[], $3::bigint[], $4::boolean[])
 			AS data(member_id, server_member_id, playtime_seconds, is_attended)
-		ON CONFLICT (member_id, COALESCE(server_member_id, 0), attendance_start, attendance_end)
+		ON CONFLICT (COALESCE(server_member_id, -member_id), attendance_start, attendance_end)
 		DO UPDATE SET
 			playtime = EXCLUDED.playtime,
 			required_playtime = EXCLUDED.required_playtime,

@@ -429,11 +429,11 @@ func TestMyMonthlyAttendanceOnlyReturnsLoggedInMember(t *testing.T) {
 	reader := &stubAttendance{report: attendancehistory.MonthlyReport{
 		Month: "2026-08", AttendanceDays: []string{"2026-08-14"}, TotalAttended: 2, TotalOpportunities: 2,
 		Members: []attendancehistory.MemberRecord{
-			{MemberID: 3, DisplayName: "Other", TotalAttended: 1},
-			{MemberID: 7, DisplayName: "Logged In", TotalAttended: 1},
+			{MemberID: 7, DiscordUserID: "other", DisplayName: "Other", TotalAttended: 1},
+			{MemberID: 305, DiscordUserID: "123", DisplayName: "Logged In", TotalAttended: 1},
 		},
 	}}
-	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: &stubDashboard{}, Attendance: reader, Logger: testLogger()})
+	handler := NewHandler(Deps{Verifier: &stubVerifier{}, Members: &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}, Issuer: &stubIssuer{}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Dashboard: &stubDashboard{}, Attendance: reader, Logger: testLogger()})
 
 	response := request(handler, http.MethodGet, "/api/v1/attendance/me?month=2026-08", "Bearer app-token")
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "Other") || !strings.Contains(response.Body.String(), "Logged In") {

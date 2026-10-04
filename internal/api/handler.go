@@ -392,7 +392,7 @@ func (h *Handler) myMonthlyAttendance(response http.ResponseWriter, request *htt
 	}
 	personal := report.Members[:0]
 	for _, record := range report.Members {
-		if record.MemberID == claims.MemberID {
+		if record.DiscordUserID == claims.DiscordUserID {
 			personal = append(personal, record)
 			break
 		}

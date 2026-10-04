@@ -15,8 +15,10 @@ type DailyRecord struct {
 	PlaytimeSeconds int64  `json:"playtime_seconds"`
 }
 
+// MemberID identifies the representative server_members row, not an auth account.
 type MemberRecord struct {
 	MemberID      int64         `json:"member_id"`
+	DiscordUserID string        `json:"discord_user_id"`
 	Username      string        `json:"username"`
 	DisplayName   string        `json:"display_name"`
 	CharacterName string        `json:"character_name"`
@@ -63,35 +65,27 @@ func (r *ReportRepository) GetMonthly(ctx context.Context, year int, month time.
 		Members:        make([]MemberRecord, 0),
 	}
 
-	// The character name comes from server_members now: it belongs to a
-	// character, not to a Discord account. A member holding several is reduced
-	// to the most recently seen one, and a character never renamed by an
-	// operator reads through to the name the game server reported.
+	// The server roster owns attendance identity. The latest character supplies
+	// the name; attendance remains one row per Discord account.
 	const membersQuery = `
-		SELECT m.id, m.username, m.display_name,
-			COALESCE(latest_character.character_name, '')
-		FROM members m
-		LEFT JOIN LATERAL (
-			SELECT sm.player_name AS character_name
-			FROM server_members sm
-			WHERE sm.discord_user_id = m.discord_user_id
-			ORDER BY sm.updated_at DESC, sm.id DESC
-			LIMIT 1
-		) latest_character ON TRUE
-		ORDER BY m.display_name, m.id`
+		SELECT DISTINCT ON (sm.discord_user_id)
+			sm.id, sm.discord_user_id, sm.username, sm.player_name, sm.player_name
+		FROM server_members sm
+		WHERE COALESCE(sm.discord_user_id, '') <> ''
+		ORDER BY sm.discord_user_id, sm.updated_at DESC, sm.id DESC`
 	memberRows, err := r.database.Query(ctx, membersQuery)
 	if err != nil {
 		return MonthlyReport{}, fmt.Errorf("query attendance members: %w", err)
 	}
-	memberIndexes := make(map[int64]int)
+	memberIndexes := make(map[string]int)
 	for memberRows.Next() {
 		var record MemberRecord
-		if err := memberRows.Scan(&record.MemberID, &record.Username, &record.DisplayName, &record.CharacterName); err != nil {
+		if err := memberRows.Scan(&record.MemberID, &record.DiscordUserID, &record.Username, &record.DisplayName, &record.CharacterName); err != nil {
 			memberRows.Close()
 			return MonthlyReport{}, fmt.Errorf("scan attendance member: %w", err)
 		}
 		record.Records = make([]DailyRecord, 0)
-		memberIndexes[record.MemberID] = len(report.Members)
+		memberIndexes[record.DiscordUserID] = len(report.Members)
 		report.Members = append(report.Members, record)
 	}
 	if err := memberRows.Err(); err != nil {
@@ -103,21 +97,24 @@ func (r *ReportRepository) GetMonthly(ctx context.Context, year int, month time.
 	const attendanceQuery = `
 		WITH daily_attendance AS (
 			SELECT
-				member_id,
+				COALESCE(sm.discord_user_id, m.discord_user_id) AS discord_user_id,
 				(attendance_start AT TIME ZONE $3)::date AS attendance_date,
 				is_attended,
 				playtime
-			FROM attendance_logs
+			FROM attendance_logs a
+			LEFT JOIN server_members sm ON sm.id = a.server_member_id
+			LEFT JOIN members m ON m.id = a.member_id AND a.server_member_id IS NULL
 			WHERE attendance_start >= $1 AND attendance_start < $2
 		)
 		SELECT
-			member_id,
+			discord_user_id,
 			TO_CHAR(attendance_date, 'YYYY-MM-DD'),
 			BOOL_OR(is_attended),
 			SUM(EXTRACT(EPOCH FROM playtime))::bigint
 		FROM daily_attendance
-		GROUP BY member_id, attendance_date
-		ORDER BY attendance_date, member_id`
+		GROUP BY discord_user_id, attendance_date
+		HAVING discord_user_id IS NOT NULL
+		ORDER BY attendance_date, discord_user_id`
 	attendanceRows, err := r.database.Query(ctx, attendanceQuery, start, end, r.location.String())
 	if err != nil {
 		return MonthlyReport{}, fmt.Errorf("query monthly attendance: %w", err)
@@ -125,16 +122,16 @@ func (r *ReportRepository) GetMonthly(ctx context.Context, year int, month time.
 	defer attendanceRows.Close()
 	attendanceDays := make(map[string]struct{})
 	for attendanceRows.Next() {
-		var memberID int64
+		var discordUserID string
 		var daily DailyRecord
-		if err := attendanceRows.Scan(&memberID, &daily.Date, &daily.IsAttended, &daily.PlaytimeSeconds); err != nil {
+		if err := attendanceRows.Scan(&discordUserID, &daily.Date, &daily.IsAttended, &daily.PlaytimeSeconds); err != nil {
 			return MonthlyReport{}, fmt.Errorf("scan monthly attendance: %w", err)
 		}
-		attendanceDays[daily.Date] = struct{}{}
-		memberIndex, found := memberIndexes[memberID]
+		memberIndex, found := memberIndexes[discordUserID]
 		if !found {
 			continue
 		}
+		attendanceDays[daily.Date] = struct{}{}
 		report.Members[memberIndex].Records = append(report.Members[memberIndex].Records, daily)
 		if daily.IsAttended {
 			report.Members[memberIndex].TotalAttended++
