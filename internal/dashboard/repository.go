@@ -388,13 +388,21 @@ func (r *Repository) livePresences(ctx context.Context) (map[string]MemberPresen
 }
 
 func (r *Repository) GetMemberRecords(ctx context.Context, memberID int64) (MemberRecords, error) {
+	var discordUserID string
+	if err := r.database.QueryRow(ctx, `SELECT discord_user_id FROM members WHERE id = $1`, memberID).Scan(&discordUserID); err != nil {
+		return MemberRecords{}, fmt.Errorf("resolve member identity: %w", err)
+	}
+	return r.GetDiscordMemberRecords(ctx, discordUserID)
+}
+
+// GetDiscordMemberRecords shares the personal records query across all characters.
+func (r *Repository) GetDiscordMemberRecords(ctx context.Context, discordUserID string) (MemberRecords, error) {
 	var result MemberRecords
 	const summaryQuery = `
 		WITH characters AS (
 			SELECT sm.id
 			FROM server_members sm
-			JOIN members m ON m.discord_user_id = sm.discord_user_id
-			WHERE m.id = $1
+			WHERE sm.discord_user_id = $1
 		), cutover AS (
 			-- The member's first webhook event. NULL when the game server has
 			-- never reported them, which hands the whole total to Discord.
@@ -434,7 +442,7 @@ func (r *Repository) GetMemberRecords(ctx context.Context, memberID int64) (Memb
 			SELECT COALESCE((
 				SELECT SUM(EXTRACT(EPOCH FROM a.playtime))
 				FROM activity_logs a
-				WHERE a.member_id = $1
+				WHERE a.member_id IN (SELECT id FROM members WHERE discord_user_id = $1)
 					AND a.status = 'disconnected'
 					AND a.playtime IS NOT NULL
 					AND a.occurred_at < COALESCE((SELECT at FROM cutover), NOW())
@@ -445,7 +453,7 @@ func (r *Repository) GetMemberRecords(ctx context.Context, memberID int64) (Memb
 				FROM (
 					SELECT status, started_at
 					FROM activity_logs
-					WHERE member_id = $1
+					WHERE member_id IN (SELECT id FROM members WHERE discord_user_id = $1)
 					ORDER BY occurred_at DESC, id DESC
 					LIMIT 1
 				) latest
@@ -458,9 +466,9 @@ func (r *Repository) GetMemberRecords(ctx context.Context, memberID int64) (Memb
 			-- Attendance is stored per character, so a member who attended on
 			-- two characters in one window has two rows for one window. Count
 			-- windows, not rows.
-			(SELECT COUNT(DISTINCT attendance_start) FROM attendance_logs WHERE member_id = $1 AND is_attended),
-			(SELECT COUNT(DISTINCT attendance_start) FROM attendance_logs WHERE member_id = $1)`
-	if err := r.database.QueryRow(ctx, summaryQuery, memberID, visitMaxAge.Seconds()).Scan(&result.TotalPlaytimeSeconds, &result.TotalAttended, &result.TotalAttendances); err != nil {
+			(SELECT COUNT(DISTINCT attendance_start) FROM attendance_logs WHERE (server_member_id IN (SELECT id FROM server_members WHERE discord_user_id = $1) OR (server_member_id IS NULL AND member_id IN (SELECT id FROM members WHERE discord_user_id = $1))) AND is_attended),
+			(SELECT COUNT(DISTINCT attendance_start) FROM attendance_logs WHERE (server_member_id IN (SELECT id FROM server_members WHERE discord_user_id = $1) OR (server_member_id IS NULL AND member_id IN (SELECT id FROM members WHERE discord_user_id = $1))))`
+	if err := r.database.QueryRow(ctx, summaryQuery, discordUserID, visitMaxAge.Seconds()).Scan(&result.TotalPlaytimeSeconds, &result.TotalAttended, &result.TotalAttendances); err != nil {
 		return MemberRecords{}, fmt.Errorf("query member records summary: %w", err)
 	}
 
@@ -468,8 +476,7 @@ func (r *Repository) GetMemberRecords(ctx context.Context, memberID int64) (Memb
 		WITH characters AS (
 			SELECT sm.id
 			FROM server_members sm
-			JOIN members m ON m.discord_user_id = sm.discord_user_id
-			WHERE m.id = $1
+			WHERE sm.discord_user_id = $1
 		), session_starts AS (
 			SELECT sl.session_id,
 				MIN(sl.occurred_at) FILTER (WHERE sl.status = 'connected') AS connected_at
@@ -481,7 +488,7 @@ func (r *Repository) GetMemberRecords(ctx context.Context, memberID int64) (Memb
 			SELECT a.id, a.status, 'discord' AS source, a.started_at, a.occurred_at,
 				CASE WHEN a.playtime IS NULL THEN NULL ELSE EXTRACT(EPOCH FROM a.playtime)::bigint END AS playtime_seconds
 			FROM activity_logs a
-			WHERE a.member_id = $1
+			WHERE a.member_id IN (SELECT id FROM members WHERE discord_user_id = $1)
 			UNION ALL
 			SELECT sl.id, sl.status, 'fivem', s.connected_at, sl.occurred_at,
 				CASE
@@ -493,7 +500,7 @@ func (r *Repository) GetMemberRecords(ctx context.Context, memberID int64) (Memb
 			WHERE sl.server_member_id IN (SELECT id FROM characters)
 		) logs
 		ORDER BY occurred_at DESC, source, id DESC`
-	rows, err := r.database.Query(ctx, playerLogsQuery, memberID)
+	rows, err := r.database.Query(ctx, playerLogsQuery, discordUserID)
 	if err != nil {
 		return MemberRecords{}, fmt.Errorf("query member player logs: %w", err)
 	}
@@ -516,8 +523,8 @@ func (r *Repository) GetMemberRecords(ctx context.Context, memberID int64) (Memb
 		SELECT id, attendance_start, attendance_end,
 			EXTRACT(EPOCH FROM playtime)::bigint,
 			EXTRACT(EPOCH FROM required_playtime)::bigint, is_attended
-		FROM attendance_logs WHERE member_id = $1 ORDER BY attendance_start DESC, id DESC`
-	attendanceRows, err := r.database.Query(ctx, attendanceLogsQuery, memberID)
+		FROM attendance_logs WHERE (server_member_id IN (SELECT id FROM server_members WHERE discord_user_id = $1) OR (server_member_id IS NULL AND member_id IN (SELECT id FROM members WHERE discord_user_id = $1))) ORDER BY attendance_start DESC, id DESC`
+	attendanceRows, err := r.database.Query(ctx, attendanceLogsQuery, discordUserID)
 	if err != nil {
 		return MemberRecords{}, fmt.Errorf("query member attendance logs: %w", err)
 	}

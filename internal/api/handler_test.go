@@ -58,10 +58,11 @@ type stubTokens struct {
 func (s stubTokens) Verify(string) (appauth.Claims, error) { return s.claims, s.err }
 
 type stubDashboard struct {
-	snapshot dashboard.Snapshot
-	records  dashboard.MemberRecords
-	err      error
-	memberID int64
+	snapshot      dashboard.Snapshot
+	records       dashboard.MemberRecords
+	err           error
+	memberID      int64
+	discordUserID string
 }
 
 type stubAttendance struct {
@@ -569,3 +570,28 @@ func TestMemberOwnReportsStayOpenToNonAdmin(t *testing.T) {
 // memberID exists because a dashboard player's member id is a pointer: the
 // game server can report a player who has no members row at all.
 func memberID(value int64) *int64 { return &value }
+
+func (s *stubDashboard) GetDiscordMemberRecords(_ context.Context, target string) (dashboard.MemberRecords, error) {
+	s.discordUserID = target
+	return s.records, s.err
+}
+
+func TestSelectedMemberRecordsRequiresAuthAndRosterIdentity(t *testing.T) {
+	dashboards := &stubDashboard{records: dashboard.MemberRecords{TotalPlaytimeSeconds: 7200}}
+	handler := NewHandler(Deps{Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Dashboard: dashboards, Attendance: &stubAttendance{report: attendancehistory.MonthlyReport{Members: []attendancehistory.MemberRecord{{DiscordUserID: "282921788659335169"}}}}, Logger: testLogger()})
+	path := "/api/v1/me/records?discord_user_id=282921788659335169"
+	if got := request(handler, http.MethodGet, path, ""); got.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status: %d", got.Code)
+	}
+	if got := request(handler, http.MethodGet, path, "Bearer app-token"); got.Code != http.StatusOK || dashboards.discordUserID != "282921788659335169" {
+		t.Fatalf("selected records: %d %s, target %s", got.Code, got.Body.String(), dashboards.discordUserID)
+	}
+	dashboards.discordUserID = ""
+	if got := request(handler, http.MethodGet, "/api/v1/me/records?discord_user_id=999", "Bearer app-token"); got.Code != http.StatusNotFound || dashboards.discordUserID != "" {
+		t.Fatalf("missing member: %d", got.Code)
+	}
+	dashboards.err = errors.New("database unavailable")
+	if got := request(handler, http.MethodGet, path, "Bearer app-token"); got.Code != http.StatusInternalServerError {
+		t.Fatalf("upstream error: %d", got.Code)
+	}
+}

@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/url"
@@ -365,3 +366,25 @@ func TestDashboardPlayerStatusShowsConnecting(t *testing.T) {
 		t.Errorf("status = %q, want offline once the attempt aged out", got)
 	}
 }
+
+func TestDiscordMemberRecordsWithoutAuthAcrossCharacters(t *testing.T) {
+	pool := recordsTestPool(t)
+	ctx := context.Background()
+	var first, second int64
+	for index, target := range []*int64{&first, &second} {
+		if err := pool.QueryRow(ctx, `INSERT INTO server_members (license_id, discord_user_id, steamhex, player_name, username, cid) VALUES ($1, '222', $2, 'Player', 'SOT', $3) RETURNING id`, fmt.Sprintf("license:%d", index), fmt.Sprintf("steam:%d", index), fmt.Sprintf("CID%d", index)).Scan(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Now().UTC().Add(-48 * time.Hour)
+	seedServerVisit(t, pool, first, "00000000-0000-4000-8000-000000000011", base, base.Add(2*time.Hour))
+	seedServerVisit(t, pool, second, "00000000-0000-4000-8000-000000000012", base.Add(time.Hour), base.Add(3*time.Hour))
+	records, err := NewRepository(pool, nil, testRecordsLogger()).GetDiscordMemberRecords(ctx, "222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records.TotalPlaytimeSeconds != 10800 || len(records.PlayerLogs) != 4 {
+		t.Fatalf("records = %+v", records)
+	}
+}
+func testRecordsLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

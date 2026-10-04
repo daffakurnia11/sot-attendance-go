@@ -40,6 +40,7 @@ type tokenVerifier interface {
 type dashboardReader interface {
 	Get(context.Context, int64) (dashboard.Snapshot, error)
 	GetMemberRecords(context.Context, int64) (dashboard.MemberRecords, error)
+	GetDiscordMemberRecords(context.Context, string) (dashboard.MemberRecords, error)
 }
 type attendanceReader interface {
 	GetMonthly(context.Context, int, time.Month, int) (attendancehistory.MonthlyReport, error)
@@ -376,7 +377,27 @@ func (h *Handler) memberRecords(response http.ResponseWriter, request *http.Requ
 		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Member bearer token is invalid or expired")
 		return
 	}
-	records, err := h.dashboard.GetMemberRecords(request.Context(), claims.MemberID)
+	var records dashboard.MemberRecords
+	if target := request.URL.Query().Get("discord_user_id"); target != "" {
+		_, report, ok := h.loadMonthlyAttendance(response, request)
+		if !ok {
+			return
+		}
+		found := false
+		for _, member := range report.Members {
+			if member.DiscordUserID == target {
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeError(response, http.StatusNotFound, "NOT_FOUND", "Member not found")
+			return
+		}
+		records, err = h.dashboard.GetDiscordMemberRecords(request.Context(), target)
+	} else {
+		records, err = h.dashboard.GetMemberRecords(request.Context(), claims.MemberID)
+	}
 	if err != nil {
 		h.logger.Error("load member records", "member_id", claims.MemberID, "error", err)
 		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Member records could not be loaded")
