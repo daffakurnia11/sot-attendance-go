@@ -13,10 +13,10 @@ func TestSlashCommandsMirrorPrefixCommands(t *testing.T) {
 	t.Parallel()
 
 	commands := slashCommands()
-	if len(commands) != 5 {
-		t.Fatalf("slashCommands() count = %d, want 5", len(commands))
+	if len(commands) != 6 {
+		t.Fatalf("slashCommands() count = %d, want 6", len(commands))
 	}
-	wantNames := []string{"craft", "status", "recap", "money", "stash"}
+	wantNames := []string{"craft", "check", "status", "recap", "money", "stash"}
 	prefixRouter := router.NewRouter("!")
 	for index, command := range commands {
 		if command.Name != wantNames[index] || command.Description == "" {
@@ -48,19 +48,19 @@ func TestSlashCommandsMirrorPrefixCommands(t *testing.T) {
 	if len(commands[1].Options) != 1 || commands[1].Options[0].Name != "member" || commands[1].Options[0].Type != discordgo.ApplicationCommandOptionUser || commands[1].Options[0].Required {
 		t.Errorf("check options = %#v", commands[1].Options)
 	}
-	if len(commands[3].Options) != 3 || commands[3].Options[0].Name != "balance" || commands[3].Options[1].Name != "deposit" || commands[3].Options[2].Name != "withdraw" {
-		t.Errorf("money options = %#v", commands[3].Options)
+	if len(commands[4].Options) != 3 || commands[4].Options[0].Name != "balance" || commands[4].Options[1].Name != "deposit" || commands[4].Options[2].Name != "withdraw" {
+		t.Errorf("money options = %#v", commands[4].Options)
 	}
-	if len(commands[3].Options[0].Options) != 0 || len(commands[3].Options[1].Options) != 2 || commands[3].Options[1].Options[0].Name != "amount" {
-		t.Errorf("money account option still present: %#v", commands[3].Options)
+	if len(commands[4].Options[0].Options) != 0 || len(commands[4].Options[1].Options) != 2 || commands[4].Options[1].Options[0].Name != "amount" {
+		t.Errorf("money account option still present: %#v", commands[4].Options)
 	}
 	// The stash safebox is never an option: the channel is what names it.
-	if len(commands[4].Options) != 3 || commands[4].Options[0].Name != "balance" || commands[4].Options[1].Name != "deposit" || commands[4].Options[2].Name != "withdraw" {
-		t.Errorf("stash options = %#v", commands[4].Options)
+	if len(commands[5].Options) != 3 || commands[5].Options[0].Name != "balance" || commands[5].Options[1].Name != "deposit" || commands[5].Options[2].Name != "withdraw" {
+		t.Errorf("stash options = %#v", commands[5].Options)
 	}
 	// No subcommand takes an item or reason option: the builder collects both
 	// from safebox_stock_items, so an item is never spelled by a member.
-	for _, option := range commands[4].Options {
+	for _, option := range commands[5].Options {
 		if len(option.Options) != 0 {
 			t.Errorf("stash subcommand %q takes options = %#v", option.Name, option.Options)
 		}
@@ -90,7 +90,7 @@ func TestMoneyChannelID(t *testing.T) {
 func TestIsSlashCommand(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{"craft", "status", "recap", "money"} {
+	for _, name := range []string{"craft", "check", "recap", "money"} {
 		if !isSlashCommand(name) {
 			t.Errorf("isSlashCommand(%q) = false", name)
 		}
@@ -105,13 +105,13 @@ func TestCheckSlashTargetUserID(t *testing.T) {
 
 	interaction := &discordgo.Interaction{
 		Type: discordgo.InteractionApplicationCommand,
-		Data: discordgo.ApplicationCommandInteractionData{Name: "status"},
+		Data: discordgo.ApplicationCommandInteractionData{Name: "check"},
 	}
 	if got, err := checkSlashTargetUserID(interaction, "caller"); err != nil || got != "caller" {
 		t.Fatalf("fallback target = %q, error = %v", got, err)
 	}
 	interaction.Data = discordgo.ApplicationCommandInteractionData{
-		Name: "status",
+		Name: "check",
 		Options: []*discordgo.ApplicationCommandInteractionDataOption{{
 			Name: "member", Type: discordgo.ApplicationCommandOptionUser, Value: "target",
 		}},

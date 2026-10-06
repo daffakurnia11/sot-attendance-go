@@ -11,9 +11,9 @@ func TestRouterMatch(t *testing.T) {
 		want    string
 	}{
 		{content: "!recap", want: "recap"},
-		{content: "!status", want: "status"},
-		{content: "!status <@123456789>", want: "status"},
-		{content: "!status <@!123456789>", want: "status"},
+		{content: "!check", want: "check"},
+		{content: "!check <@123456789>", want: "check"},
+		{content: "!check <@!123456789>", want: "check"},
 		{content: "!craft vector:30 mp9:20", want: "craft"},
 		{content: "!money balance", want: "money"},
 		{content: "!money deposit 1000 income", want: "money"},
@@ -22,12 +22,12 @@ func TestRouterMatch(t *testing.T) {
 		{content: "!stash balance"},
 		{content: "!stash deposit copper:500 weekly farm"},
 		{content: "!Me"},
-		{content: "!check"},
-		{content: "!check <@123456789>"},
+		{content: "!status", want: "status"},
+		{content: "!status <@123456789>", want: "status"},
 		{content: "!/check"},
-		{content: "!status extra"},
-		{content: "!status <@member>"},
-		{content: "!status <@123> extra"},
+		{content: "!check extra"},
+		{content: "!check <@member>"},
+		{content: "!check <@123> extra"},
 		{content: "hello"},
 	}
 	for _, tt := range tests {

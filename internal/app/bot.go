@@ -550,7 +550,16 @@ func (b *Bot) onReady(session *discordgo.Session, event *discordgo.Ready) {
 		// Registering commands, upserting the roster and writing the bot status
 		// are all things the deployed bot is already doing with this same
 		// token. Doing them again from a laptop duplicates or fights them.
-		b.logger.Warn("APP_ENV is not production: this bot reads and serves presence only")
+		go func() {
+			for _, command := range slashCommands() {
+				if command.Name == commandrecap.CheckCommand || command.Name == statusCommand {
+					if _, err := session.ApplicationCommandCreate(event.User.ID, b.guildID, command); err != nil {
+						b.logger.Error("register local read-only command", "error", err)
+					}
+				}
+			}
+		}()
+		b.logger.Warn("Local bot: check commands enabled; stop production bot sharing this token before testing")
 		return
 	}
 	go b.registerSlashCommands(session, event.User.ID)
@@ -659,10 +668,13 @@ func (b *Bot) onMessageCreate(session *discordgo.Session, message *discordgo.Mes
 	// Slash commands were already scoped to the watched guild; prefix commands
 	// were not, so both the deployed bot and a local one answered the same
 	// message. A quiet bot answers nothing at all.
-	if !b.announces || message.GuildID != b.guildID {
+	if message.GuildID != b.guildID {
 		return
 	}
 	commandName := b.router.Match(message.Content)
+	if !b.announces && commandName != commandrecap.CheckCommand && commandName != statusCommand {
+		return
+	}
 	if b.inStashChannel(message.ChannelID) {
 		b.warnStashChannel(session, message)
 		return
@@ -675,7 +687,9 @@ func (b *Bot) onMessageCreate(session *discordgo.Session, message *discordgo.Mes
 	switch commandName {
 	case commandrecap.Command:
 		err = b.handleRecap(session, message)
-	case commandrecap.StatusCommand:
+	case statusCommand:
+		err = b.handleStatus(session, message)
+	case commandrecap.CheckCommand:
 		err = b.handleCheck(session, message)
 	case commandcrafting.Command:
 		err = b.handleCraft(session, message)
@@ -796,7 +810,7 @@ func (b *Bot) handleCheck(session *discordgo.Session, message *discordgo.Message
 	targetUserID := message.Author.ID
 	if len(message.Mentions) > 0 {
 		if len(message.Mentions) != 1 || message.Mentions[0] == nil {
-			return fmt.Errorf("status command requires exactly one member mention")
+			return fmt.Errorf("check command requires exactly one member mention")
 		}
 		targetUserID = message.Mentions[0].ID
 	}
@@ -816,6 +830,11 @@ func (b *Bot) handleCheck(session *discordgo.Session, message *discordgo.Message
 }
 
 func (b *Bot) handleRecap(session *discordgo.Session, message *discordgo.MessageCreate) error {
+	if !b.canRunRecap(message.Member) {
+		_, err := session.ChannelMessageSendReply(message.ChannelID, fmt.Sprintf("Recap is admin-only. Use /status or %sstatus to check your connection, and /check or %scheck to check attendance.", b.router.Prefix(), b.router.Prefix()), message.Reference())
+		return err
+	}
+
 	now := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -828,4 +847,17 @@ func (b *Bot) handleRecap(session *discordgo.Session, message *discordgo.Message
 	}
 	b.logger.Info("attendance recap sent", "guild_id", message.GuildID, "channel_id", message.ChannelID, "user_id", message.Author.ID, "players", participants, "attendance_start", attendanceStart)
 	return nil
+}
+
+// Missing role configuration or member information denies manual recap access.
+func (b *Bot) canRunRecap(member *discordgo.Member) bool {
+	if member == nil {
+		return false
+	}
+	for _, role := range b.adminRoleIDs {
+		if role != "" && slices.Contains(member.Roles, role) {
+			return true
+		}
+	}
+	return false
 }

@@ -143,6 +143,9 @@ func (r memberRow) Scan(destinations ...any) error {
 	if len(destinations) > 6 {
 		*destinations[6].(*bool) = r.member.IsAdmin
 	}
+	if len(destinations) > 7 {
+		*destinations[7].(*string) = r.member.CID
+	}
 	return nil
 }
 

@@ -44,6 +44,7 @@ type Member struct {
 	DisplayName   string `json:"display_name"`
 	CharacterName string `json:"character_name"`
 	CFXName       string `json:"cfx_name"`
+	CID           string `json:"cid"`
 	IsAdmin       bool   `json:"is_admin"`
 }
 
@@ -57,7 +58,7 @@ type Member struct {
 // event, it was the same value stored twice.
 const latestCharacter = `
 		LEFT JOIN LATERAL (
-			SELECT sm.player_name AS character_name, sm.username
+			SELECT sm.player_name AS character_name, sm.username, sm.cid
 			FROM server_members sm
 			WHERE sm.discord_user_id = m.discord_user_id
 			ORDER BY sm.updated_at DESC, sm.id DESC
@@ -305,7 +306,7 @@ func (r *Repository) FindByDiscordUserID(ctx context.Context, discordUserID stri
 		SELECT m.id, m.discord_user_id, m.username, m.display_name,
 			COALESCE(latest_character.character_name, ''),
 			COALESCE(latest_character.username, ''),
-			m.is_admin
+			m.is_admin, COALESCE(latest_character.cid, '')
 		FROM members m` + latestCharacter + `
 		WHERE m.discord_user_id = $1`
 
@@ -318,6 +319,7 @@ func (r *Repository) FindByDiscordUserID(ctx context.Context, discordUserID stri
 		&found.CharacterName,
 		&found.CFXName,
 		&found.IsAdmin,
+		&found.CID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Member{}, ErrNotFound

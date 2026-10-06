@@ -15,6 +15,8 @@ import (
 	stockdomain "github.com/daffakurniawan/sot-discord-bot/internal/stock"
 )
 
+var errRecapAdminRequired = errors.New("recap requires a configured admin role")
+
 var errMoneyAdminRequired = errors.New("money command requires administrator permission")
 
 type moneyChannelError struct {
@@ -31,12 +33,13 @@ func slashCommands() []*discordgo.ApplicationCommand {
 	return []*discordgo.ApplicationCommand{
 		{Name: commandcrafting.Command, Description: "Build a multi-product crafting plan", Contexts: &guildContexts},
 		{
-			Name: commandrecap.StatusCommand, Description: "Check attendance and playtime", Contexts: &guildContexts,
+			Name: commandrecap.CheckCommand, Description: "Check attendance and playtime", Contexts: &guildContexts,
 			Options: []*discordgo.ApplicationCommandOption{{
 				Type: discordgo.ApplicationCommandOptionUser, Name: "member",
 				Description: "Member to check; defaults to you", Required: false,
 			}},
 		},
+		{Name: statusCommand, Description: "Check current CR Roleplay connection", Contexts: &guildContexts, Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionUser, Name: "member", Description: "Member to check; defaults to you"}}},
 		{Name: commandrecap.Command, Description: "Show the current attendance recap", Contexts: &guildContexts},
 		moneySlashCommand(guildContexts),
 		stashSlashCommand(guildContexts),
@@ -108,7 +111,7 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 	// a local bot would race the deployed one to answer it and post the craft or
 	// stash embed a second time. A quiet bot answers nothing, as with prefix
 	// commands.
-	if !b.announces {
+	if !b.announces && (event.Type != discordgo.InteractionApplicationCommand || (event.ApplicationCommandData().Name != commandrecap.CheckCommand && event.ApplicationCommandData().Name != statusCommand)) {
 		return
 	}
 	if event.Type == discordgo.InteractionMessageComponent || event.Type == discordgo.InteractionModalSubmit {
@@ -162,7 +165,7 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 
 func isSlashCommand(name string) bool {
 	switch name {
-	case commandrecap.StatusCommand, commandrecap.Command, commandcrafting.Command, commandmoney.Command, commandstash.Command:
+	case statusCommand, commandrecap.CheckCommand, commandrecap.Command, commandcrafting.Command, commandmoney.Command, commandstash.Command:
 		return true
 	default:
 		return false
@@ -174,12 +177,22 @@ func (b *Bot) slashCommandResponse(interaction *discordgo.Interaction, commandNa
 		return nil, "", errors.New("guild member is required")
 	}
 	userID := interaction.Member.User.ID
+	if commandName == commandrecap.Command && !b.canRunRecap(interaction.Member) {
+		return nil, userID, errRecapAdminRequired
+	}
 	now := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	switch commandName {
-	case commandrecap.StatusCommand:
+	case statusCommand:
+		target, err := checkSlashTargetUserID(interaction, userID)
+		if err != nil {
+			return nil, userID, err
+		}
+		result, err := b.buildStatusEmbed(ctx, target)
+		return embedEdit(result), userID, err
+	case commandrecap.CheckCommand:
 		targetUserID, err := checkSlashTargetUserID(interaction, userID)
 		if err != nil {
 			return nil, userID, err
@@ -250,6 +263,9 @@ func parseMoneySlashRequest(interaction *discordgo.Interaction) (commandmoney.Re
 }
 
 func slashUserError(err error) string {
+	if errors.Is(err, errRecapAdminRequired) {
+		return "Recap is admin-only. Use /status to check your connection or /check to check attendance."
+	}
 	if content, known := stashUserError(err); known {
 		return content
 	}

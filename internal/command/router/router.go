@@ -24,6 +24,8 @@ func (r *Router) Match(content string) string {
 		return "recap"
 	case r.prefix + "status":
 		return "status"
+	case r.prefix + "check":
+		return "check"
 	}
 	parts := strings.Fields(trimmed)
 	if len(parts) >= 2 && parts[0] == r.prefix+CraftCommand {
@@ -32,8 +34,8 @@ func (r *Router) Match(content string) string {
 	if len(parts) >= 2 && parts[0] == r.prefix+MoneyCommand {
 		return MoneyCommand
 	}
-	if len(parts) == 2 && parts[0] == r.prefix+"status" && isUserMention(parts[1]) {
-		return "status"
+	if len(parts) == 2 && (parts[0] == r.prefix+"check" || parts[0] == r.prefix+"status") && isUserMention(parts[1]) {
+		return strings.TrimPrefix(parts[0], r.prefix)
 	}
 	return ""
 }

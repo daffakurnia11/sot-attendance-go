@@ -103,7 +103,7 @@ func TestEmbedListsCharactersSeparately(t *testing.T) {
 func TestCheckEmbedShowsCurrentMemberStatusAndGlobalSummary(t *testing.T) {
 	now := time.Date(2026, 8, 21, 3, 24, 0, 0, time.FixedZone("Asia/Jakarta", 7*60*60))
 	currentMember := member.Member{
-		ID: 2, DiscordUserID: "123456789", Username: "prince", DisplayName: "Prince Lim", CharacterName: "Prince Nakamura",
+		ID: 2, DiscordUserID: "123456789", Username: "prince", DisplayName: "Prince Lim", CharacterName: "Prince Nakamura", CFXName: "SOT - Prince", CID: "QN123",
 	}
 	recaps := []member.PlaytimeRecap{
 		{MemberID: 1, Playtime: 2 * time.Hour},
@@ -114,10 +114,13 @@ func TestCheckEmbedShowsCurrentMemberStatusAndGlobalSummary(t *testing.T) {
 	if embed.Title != "Attendance Check (20 August 2026)" || embed.Description != "Minimum playtime: 1h0m" {
 		t.Fatalf("unexpected header: %#v", embed)
 	}
-	if len(embed.Fields) != 3 || embed.Fields[0].Name != "Name" || embed.Fields[0].Value != "Prince Nakamura (<@123456789>)" {
+	if len(embed.Fields) != 7 || embed.Fields[0].Name != "Name" || embed.Fields[0].Value != "Prince Nakamura (<@123456789>)" {
 		t.Fatalf("unexpected identity fields: %#v", embed.Fields)
 	}
-	if embed.Fields[1].Value != "49m" || embed.Fields[2].Value != "Not Attended" || embed.Color != 0xFEE75C {
+	if embed.Fields[1].Name != "Username" || embed.Fields[1].Value != "SOT - Prince" || !embed.Fields[1].Inline || embed.Fields[2].Name != "CID" || embed.Fields[2].Value != "QN123" || !embed.Fields[2].Inline {
+		t.Fatalf("unexpected server identity: %#v", embed.Fields)
+	}
+	if embed.Fields[4].Value != "49m" || embed.Fields[5].Value != "Not Attended" || embed.Color != 0xFEE75C {
 		t.Fatalf("unexpected attendance result: %#v", embed)
 	}
 	if embed.Footer == nil || embed.Footer.Text != "Attended: 1 • Not attending: 1 • Participants: 2" {
@@ -133,7 +136,7 @@ func TestCheckEmbedUsesDisplayNameFallbackAndZeroPlaytime(t *testing.T) {
 	currentMember := member.Member{ID: 3, DiscordUserID: "987654321", Username: "delta", DisplayName: "Delta*Kilo"}
 
 	embed := CheckEmbed(currentMember, nil, now, now, time.Hour)
-	if embed.Fields[0].Value != "Delta\\*Kilo (<@987654321>)" || embed.Fields[1].Value != "0m" || embed.Fields[2].Value != "Not Attended" {
+	if embed.Fields[0].Value != "Delta\\*Kilo (<@987654321>)" || embed.Fields[4].Value != "0m" || embed.Fields[5].Value != "Not Attended" {
 		t.Fatalf("unexpected fallback result: %#v", embed.Fields)
 	}
 }

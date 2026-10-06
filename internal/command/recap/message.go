@@ -12,7 +12,7 @@ import (
 
 const (
 	Command              = "recap"
-	StatusCommand        = "status"
+	CheckCommand         = "check"
 	maxDescriptionLength = 4096
 )
 
@@ -47,8 +47,12 @@ func CheckEmbed(currentMember member.Member, recaps []member.PlaytimeRecap, atte
 		Description(fmt.Sprintf("Minimum playtime: %s", formatPlaytime(requiredPlaytime))).
 		Color(color).
 		Field("Name", fmt.Sprintf("%s (<@%s>)", escapeMarkdown(characterName), currentMember.DiscordUserID), false).
+		Field("Username", identityValue(currentMember.CFXName), true).
+		Field("CID", identityValue(currentMember.CID), true).
+		Field("\u200b", "\u200b", true).
 		Field("Playtime", formatPlaytime(playtime), true).
 		Field("Status", status, true).
+		Field("\u200b", "\u200b", true).
 		Footer(fmt.Sprintf("Attended: %d • Not attending: %d • Participants: %d", attended, len(recaps)-attended, len(recaps)), "").
 		Timestamp(now).
 		Build()
@@ -144,4 +148,11 @@ func formatPlaytime(duration time.Duration) string {
 func escapeMarkdown(value string) string {
 	replacer := strings.NewReplacer("\\", "\\\\", "*", "\\*", "_", "\\_", "`", "\\`", "~", "\\~", "|", "\\|")
 	return replacer.Replace(value)
+}
+
+func identityValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "—"
+	}
+	return escapeMarkdown(value)
 }
