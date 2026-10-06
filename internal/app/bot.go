@@ -538,8 +538,8 @@ func (b *Bot) rotateStatus() {
 	if !available {
 		return
 	}
-	status := fmt.Sprintf("%d %s players on Discord", count, shortServerName(b.status.ServerName()))
-	if err := b.session.UpdateGameStatus(0, status); err != nil {
+	status := fmt.Sprintf("%d %s Players", count, shortServerName(b.status.ServerName()))
+	if err := b.session.UpdateWatchStatus(0, status); err != nil {
 		b.logger.Error("update bot status", "status", status, "error", err)
 		return
 	}
