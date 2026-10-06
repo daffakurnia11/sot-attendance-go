@@ -83,3 +83,24 @@ func TestValidateContractStartDate(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 }
+
+func TestLoadRestartSchedule(t *testing.T) {
+	for _, tc := range []struct {
+		values  []string
+		want    int
+		invalid bool
+	}{
+		{[]string{"05:00", "17:00"}, 2, false},
+		{[]string{"", ""}, 0, false},
+		{[]string{"25:00", "17:00"}, 0, true},
+	} {
+		repo := &Repository{database: fakeDatabase{row: fakeRow{values: tc.values}}}
+		clocks, err := repo.LoadRestartSchedule(context.Background())
+		if (err != nil) != tc.invalid || len(clocks) != tc.want {
+			t.Fatalf("clocks=%v error=%v", clocks, err)
+		}
+		if len(clocks) == 2 && (clocks[0] != 5*time.Hour || clocks[1] != 17*time.Hour) {
+			t.Fatalf("wrong clocks: %v", clocks)
+		}
+	}
+}

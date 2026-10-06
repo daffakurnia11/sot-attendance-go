@@ -208,3 +208,27 @@ func parseClockTime(value string) (time.Duration, error) {
 	}
 	return time.Duration(parsed.Hour())*time.Hour + time.Duration(parsed.Minute())*time.Minute, nil
 }
+
+// LoadRestartSchedule reads the optional server restart clocks independently
+// of the editable attendance settings.
+func (r *Repository) LoadRestartSchedule(ctx context.Context) ([]time.Duration, error) {
+	var first, second string
+	err := r.database.QueryRow(ctx, `SELECT
+		COALESCE(MAX(value) FILTER (WHERE key = 'server_restart_schedule_1'), ''),
+		COALESCE(MAX(value) FILTER (WHERE key = 'server_restart_schedule_2'), '') FROM settings`).Scan(&first, &second)
+	if err != nil {
+		return nil, fmt.Errorf("load restart settings: %w", err)
+	}
+	var times []time.Duration
+	for i, value := range []string{first, second} {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		clock, err := parseClockTime(value)
+		if err != nil {
+			return nil, fmt.Errorf("setting server_restart_schedule_%d: %w", i+1, err)
+		}
+		times = append(times, clock)
+	}
+	return times, nil
+}

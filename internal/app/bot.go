@@ -73,6 +73,9 @@ type Bot struct {
 	// discordObserved is how many presences the previous poll saw, used to
 	// spot a gateway cache that is still filling. Same single goroutine.
 	discordObserved int
+	restartChecked  time.Time
+	restartBoundary time.Time
+	restartCleared  map[string]bool
 	// serverLogMerger folds several witnesses' reports of one change into one
 	// channel message; owned by the announcer goroutine.
 	serverLogMerger announcementMerger
@@ -268,15 +271,21 @@ func (b *Bot) Run(ctx context.Context) error {
 	defer discordTicker.Stop()
 	statusTicker := time.NewTicker(b.statusPollInterval)
 	defer statusTicker.Stop()
+	restartTicker := time.NewTicker(5 * time.Second)
+	defer restartTicker.Stop()
+	b.restartChecked = time.Now()
 	for {
 		select {
 		case <-ctx.Done():
 			goto shutdown
 		case <-discordTicker.C:
+			b.checkServerRestart(ctx, time.Now())
 			b.status.Refresh(b.session)
 			b.recordDiscordVisits(ctx)
 		case <-statusTicker.C:
 			b.rotateStatus()
+		case <-restartTicker.C:
+			b.checkServerRestart(ctx, time.Now())
 		}
 	}
 
@@ -370,6 +379,9 @@ func (b *Bot) presenceCacheFilling(observed int) bool {
 // Only visible presence without CR activity can end a Discord-derived visit;
 // RecordDiscordPresence never closes webhook-owned sessions.
 func (b *Bot) observeDiscordPresence(entry presence.MemberPresence) bool {
+	if b.staleRestartActivity(entry) {
+		return false
+	}
 	if entry.Status != "online" && entry.Status != "idle" && entry.Status != "dnd" {
 		delete(b.discordAbsence, entry.DiscordUserID)
 		return false
