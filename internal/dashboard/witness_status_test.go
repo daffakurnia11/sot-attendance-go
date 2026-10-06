@@ -30,7 +30,7 @@ func seedWitnessRow(t *testing.T, pool *pgxpool.Pool, serverMemberID int64, sour
 func TestDashboardPlayerStatusAcrossWitnesses(t *testing.T) {
 	pool := recordsTestPool(t)
 	ctx := context.Background()
-	repository := NewRepository(pool, stubCFX{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	repository := NewRepository(pool, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO settings (settings, value) VALUES ('player_threshold', '15')
 		ON CONFLICT (settings) DO UPDATE SET value = EXCLUDED.value`); err != nil {

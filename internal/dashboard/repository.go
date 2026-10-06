@@ -47,15 +47,12 @@ type Player struct {
 }
 
 type Snapshot struct {
-	DiscordPlayers       []Player    `json:"discord_players"`
-	PlayerThreshold      int         `json:"player_threshold"`
-	TotalMembers         int         `json:"total_members"`
-	TotalPlaytimeSeconds int64       `json:"total_playtime_seconds"`
-	TotalAttended        int         `json:"total_attended"`
-	TotalAttendances     int         `json:"total_attendances"`
-	CFXPlayers           []CFXPlayer `json:"cfx_players"`
-	AllCFXPlayers        []CFXPlayer `json:"all_cfx_players"`
-	CFXAvailable         bool        `json:"cfx_available"`
+	DiscordPlayers       []Player `json:"discord_players"`
+	PlayerThreshold      int      `json:"player_threshold"`
+	TotalMembers         int      `json:"total_members"`
+	TotalPlaytimeSeconds int64    `json:"total_playtime_seconds"`
+	TotalAttended        int      `json:"total_attended"`
+	TotalAttendances     int      `json:"total_attendances"`
 	// DiscordPresenceAvailable reports whether live presence reached us. False
 	// leaves every DiscordStatus as "unknown", which is the honest answer: the
 	// bot holds the gateway and nothing persists presence any more.
@@ -92,22 +89,18 @@ type MemberRecords struct {
 	AttendanceLogs       []AttendanceLog `json:"attendance_logs"`
 }
 
-type cfxPlayerReader interface {
-	Rosters(context.Context) ([]CFXPlayer, []CFXPlayer, int, error)
-}
 type presenceReader interface {
 	Presences(context.Context) (map[string]MemberPresence, error)
 }
 
 type Repository struct {
 	database *pgxpool.Pool
-	cfx      cfxPlayerReader
 	presence presenceReader
 	logger   *slog.Logger
 }
 
-func NewRepository(database *pgxpool.Pool, cfx cfxPlayerReader, logger *slog.Logger) *Repository {
-	return &Repository{database: database, cfx: cfx, logger: logger}
+func NewRepository(database *pgxpool.Pool, logger *slog.Logger) *Repository {
+	return &Repository{database: database, logger: logger}
 }
 
 // WithPresence attaches a live Discord presence source. Without one the
@@ -341,14 +334,6 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 		}
 	}
 
-	result.CFXPlayers, result.AllCFXPlayers, _, err = r.cfx.Rosters(ctx)
-	if err != nil {
-		r.logger.Warn("CFX players unavailable", "error", err)
-		result.CFXPlayers = make([]CFXPlayer, 0)
-		result.AllCFXPlayers = make([]CFXPlayer, 0)
-		return result, nil
-	}
-	result.CFXAvailable = true
 	return result, nil
 }
 

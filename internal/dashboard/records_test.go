@@ -99,7 +99,7 @@ func seedServerVisit(t *testing.T, pool *pgxpool.Pool, serverMemberID int64, ses
 func TestGetMemberRecordsSplitsFeedsAtTheHandover(t *testing.T) {
 	pool := recordsTestPool(t)
 	ctx := context.Background()
-	repository := NewRepository(pool, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	repository := NewRepository(pool, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	memberID, serverMemberID := seedMember(t, pool)
 	base := time.Now().UTC().Add(-48 * time.Hour)
@@ -133,7 +133,7 @@ func TestGetMemberRecordsSplitsFeedsAtTheHandover(t *testing.T) {
 func TestGetMemberRecordsFallsBackToDiscord(t *testing.T) {
 	pool := recordsTestPool(t)
 	ctx := context.Background()
-	repository := NewRepository(pool, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	repository := NewRepository(pool, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	var memberID int64
 	if err := pool.QueryRow(ctx, `
@@ -161,7 +161,7 @@ func TestGetMemberRecordsFallsBackToDiscord(t *testing.T) {
 func TestGetMemberRecordsCollapsesOverlappingVisits(t *testing.T) {
 	pool := recordsTestPool(t)
 	ctx := context.Background()
-	repository := NewRepository(pool, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	repository := NewRepository(pool, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	memberID, serverMemberID := seedMember(t, pool)
 	var secondCharacter int64
@@ -188,7 +188,7 @@ func TestGetMemberRecordsCollapsesOverlappingVisits(t *testing.T) {
 func TestGetMemberRecordsListsBothFeeds(t *testing.T) {
 	pool := recordsTestPool(t)
 	ctx := context.Background()
-	repository := NewRepository(pool, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	repository := NewRepository(pool, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	memberID, serverMemberID := seedMember(t, pool)
 	base := time.Now().UTC().Add(-6 * time.Hour)
@@ -258,7 +258,7 @@ func lockTestSchema(t *testing.T, databaseURL string) {
 func TestDashboardPlayerStatusPrefersServerLogs(t *testing.T) {
 	pool := recordsTestPool(t)
 	ctx := context.Background()
-	repository := NewRepository(pool, stubCFX{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	repository := NewRepository(pool, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO settings (settings, value) VALUES ('player_threshold', '15')
@@ -308,19 +308,10 @@ func TestDashboardPlayerStatusPrefersServerLogs(t *testing.T) {
 	}
 }
 
-type stubCFX struct{}
-
-func (stubCFX) Rosters(context.Context) ([]CFXPlayer, []CFXPlayer, int, error) {
-	return []CFXPlayer{}, []CFXPlayer{}, 0, nil
-}
-
-// A player still on the loading screen has reported connecting and nothing
-// else. Deriving status only from sessions that reached connected left them
-// with no status at all, so the page never listed them.
 func TestDashboardPlayerStatusShowsConnecting(t *testing.T) {
 	pool := recordsTestPool(t)
 	ctx := context.Background()
-	repository := NewRepository(pool, stubCFX{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	repository := NewRepository(pool, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO settings (settings, value) VALUES ('player_threshold', '15')
@@ -379,7 +370,7 @@ func TestDiscordMemberRecordsWithoutAuthAcrossCharacters(t *testing.T) {
 	base := time.Now().UTC().Add(-48 * time.Hour)
 	seedServerVisit(t, pool, first, "00000000-0000-4000-8000-000000000011", base, base.Add(2*time.Hour))
 	seedServerVisit(t, pool, second, "00000000-0000-4000-8000-000000000012", base.Add(time.Hour), base.Add(3*time.Hour))
-	records, err := NewRepository(pool, nil, testRecordsLogger()).GetDiscordMemberRecords(ctx, "222")
+	records, err := NewRepository(pool, testRecordsLogger()).GetDiscordMemberRecords(ctx, "222")
 	if err != nil {
 		t.Fatal(err)
 	}

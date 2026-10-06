@@ -1,6 +1,9 @@
 package app
 
-import "testing"
+import (
+	"github.com/daffakurniawan/sot-discord-bot/internal/presence"
+	"testing"
+)
 
 // A single read that does not see the activity must not close a visit. FiveM
 // rewrites the activity as a player moves from joining to playing, and a poll
@@ -80,5 +83,39 @@ func TestDiscordVisitsIgnoreAShrinkingSnapshot(t *testing.T) {
 	}
 	if !bot.observeDiscordActivity("mepi", false) {
 		t.Fatal("visit never closed once the snapshot was steady")
+	}
+}
+
+func TestDiscordPresenceUnknownNeverClosesVisit(t *testing.T) {
+	for _, status := range []string{"offline", "invisible", "unknown", ""} {
+		t.Run(status, func(t *testing.T) {
+			bot := &Bot{discordAbsence: map[string]int{"member": discordAbsenceStreak - 1}}
+			for poll := 0; poll < discordAbsenceStreak+1; poll++ {
+				if bot.observeDiscordPresence(presence.MemberPresence{DiscordUserID: "member", Status: status}) {
+					t.Fatal("unobservable activity caused a transition")
+				}
+			}
+			if bot.observeDiscordPresence(presence.MemberPresence{DiscordUserID: "member", Status: "online"}) {
+				t.Fatal("unknown observations accumulated toward closure")
+			}
+		})
+	}
+}
+
+func TestDiscordPresenceVisibleActivityTransitions(t *testing.T) {
+	for _, status := range []string{"online", "idle", "dnd"} {
+		t.Run(status, func(t *testing.T) {
+			bot := &Bot{discordAbsence: make(map[string]int)}
+			entry := presence.MemberPresence{DiscordUserID: "member", Status: status, Playing: true}
+			if !bot.observeDiscordPresence(entry) {
+				t.Fatal("visible CR activity ignored")
+			}
+			entry.Playing = false
+			for poll := 1; poll <= discordAbsenceStreak; poll++ {
+				if got := bot.observeDiscordPresence(entry); got != (poll == discordAbsenceStreak) {
+					t.Fatalf("poll %d: transition = %v", poll, got)
+				}
+			}
+		})
 	}
 }

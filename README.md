@@ -2,7 +2,6 @@
 
 Go backend containing Discord attendance bot and member-authenticated web API.
 
-Dashboard CFX players come from the public Cfx.re directory URL in `FIVEM_SERVER_CFX_URL`, for example `https://frontend.cfx-services.net/api/servers/single/kr7k7d`, whose last segment is the short server code in a join link. Reading the directory rather than the game server's own `players.json` means the host only needs outbound HTTPS, not a route to the game server. `FIVEM_PLAYER_ID` filters player names case-insensitively as a substring (for example, `SOT` also matches `EM - SOTxHT BHND`). CFX failure is logged and returned as unavailable without hiding database-backed dashboard statistics.
 
 ## Web API authentication
 
@@ -77,13 +76,12 @@ gateway rather than to `127.0.0.1`, so a loopback-only forward is invisible to
 them. That also exposes the forwarded port to whatever network the machine is
 on, so close it when finished.
 
-Bot status rotates between `N CR players on Discord` and `N CR players on CFX` every `DISCORD_POLL_STATUS` milliseconds. Discord count polls cached presences every `DISCORD_POLL_INTERVAL` milliseconds and includes visible online members whose activity name matches `FIVEM_SERVER_NAME`, ignoring case, spaces, and punctuation. Offline, invisible, and bot accounts are excluded. Discord REST member responses do not contain activities; Presence Intent feeds this cache.
+Bot status shows `N CR players on Discord` every `DISCORD_POLL_STATUS` milliseconds. Discord count polls cached presences every `DISCORD_POLL_INTERVAL` milliseconds and includes visible online members whose activity name matches `FIVEM_SERVER_NAME`, ignoring case, spaces, and punctuation. Offline, invisible, and bot accounts are excluded. Discord REST member responses do not contain activities; Presence Intent feeds this cache.
 
 Crafting calculator stock updates post Discord embeds after database commit. Both deposits and material withdrawals route to their safebox's channel, `STASH_PUBLIC_CHANNEL_ID` or `STASH_BOSS_CHANNEL_ID`; the embed title and colour separate the two. Idempotent request replays do not post duplicate embeds. Discord delivery failure is logged and does not undo committed stock.
 
 The bot reads the same four channel IDs and refuses to start unless all four are present, digits-only, and distinct. A shared ID would make one channel mean two things, and the channel is the only thing naming the safebox and the action.
 
-CFX count polls public directory every `FIVEM_SERVER_CFX_POLL_INTERVAL` milliseconds and applies existing `FIVEM_PLAYER_ID` name filter. Failed CFX requests keep last successful count; CFX status remains hidden until first successful poll.
 
 Set `APP_ENV=production` to restrict status counts and player transition logs to members holding `DISCORD_ROLE_ID`. `DISCORD_ROLE_ID` is required in production. Set `APP_ENV=local` to inspect all non-bot guild members during testing; role filtering is disabled even when a role ID is present.
 
@@ -163,7 +161,7 @@ Attendance is still decided on the member's total, and `attendance_logs` still h
 
 MY RECORDS reads both feeds. `server_logs` is the truth where it exists, but it only begins at a member's first webhook event and members the game server has never reported have none at all, so the total splits at that per-member handover: Discord presence accounts for everything before it, the webhook for everything after. Nothing is counted twice and nothing is dropped - a plain preference between the two sources would either lose the history or double the overlap. The log list is not split: it carries every row from both feeds, each tagged with a `source` of `fivem` or `discord`, since the two disagreeing is worth seeing. Ids are unique only within a source.
 
-Daily scheduler sends start broadcast to `DISCORD_PLAYER_CHAT_CHANNEL_ID` at `settings.start_attendance`. At `settings.end_attendance`, it sends closing broadcast to player chat and attendance recap embed to `DISCORD_PLAYER_RECAP_CHANNEL_ID`. Closing and recap delivery are attempted independently. Times use strict `HH:MM` 24-hour format in `Asia/Jakarta`. Example `21:00` start plus `01:00` end handles overnight attendance. Startup does not backfill missed announcements; next scheduled occurrence is used. Missing or invalid attendance settings stop bot startup. Bot reloads schedule every 30 seconds and reloads window plus playtime threshold before end recap, so dashboard edits apply without restart.
+Daily scheduler sends start broadcast to `DISCORD_PLAYER_CHAT_CHANNEL_ID` at `settings.start_attendance`. At `settings.start_attendance`, it also posts an attendance recap embed to `DISCORD_PLAYER_RECAP_CHANNEL_ID`, editing the same message once per minute during the attendance window. At `settings.end_attendance`, it sends the closing broadcast to player chat, saves attendance, and edits that recap with final results. The recap message ID is held in memory; a restart during an active window posts a new recap. Closing and recap delivery are attempted independently. Times use strict `HH:MM` 24-hour format in `Asia/Jakarta`. Example `21:00` start plus `01:00` end handles overnight attendance. Startup does not backfill missed announcements; next scheduled occurrence is used. Missing or invalid attendance settings stop bot startup. Bot reloads schedule every 30 seconds and reloads window plus playtime threshold before end recap, so dashboard edits apply without restart.
 
 Before sending automatic end recap, scheduler bulk upserts one `attendance_logs` row per participant. Each row snapshots capped playtime, required threshold, and attended result. Re-running same attendance window updates existing rows instead of creating duplicates.
 

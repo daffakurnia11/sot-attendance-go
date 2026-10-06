@@ -73,13 +73,12 @@ func main() {
 		logger.Error("create token issuer", "error", err)
 		os.Exit(1)
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	cfxClient := dashboard.NewCFXClient(client, config.FiveMCFXEndpoint, config.FiveMPlayerID)
 	location, err := time.LoadLocation("Asia/Jakarta")
 	if err != nil {
 		logger.Error("load API timezone", "error", err)
 		os.Exit(1)
 	}
+	client := &http.Client{Timeout: 5 * time.Second}
 	settingsRepository := dbsettings.NewRepository(pool)
 	serverLogRepository := serverlog.NewRepository(pool)
 	stockRepository := stock.NewRepository(pool)
@@ -108,7 +107,7 @@ func main() {
 		Members:     member.NewRepository(pool),
 		Issuer:      issuer,
 		Tokens:      issuer,
-		Dashboard:   dashboard.NewRepository(pool, cfxClient, logger).WithPresence(dashboard.NewPresenceClient(&http.Client{Timeout: 3 * time.Second}, os.Getenv("BOT_PRESENCE_URL"))),
+		Dashboard:   dashboard.NewRepository(pool, logger).WithPresence(dashboard.NewPresenceClient(&http.Client{Timeout: 3 * time.Second}, os.Getenv("BOT_PRESENCE_URL"))),
 		Attendance:  attendancehistory.NewReportRepository(pool, location),
 		Settings:    settingsRepository,
 		GuildRoles:  guildRoles,

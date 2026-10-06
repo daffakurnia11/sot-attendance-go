@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 )
 
 type Config struct {
@@ -20,9 +18,6 @@ type Config struct {
 	DiscordAdminRoleIDs  []string
 	ServerName           string
 	PollInterval         time.Duration
-	CFXEndpoint          string
-	CFXPlayerID          string
-	CFXPollInterval      time.Duration
 	StatusPollInterval   time.Duration
 	CommandPrefix        string
 	ServerLogChannelID   string
@@ -82,7 +77,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return withStatusPolling(config, os.Getenv("FIVEM_SERVER_CFX_URL"), os.Getenv("FIVEM_PLAYER_ID"), os.Getenv("FIVEM_SERVER_CFX_POLL_INTERVAL"), os.Getenv("DISCORD_POLL_STATUS"))
+	return withStatusPolling(config, os.Getenv("DISCORD_POLL_STATUS"))
 }
 
 func withMoneyChannels(config Config, officeChannelID, dirtyChannelID string) (Config, error) {
@@ -135,26 +130,11 @@ func withServerLogChannel(config Config, serverLogChannelID string) (Config, err
 	return config, nil
 }
 
-func withStatusPolling(config Config, cfxEndpoint, cfxPlayerID, cfxPollInterval, statusPollInterval string) (Config, error) {
-	cfxEndpoint, err := dashboard.ParseCFXEndpoint(cfxEndpoint)
-	if err != nil {
-		return Config{}, err
-	}
-	cfxPlayerID = strings.TrimSpace(cfxPlayerID)
-	if cfxPlayerID == "" {
-		return Config{}, errors.New("FIVEM_PLAYER_ID is required")
-	}
-	cfxPoll, err := parseMilliseconds("FIVEM_SERVER_CFX_POLL_INTERVAL", cfxPollInterval)
-	if err != nil {
-		return Config{}, err
-	}
+func withStatusPolling(config Config, statusPollInterval string) (Config, error) {
 	statusPoll, err := parseMilliseconds("DISCORD_POLL_STATUS", statusPollInterval)
 	if err != nil {
 		return Config{}, err
 	}
-	config.CFXEndpoint = cfxEndpoint
-	config.CFXPlayerID = cfxPlayerID
-	config.CFXPollInterval = cfxPoll
 	config.StatusPollInterval = statusPoll
 	return config, nil
 }
