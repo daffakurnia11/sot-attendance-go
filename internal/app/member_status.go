@@ -67,13 +67,20 @@ func (b *Bot) buildStatusEmbed(ctx context.Context, userID string) (*discordgo.M
 	} else if webhook == "connecting" {
 		crStatus = "Connecting"
 	}
-	return &discordgo.MessageEmbed{Title: "CR Roleplay Status", Color: 0xF2B63D,
+	currentStatus := connectionStatus(webhook, activity)
+	color := 0xED4245
+	if currentStatus == "Connecting" {
+		color = 0xFEE75C
+	} else if currentStatus == "Connected" {
+		color = 0x57F287
+	}
+	return &discordgo.MessageEmbed{Title: "CR Roleplay Status", Color: color,
 		Fields: []*discordgo.MessageEmbedField{
 			{Name: "Name", Value: fmt.Sprintf("%s (<@%s>)", m.CharacterName, userID)},
 			{Name: "Username", Value: statusIdentity(m.CFXName), Inline: true},
 			{Name: "CID", Value: statusIdentity(m.CID), Inline: true},
 			{Name: "\u200b", Value: "\u200b", Inline: true},
-			{Name: "Current Status", Value: connectionStatus(webhook, activity)},
+			{Name: "Current Status", Value: currentStatus},
 			{Name: "CR Server", Value: crStatus, Inline: true},
 			{Name: "Discord Activity", Value: discordStatus, Inline: true},
 		}, Timestamp: time.Now().UTC().Format(time.RFC3339)}, nil

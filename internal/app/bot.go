@@ -472,6 +472,16 @@ func (b *Bot) announceServerLogs(ctx context.Context) {
 	if len(announcements) == 0 {
 		return
 	}
+	var activity []presence.MemberPresence
+	if b.status != nil {
+		snapshot, snapshotErr := b.status.Snapshot(b.session)
+		if snapshotErr != nil {
+			b.logger.Warn("Discord validation unavailable for server logs", "error", snapshotErr)
+		} else {
+			activity = snapshot
+		}
+	}
+	observedAt := time.Now()
 	for _, announcement := range announcements {
 		event := presence.ServerLogEvent{
 			PlayerName: announcement.PlayerName,
@@ -488,6 +498,7 @@ func (b *Bot) announceServerLogs(ctx context.Context) {
 			// chase an entry to the account without the bot storing a name.
 			DiscordUserID: announcement.DiscordUserID,
 		}
+		event = corroborateServerEvent(event, activity, observedAt)
 		action, rendered, messageID := b.serverLogMerger.plan(announcement, event)
 		switch action {
 		case announceSkip:

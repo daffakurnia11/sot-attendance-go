@@ -77,7 +77,12 @@ func (m *announcementMerger) plan(announcement serverlog.Announcement, event pre
 	if previous := m.posted[announcementKey(announcement)]; previous != nil &&
 		announcement.OccurredAt.Sub(previous.occurredAt).Abs() <= announcementMergeWindow &&
 		!slices.Contains(previous.sources, announcement.Source) {
-		sources := append(append([]string(nil), previous.sources...), announcement.Source)
+		sources := append([]string(nil), previous.sources...)
+		for _, source := range append([]string{announcement.Source}, event.Sources...) {
+			if !slices.Contains(sources, source) {
+				sources = append(sources, source)
+			}
+		}
 		sort.SliceStable(sources, func(i, j int) bool { return sourceTrust(sources[i]) < sourceTrust(sources[j]) })
 		merged := previous.event
 		if sourceTrust(announcement.Source) < sourceTrust(previous.event.Source) {
@@ -121,4 +126,26 @@ func (m *announcementMerger) prune(now time.Time) {
 			delete(m.posted, key)
 		}
 	}
+}
+
+// corroborateServerEvent adds a live witness only for a recent arrival in the
+// same phase. Missing activity is unknown and never overrides the webhook.
+func corroborateServerEvent(event presence.ServerLogEvent, observed []presence.MemberPresence, now time.Time) presence.ServerLogEvent {
+	age := now.Sub(event.OccurredAt)
+	if event.Source != serverlog.SourceServer || event.DiscordUserID == "" || age < 0 || age > announcementMergeWindow {
+		return event
+	}
+	if event.Status != serverlog.StatusConnected && event.Status != serverlog.StatusConnecting {
+		return event
+	}
+	for _, member := range observed {
+		if member.DiscordUserID != event.DiscordUserID || !member.Playing || member.Status == "offline" || member.Status == "invisible" {
+			continue
+		}
+		if member.Connecting == (event.Status == serverlog.StatusConnecting) {
+			event.Sources = []string{serverlog.SourceServer, serverlog.SourceDiscord}
+		}
+		break
+	}
+	return event
 }

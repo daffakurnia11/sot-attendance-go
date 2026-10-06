@@ -130,3 +130,31 @@ func TestAnnouncementMergerKeepsDistantReportsApart(t *testing.T) {
 		{source: "discord", status: "disconnected", at: base.Add(announcementMergeWindow + time.Second), want: announcePost},
 	})
 }
+
+func TestCorroborateServerEvent(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name   string
+		status string
+		member presence.MemberPresence
+		age    time.Duration
+		want   bool
+	}{
+		{"connected", "connected", presence.MemberPresence{DiscordUserID: "7", Playing: true}, time.Minute, true},
+		{"connecting", "connecting", presence.MemberPresence{DiscordUserID: "7", Playing: true, Connecting: true}, time.Minute, true},
+		{"wrong phase", "connected", presence.MemberPresence{DiscordUserID: "7", Playing: true, Connecting: true}, time.Minute, false},
+		{"other member", "connected", presence.MemberPresence{DiscordUserID: "8", Playing: true}, time.Minute, false},
+		{"no activity", "connected", presence.MemberPresence{DiscordUserID: "7"}, time.Minute, false},
+		{"invisible", "connected", presence.MemberPresence{DiscordUserID: "7", Playing: true, Status: "invisible"}, time.Minute, false},
+		{"historical", "connected", presence.MemberPresence{DiscordUserID: "7", Playing: true}, 11 * time.Minute, false},
+		{"exit", "disconnected", presence.MemberPresence{DiscordUserID: "7"}, time.Minute, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := presence.ServerLogEvent{Source: "server", Status: tc.status, DiscordUserID: "7", OccurredAt: now.Add(-tc.age)}
+			got := corroborateServerEvent(event, []presence.MemberPresence{tc.member}, now)
+			if (len(got.Sources) == 2) != tc.want {
+				t.Fatalf("sources = %v, corroborated want %v", got.Sources, tc.want)
+			}
+		})
+	}
+}
