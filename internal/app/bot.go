@@ -22,6 +22,7 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/command/router"
 	"github.com/daffakurniawan/sot-discord-bot/internal/config"
 	craftingdomain "github.com/daffakurniawan/sot-discord-bot/internal/crafting"
+	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/database"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
 	moneydomain "github.com/daffakurniawan/sot-discord-bot/internal/money"
@@ -63,6 +64,7 @@ type Bot struct {
 	stashChannels        stashChannels
 	serverLogChannelID   string
 	serverLogs           *serverlog.Repository
+	playerDashboard      *dashboard.Repository
 	serverLogCursor      int64
 	adminSync            sync.Mutex
 	ready                atomic.Bool
@@ -193,6 +195,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		memberRoleID:         cfg.DiscordMemberRoleID,
 		serverLogChannelID:   cfg.ServerLogChannelID,
 		serverLogs:           serverlog.NewRepository(pool),
+		playerDashboard:      dashboard.NewRepository(pool, logger),
 		officeMoneyChannelID: cfg.OfficeMoneyChannelID,
 		dirtyMoneyChannelID:  cfg.DirtyMoneyChannelID,
 		stashChannels:        stashChannels{public: cfg.StashChannels.Public, boss: cfg.StashChannels.Boss},
@@ -534,11 +537,14 @@ func (b *Bot) rotateStatus() {
 	if !b.announces {
 		return
 	}
-	count, available := b.status.Count()
-	if !available {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	snapshot, err := b.playerDashboard.Get(ctx, 0)
+	if err != nil {
+		b.logger.Error("read player count for bot activity", "error", err)
 		return
 	}
-	status := fmt.Sprintf("%d %s Players", count, shortServerName(b.status.ServerName()))
+	status := watchingPlayerStatus(snapshot.DiscordPlayers)
 	if err := b.session.UpdateWatchStatus(0, status); err != nil {
 		b.logger.Error("update bot status", "status", status, "error", err)
 		return
@@ -871,4 +877,16 @@ func (b *Bot) canRunRecap(member *discordgo.Member) bool {
 		}
 	}
 	return false
+}
+
+// Match the Player Logs table: include connected and connecting characters,
+// regardless of whether Discord exposes their activity.
+func watchingPlayerStatus(players []dashboard.Player) string {
+	count := 0
+	for _, player := range players {
+		if player.Status == "connected" || player.Status == "connecting" {
+			count++
+		}
+	}
+	return fmt.Sprintf("Watching %d CR Players", count)
 }
