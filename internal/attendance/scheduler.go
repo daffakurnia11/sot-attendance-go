@@ -30,6 +30,7 @@ type Scheduler struct {
 	loadTimes  scheduleLoader
 	refresh    time.Duration
 	logger     *slog.Logger
+	liveAction func(context.Context, *discordgo.Session, time.Time) error
 	endAction  func(context.Context, *discordgo.Session, time.Time) error
 }
 
@@ -60,7 +61,27 @@ func NewDynamicScheduler(channelID, serverName string, loadTimes scheduleLoader,
 	}, nil
 }
 
+// WithLiveRecap updates the current window's recap once per minute.
+func (s *Scheduler) WithLiveRecap(action func(context.Context, *discordgo.Session, time.Time) error) *Scheduler {
+	s.liveAction = action
+	return s
+}
+
+func activeWindow(now time.Time, times ScheduleTimes, location *time.Location) (time.Time, bool) {
+	now = now.In(location)
+	start := time.Date(now.Year(), now.Month(), now.Day(), int(times.Start/time.Hour), int(times.Start%time.Hour/time.Minute), 0, 0, location)
+	if start.After(now) {
+		start = start.AddDate(0, 0, -1)
+	}
+	end := time.Date(start.Year(), start.Month(), start.Day(), int(times.End/time.Hour), int(times.End%time.Hour/time.Minute), 0, 0, location)
+	if !end.After(start) {
+		end = end.AddDate(0, 0, 1)
+	}
+	return start, now.Before(end)
+}
+
 func (s *Scheduler) Run(ctx context.Context, session *discordgo.Session) {
+	var lastUpdate, lastWindow time.Time
 	for {
 		times, err := s.loadTimes(ctx)
 		if err != nil {
@@ -72,6 +93,13 @@ func (s *Scheduler) Run(ctx context.Context, session *discordgo.Session) {
 		}
 		s.schedules = schedulesFor(times)
 		now := time.Now()
+		window, active := activeWindow(now, times, s.location)
+		if s.liveAction != nil && active && (!window.Equal(lastWindow) || now.Sub(lastUpdate) >= time.Minute) {
+			lastUpdate, lastWindow = now, window
+			if err := s.liveAction(ctx, session, now); err != nil {
+				s.logger.Error("update live attendance recap", "error", err, "attendance_start", window)
+			}
+		}
 		schedule, runAt := s.next(now)
 		s.logger.Info("attendance announcement scheduled", "command", schedule.command, "channel_id", s.channelID, "run_at", runAt.In(s.location).Format(time.RFC3339), "timezone", s.location.String())
 		wait := time.Until(runAt)

@@ -74,3 +74,26 @@ func TestDynamicSchedulerReloadsScheduleTimes(t *testing.T) {
 		t.Fatalf("schedule hours = %d then %d, want 20 then 21", first.Hour(), second.Hour())
 	}
 }
+
+func TestActiveWindow(t *testing.T) {
+	location, _ := time.LoadLocation("Asia/Jakarta")
+	for _, test := range []struct {
+		hour       int
+		start, end time.Duration
+		active     bool
+		day        int
+	}{
+		{20, 21 * time.Hour, time.Hour, false, 5},
+		{21, 21 * time.Hour, time.Hour, true, 6},
+		{0, 21 * time.Hour, time.Hour, true, 5},
+		{1, 21 * time.Hour, time.Hour, false, 5},
+		{10, 9 * time.Hour, 17 * time.Hour, true, 6},
+		{17, 9 * time.Hour, 17 * time.Hour, false, 6},
+	} {
+		now := time.Date(2026, 10, 6, test.hour, 0, 0, 0, location)
+		start, active := activeWindow(now, ScheduleTimes{Start: test.start, End: test.end}, location)
+		if active != test.active || start.Day() != test.day {
+			t.Fatalf("hour %d: %v %v", test.hour, start, active)
+		}
+	}
+}

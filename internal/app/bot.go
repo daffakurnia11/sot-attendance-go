@@ -116,7 +116,12 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		pool.Close()
 		return nil, fmt.Errorf("load Asia/Jakarta timezone: %w", err)
 	}
-	endAction := func(ctx context.Context, session *discordgo.Session, now time.Time) error {
+	var recapMutex sync.Mutex
+	var recapMessageID string
+	var recapWindow time.Time
+	publishRecap := func(ctx context.Context, session *discordgo.Session, now time.Time, final bool) error {
+		recapMutex.Lock()
+		defer recapMutex.Unlock()
 		attendanceConfig, err := settingsRepository.LoadAttendance(ctx)
 		if err != nil {
 			return fmt.Errorf("reload attendance settings: %w", err)
@@ -126,13 +131,22 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		if err != nil {
 			return err
 		}
-		if err := members.SaveAttendanceRecap(ctx, recaps, attendanceStart, attendanceEnd, attendanceConfig.PlaytimeThreshold); err != nil {
-			return err
+		if final {
+			if err := members.SaveAttendanceRecap(ctx, recaps, attendanceStart, attendanceEnd, attendanceConfig.PlaytimeThreshold); err != nil {
+				return err
+			}
 		}
-		if _, err := session.ChannelMessageSendEmbed(cfg.PlayerRecapChannelID, commandrecap.Embed(recaps, attendanceStart, now, attendanceConfig.PlaytimeThreshold)); err != nil {
-			return fmt.Errorf("send attendance recap: %w", err)
+		messageEmbed := commandrecap.Embed(recaps, attendanceStart, now, attendanceConfig.PlaytimeThreshold)
+		if recapMessageID == "" || !recapWindow.Equal(attendanceStart) {
+			message, err := session.ChannelMessageSendEmbed(cfg.PlayerRecapChannelID, messageEmbed)
+			if err != nil {
+				return fmt.Errorf("send attendance recap: %w", err)
+			}
+			recapMessageID, recapWindow = message.ID, attendanceStart
+		} else if _, err := session.ChannelMessageEditEmbed(cfg.PlayerRecapChannelID, recapMessageID, messageEmbed); err != nil {
+			return fmt.Errorf("edit attendance recap: %w", err)
 		}
-		logger.Info("attendance recap sent", "channel_id", cfg.PlayerRecapChannelID, "players", len(recaps), "attendance_start", attendanceStart, "automatic", true)
+		logger.Info("attendance recap updated", "channel_id", cfg.PlayerRecapChannelID, "message_id", recapMessageID, "players", len(recaps), "attendance_start", attendanceStart, "final", final)
 		return nil
 	}
 	attendance, err := attendancescheduler.NewDynamicScheduler(cfg.PlayerChatChannelID, cfg.ServerName, func(ctx context.Context) (attendancescheduler.ScheduleTimes, error) {
@@ -141,11 +155,17 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 			return attendancescheduler.ScheduleTimes{}, err
 		}
 		return attendancescheduler.ScheduleTimes{Start: latest.StartTime, End: latest.EndTime}, nil
-	}, endAction, logger)
+	}, func(ctx context.Context, session *discordgo.Session, now time.Time) error {
+		return publishRecap(ctx, session, now, true)
+	}, logger)
 	if err != nil {
 		pool.Close()
 		return nil, err
 	}
+
+	attendance.WithLiveRecap(func(ctx context.Context, session *discordgo.Session, now time.Time) error {
+		return publishRecap(ctx, session, now, false)
+	})
 
 	bot := &Bot{
 		session:              session,
