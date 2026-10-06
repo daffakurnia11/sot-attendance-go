@@ -2,7 +2,6 @@
 
 Go backend containing Discord attendance bot and member-authenticated web API.
 
-
 ## Web API authentication
 
 Web API runs as separate `cmd/api` process on `WEB_API_ADDRESS` (`:8080` by default). Local Compose exposes it only on `127.0.0.1:8080`.
@@ -81,7 +80,6 @@ Bot status shows `N CR players on Discord` every `DISCORD_POLL_STATUS` milliseco
 Crafting calculator stock updates post Discord embeds after database commit. Both deposits and material withdrawals route to their safebox's channel, `STASH_PUBLIC_CHANNEL_ID` or `STASH_BOSS_CHANNEL_ID`; the embed title and colour separate the two. Idempotent request replays do not post duplicate embeds. Discord delivery failure is logged and does not undo committed stock.
 
 The bot reads the same four channel IDs and refuses to start unless all four are present, digits-only, and distinct. A shared ID would make one channel mean two things, and the channel is the only thing naming the safebox and the action.
-
 
 Set `APP_ENV=production` to restrict status counts and player transition logs to members holding `DISCORD_ROLE_ID`. `DISCORD_ROLE_ID` is required in production. Set `APP_ENV=local` to inspect all non-bot guild members during testing; role filtering is disabled even when a role ID is present.
 
