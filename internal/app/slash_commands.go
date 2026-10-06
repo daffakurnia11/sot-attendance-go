@@ -31,7 +31,7 @@ func slashCommands() []*discordgo.ApplicationCommand {
 	return []*discordgo.ApplicationCommand{
 		{Name: commandcrafting.Command, Description: "Build a multi-product crafting plan", Contexts: &guildContexts},
 		{
-			Name: commandrecap.CheckCommand, Description: "Check attendance and playtime", Contexts: &guildContexts,
+			Name: commandrecap.StatusCommand, Description: "Check attendance and playtime", Contexts: &guildContexts,
 			Options: []*discordgo.ApplicationCommandOption{{
 				Type: discordgo.ApplicationCommandOptionUser, Name: "member",
 				Description: "Member to check; defaults to you", Required: false,
@@ -162,7 +162,7 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 
 func isSlashCommand(name string) bool {
 	switch name {
-	case commandrecap.CheckCommand, commandrecap.Command, commandcrafting.Command, commandmoney.Command, commandstash.Command:
+	case commandrecap.StatusCommand, commandrecap.Command, commandcrafting.Command, commandmoney.Command, commandstash.Command:
 		return true
 	default:
 		return false
@@ -179,7 +179,7 @@ func (b *Bot) slashCommandResponse(interaction *discordgo.Interaction, commandNa
 	defer cancel()
 
 	switch commandName {
-	case commandrecap.CheckCommand:
+	case commandrecap.StatusCommand:
 		targetUserID, err := checkSlashTargetUserID(interaction, userID)
 		if err != nil {
 			return nil, userID, err

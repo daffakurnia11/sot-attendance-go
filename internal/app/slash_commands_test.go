@@ -16,7 +16,7 @@ func TestSlashCommandsMirrorPrefixCommands(t *testing.T) {
 	if len(commands) != 5 {
 		t.Fatalf("slashCommands() count = %d, want 5", len(commands))
 	}
-	wantNames := []string{"craft", "check", "recap", "money", "stash"}
+	wantNames := []string{"craft", "status", "recap", "money", "stash"}
 	prefixRouter := router.NewRouter("!")
 	for index, command := range commands {
 		if command.Name != wantNames[index] || command.Description == "" {
@@ -90,7 +90,7 @@ func TestMoneyChannelID(t *testing.T) {
 func TestIsSlashCommand(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{"craft", "check", "recap", "money"} {
+	for _, name := range []string{"craft", "status", "recap", "money"} {
 		if !isSlashCommand(name) {
 			t.Errorf("isSlashCommand(%q) = false", name)
 		}
@@ -105,13 +105,13 @@ func TestCheckSlashTargetUserID(t *testing.T) {
 
 	interaction := &discordgo.Interaction{
 		Type: discordgo.InteractionApplicationCommand,
-		Data: discordgo.ApplicationCommandInteractionData{Name: "check"},
+		Data: discordgo.ApplicationCommandInteractionData{Name: "status"},
 	}
 	if got, err := checkSlashTargetUserID(interaction, "caller"); err != nil || got != "caller" {
 		t.Fatalf("fallback target = %q, error = %v", got, err)
 	}
 	interaction.Data = discordgo.ApplicationCommandInteractionData{
-		Name: "check",
+		Name: "status",
 		Options: []*discordgo.ApplicationCommandInteractionDataOption{{
 			Name: "member", Type: discordgo.ApplicationCommandOptionUser, Value: "target",
 		}},

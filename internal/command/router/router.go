@@ -22,8 +22,8 @@ func (r *Router) Match(content string) string {
 	switch trimmed {
 	case r.prefix + "recap":
 		return "recap"
-	case r.prefix + "check":
-		return "check"
+	case r.prefix + "status":
+		return "status"
 	}
 	parts := strings.Fields(trimmed)
 	if len(parts) >= 2 && parts[0] == r.prefix+CraftCommand {
@@ -32,8 +32,8 @@ func (r *Router) Match(content string) string {
 	if len(parts) >= 2 && parts[0] == r.prefix+MoneyCommand {
 		return MoneyCommand
 	}
-	if len(parts) == 2 && parts[0] == r.prefix+"check" && isUserMention(parts[1]) {
-		return "check"
+	if len(parts) == 2 && parts[0] == r.prefix+"status" && isUserMention(parts[1]) {
+		return "status"
 	}
 	return ""
 }

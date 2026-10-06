@@ -675,7 +675,7 @@ func (b *Bot) onMessageCreate(session *discordgo.Session, message *discordgo.Mes
 	switch commandName {
 	case commandrecap.Command:
 		err = b.handleRecap(session, message)
-	case commandrecap.CheckCommand:
+	case commandrecap.StatusCommand:
 		err = b.handleCheck(session, message)
 	case commandcrafting.Command:
 		err = b.handleCraft(session, message)
@@ -796,7 +796,7 @@ func (b *Bot) handleCheck(session *discordgo.Session, message *discordgo.Message
 	targetUserID := message.Author.ID
 	if len(message.Mentions) > 0 {
 		if len(message.Mentions) != 1 || message.Mentions[0] == nil {
-			return fmt.Errorf("check command requires exactly one member mention")
+			return fmt.Errorf("status command requires exactly one member mention")
 		}
 		targetUserID = message.Mentions[0].ID
 	}

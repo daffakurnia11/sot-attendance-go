@@ -12,7 +12,7 @@ import (
 
 const (
 	Command              = "recap"
-	CheckCommand         = "check"
+	StatusCommand        = "status"
 	maxDescriptionLength = 4096
 )
 
