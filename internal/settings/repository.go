@@ -214,8 +214,8 @@ func parseClockTime(value string) (time.Duration, error) {
 func (r *Repository) LoadRestartSchedule(ctx context.Context) ([]time.Duration, error) {
 	var first, second string
 	err := r.database.QueryRow(ctx, `SELECT
-		COALESCE(MAX(value) FILTER (WHERE key = 'server_restart_schedule_1'), ''),
-		COALESCE(MAX(value) FILTER (WHERE key = 'server_restart_schedule_2'), '') FROM settings`).Scan(&first, &second)
+		COALESCE(MAX(value) FILTER (WHERE settings = 'server_restart_schedule_1'), ''),
+		COALESCE(MAX(value) FILTER (WHERE settings = 'server_restart_schedule_2'), '') FROM settings`).Scan(&first, &second)
 	if err != nil {
 		return nil, fmt.Errorf("load restart settings: %w", err)
 	}
