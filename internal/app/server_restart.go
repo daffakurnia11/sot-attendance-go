@@ -35,7 +35,8 @@ func (b *Bot) checkServerRestart(ctx context.Context, now time.Time) {
 	}
 	at := restartBetween(b.restartChecked, now, clocks, b.location)
 	if !at.IsZero() {
-		count, err := b.serverLogs.CloseForRestart(request, at)
+		previous := restartBetween(at.Add(-48*time.Hour), at.Add(-time.Nanosecond), clocks, b.location)
+		count, err := b.serverLogs.CloseForRestart(request, at, previous)
 		if err != nil {
 			b.logger.Error("record scheduled restart exits", "error", err)
 			return
