@@ -56,7 +56,7 @@ func TestDiscordStockNotifierRoutesEachMovementGroup(t *testing.T) {
 	})}
 	notifier := NewDiscordStockNotifier(client, "secret", StockDiscordChannels{Public: "33", Boss: "11"})
 	notifier.baseURL = "https://discord.test"
-	err := notifier.Notify(context.Background(), "123", []stock.Movement{
+	err := notifier.Notify(context.Background(), "123", "Kenji Nakamura", []stock.Movement{
 		{Safebox: "public", ItemKey: "iron", Action: stock.ActionWithdraw, Quantity: 80},
 		{Safebox: "boss", ItemKey: "iron", Action: stock.ActionWithdraw, Quantity: 20},
 		{Safebox: "boss", ItemKey: "vector", Action: stock.ActionDeposit, Quantity: 5},
@@ -72,16 +72,16 @@ func TestDiscordStockNotifierRoutesEachMovementGroup(t *testing.T) {
 		t.Fatalf("paths = %v, titles = %v", paths, titles)
 	}
 	wantDescriptions := []string{
-		"Purpose: Crafting Products · <@123>",
-		"Purpose: Crafting Materials · <@123>",
-		"Purpose: Crafting Products · <@123>",
-		"Purpose: Crafting Materials · <@123>",
+		"Purpose: Crafting Products\nBy **Kenji Nakamura** · <@123>",
+		"Purpose: Crafting Materials\nBy **Kenji Nakamura** · <@123>",
+		"Purpose: Crafting Products\nBy **Kenji Nakamura** · <@123>",
+		"Purpose: Crafting Materials\nBy **Kenji Nakamura** · <@123>",
 	}
 	if !reflect.DeepEqual(descriptions, wantDescriptions) {
 		t.Fatalf("descriptions = %v", descriptions)
 	}
 	for index := range fields {
-		if len(fields[index]) != 1 || fields[index][0].Name != "Items" {
+		if len(fields[index]) != 1 || fields[index][0].Name != "Items" || !strings.HasPrefix(fields[index][0].Value, "```\n") || !strings.Contains(fields[index][0].Value, "→") {
 			t.Fatalf("fields = %+v", fields[index])
 		}
 	}
@@ -93,7 +93,7 @@ func TestDiscordStockNotifierReportsDiscordFailure(t *testing.T) {
 	})}
 	notifier := NewDiscordStockNotifier(client, "secret", StockDiscordChannels{Boss: "11"})
 	notifier.baseURL = "https://discord.test"
-	err := notifier.Notify(context.Background(), "123", []stock.Movement{{Safebox: "boss", ItemKey: "vector", Action: stock.ActionDeposit, Quantity: 1}}, nil)
+	err := notifier.Notify(context.Background(), "123", "Kenji Nakamura", []stock.Movement{{Safebox: "boss", ItemKey: "vector", Action: stock.ActionDeposit, Quantity: 1}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "status 403") {
 		t.Fatalf("error = %v", err)
 	}

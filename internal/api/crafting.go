@@ -232,7 +232,13 @@ func (h *Handler) storeCraftingStock(response http.ResponseWriter, request *http
 		return
 	}
 	if applied && h.stockNotify != nil {
-		if err := h.stockNotify.Notify(request.Context(), claims.DiscordUserID, movements, itemNames); err != nil {
+		actorName := "Unknown Member"
+		if actor, err := h.members.FindByDiscordUserID(request.Context(), claims.DiscordUserID); err == nil {
+			actorName = actor.CharacterName
+		} else {
+			h.logger.Warn("read crafting stock actor", "member_id", claims.MemberID, "error", err)
+		}
+		if err := h.stockNotify.Notify(request.Context(), claims.DiscordUserID, actorName, movements, itemNames); err != nil {
 			h.logger.Error("send crafting stock Discord embeds", "member_id", claims.MemberID, "error", err)
 		}
 	}

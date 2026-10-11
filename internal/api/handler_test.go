@@ -338,7 +338,7 @@ type stubCraftingStockNotifier struct {
 	actorDiscordID string
 }
 
-func (s *stubCraftingStockNotifier) Notify(_ context.Context, actorDiscordID string, _ []stock.Movement, _ map[string]string) error {
+func (s *stubCraftingStockNotifier) Notify(_ context.Context, actorDiscordID string, _ string, _ []stock.Movement, _ map[string]string) error {
 	s.calls++
 	s.actorDiscordID = actorDiscordID
 	return nil

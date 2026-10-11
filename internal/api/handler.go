@@ -67,7 +67,7 @@ type craftingStockWriter interface {
 	ApplyMovements(context.Context, stock.MovementBatch) (bool, error)
 }
 type craftingStockNotifier interface {
-	Notify(context.Context, string, []stock.Movement, map[string]string) error
+	Notify(context.Context, string, string, []stock.Movement, map[string]string) error
 }
 type Handler struct {
 	verifier    discordIdentityVerifier

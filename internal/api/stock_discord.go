@@ -9,10 +9,10 @@ import (
 	"io"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/daffakurniawan/sot-discord-bot/internal/command/stash"
 	"github.com/daffakurniawan/sot-discord-bot/internal/stock"
 )
 
@@ -34,7 +34,7 @@ func NewDiscordStockNotifier(client *http.Client, token string, channels StockDi
 
 type stockNoticeKey struct{ safebox, action string }
 
-func (n *DiscordStockNotifier) Notify(ctx context.Context, actorDiscordID string, movements []stock.Movement, names map[string]string) error {
+func (n *DiscordStockNotifier) Notify(ctx context.Context, actorDiscordID, actorName string, movements []stock.Movement, names map[string]string) error {
 	groups := make(map[stockNoticeKey][]stock.Movement)
 	for _, movement := range movements {
 		key := stockNoticeKey{movement.Safebox, movement.Action}
@@ -57,7 +57,7 @@ func (n *DiscordStockNotifier) Notify(ctx context.Context, actorDiscordID string
 			failures = append(failures, fmt.Errorf("missing channel for %s %s", key.safebox, key.action))
 			continue
 		}
-		if err := n.send(ctx, channelID, actorDiscordID, key, groups[key], names); err != nil {
+		if err := n.send(ctx, channelID, actorDiscordID, actorName, key, groups[key], names); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -73,39 +73,23 @@ func (n *DiscordStockNotifier) channelID(key stockNoticeKey) string {
 	return n.channels.Public
 }
 
-func stockMovementLines(movements []stock.Movement, names map[string]string) []string {
-	lines := make([]string, 0, len(movements))
+func (n *DiscordStockNotifier) send(ctx context.Context, channelID, actorDiscordID, actorName string, key stockNoticeKey, movements []stock.Movement, names map[string]string) error {
+	lines := make([]stash.Line, 0, len(movements))
 	for _, movement := range movements {
 		name := strings.TrimSpace(names[movement.ItemKey])
 		if name == "" {
 			name = movement.ItemKey
 		}
-		lines = append(lines, fmt.Sprintf("**%s** × %s", name, formatStockNumber(int64(movement.Quantity))))
+		lines = append(lines, stash.Line{Name: name, Quantity: movement.Quantity, After: movement.After})
 	}
-	return lines
-}
-
-func (n *DiscordStockNotifier) send(ctx context.Context, channelID, actorDiscordID string, key stockNoticeKey, movements []stock.Movement, names map[string]string) error {
-	lines := stockMovementLines(movements, names)
-	title, color := "Deposit", 0x57F287
+	reason := "Crafting Products"
 	if key.action == stock.ActionWithdraw {
-		title, color = "Withdraw", 0xED4245
+		reason = "Crafting Materials"
 	}
-	stashName := strings.ToUpper(key.safebox[:1]) + key.safebox[1:] + " Stash"
-	description := "Purpose: Crafting Products"
-	if key.action == stock.ActionWithdraw {
-		description = "Purpose: Crafting Materials"
-	}
-	if actorDiscordID != "" {
-		description += " · <@" + actorDiscordID + ">"
-	}
-	fields := []map[string]any{{"name": "Items", "value": boundedStockLines(lines, 1024)}}
+	embed := stash.TransactionEmbed(key.safebox, key.action, lines, actorName, actorDiscordID, reason)
+	embed.Timestamp = time.Now().UTC().Format(time.RFC3339)
 	payload := map[string]any{
-		"embeds": []map[string]any{{
-			"title": title + " · " + stashName, "description": description, "color": color,
-			"fields":    fields,
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-		}},
+		"embeds":           []any{embed},
 		"allowed_mentions": map[string]any{"parse": []string{}},
 	}
 	body, err := json.Marshal(payload)
@@ -128,31 +112,4 @@ func (n *DiscordStockNotifier) send(ctx context.Context, channelID, actorDiscord
 		return fmt.Errorf("send Discord stock message to %s: status %d", channelID, response.StatusCode)
 	}
 	return nil
-}
-
-func boundedStockLines(lines []string, limit int) string {
-	var result strings.Builder
-	for _, line := range lines {
-		separator := ""
-		if result.Len() > 0 {
-			separator = "\n"
-		}
-		if result.Len()+len(separator)+len(line) > limit {
-			if result.Len() == 0 {
-				return line[:limit]
-			}
-			break
-		}
-		result.WriteString(separator)
-		result.WriteString(line)
-	}
-	return result.String()
-}
-
-func formatStockNumber(value int64) string {
-	digits := strconv.FormatInt(value, 10)
-	for index := len(digits) - 3; index > 0; index -= 3 {
-		digits = digits[:index] + "," + digits[index:]
-	}
-	return digits
 }

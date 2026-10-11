@@ -72,6 +72,8 @@ type Transaction struct {
 }
 
 type Movement struct {
+	// After is populated on successful commit for notification rendering only.
+	After    int32  `json:"-"`
 	Safebox  string `json:"safebox"`
 	ItemKey  string `json:"item_key"`
 	Action   string `json:"action"`
@@ -326,7 +328,7 @@ func (r *Repository) ApplyMovements(ctx context.Context, batch MovementBatch) (b
 	if err != nil {
 		return false, fmt.Errorf("record stock movement request: %w", err)
 	}
-	for _, movement := range movements {
+	for index, movement := range movements {
 		var itemID int64
 		var before int32
 		if err := databaseTransaction.QueryRow(ctx, `SELECT b.item_id,b.quantity FROM safebox_stock_balances b JOIN safebox_stock_items i ON i.id=b.item_id WHERE b.safebox=$1 AND i.item_key=$2 FOR UPDATE`, movement.Safebox, movement.ItemKey).Scan(&itemID, &before); err != nil {
@@ -347,6 +349,7 @@ func (r *Repository) ApplyMovements(ctx context.Context, batch MovementBatch) (b
 		if after > math.MaxInt32 {
 			return false, ErrQuantityOverflow
 		}
+		movements[index].After = int32(after)
 		if _, err := databaseTransaction.Exec(ctx, `UPDATE safebox_stock_balances SET quantity=$1,updated_at=NOW() WHERE safebox=$2 AND item_id=$3`, after, movement.Safebox, itemID); err != nil {
 			return false, fmt.Errorf("update stock movement: %w", err)
 		}
@@ -356,6 +359,15 @@ func (r *Repository) ApplyMovements(ctx context.Context, batch MovementBatch) (b
 	}
 	if err := databaseTransaction.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit stock movement batch: %w", err)
+	}
+	// Publish results only after commit, preserving caller order.
+	for index := range batch.Movements {
+		for _, movement := range movements {
+			if batch.Movements[index].Safebox == movement.Safebox && strings.TrimSpace(batch.Movements[index].ItemKey) == movement.ItemKey {
+				batch.Movements[index].After = movement.After
+				break
+			}
+		}
 	}
 	return true, nil
 }
