@@ -170,10 +170,10 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 				CASE source WHEN 'server' THEN 0 WHEN 'cfx' THEN 1 ELSE 2 END AS trust
 			FROM server_visits
 		), latest_server AS (
-			SELECT DISTINCT ON (server_member_id) server_member_id, disconnected_at
+			SELECT DISTINCT ON (server_member_id) server_member_id, session_id, disconnected_at
 			FROM visits
 			WHERE source = 'server'
-			ORDER BY server_member_id, last_event_at DESC
+			ORDER BY server_member_id, first_event_at DESC, last_event_at DESC, session_id DESC
 		), live AS (
 			-- Visits still open and not aged out, including one that has only
 			-- reported connecting: deriving status from connected sessions
@@ -188,6 +188,8 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 			FROM visits v
 			LEFT JOIN latest_server ls ON ls.server_member_id = v.server_member_id
 			WHERE v.disconnected_at IS NULL
+				-- A newer CR session supersedes older open sessions, even if their exit was missed.
+				AND (v.source <> 'server' OR v.session_id = ls.session_id)
 				AND (
 					(v.connected_at IS NOT NULL AND v.last_event_at + make_interval(secs => $1::double precision) > NOW())
 					OR (v.connected_at IS NULL AND v.last_event_at + make_interval(secs => $2::double precision) > NOW())

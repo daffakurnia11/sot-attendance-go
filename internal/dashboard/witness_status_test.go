@@ -71,6 +71,33 @@ func TestDashboardPlayerStatusAcrossWitnesses(t *testing.T) {
 			wantStatus: "offline",
 		},
 		{
+			name: "newer closed CR session supersedes an older open session",
+			seed: func() {
+				seedServerVisit(t, pool, serverMemberID, serverSession, ago(180), time.Time{})
+				seedServerVisit(t, pool, serverMemberID, cfxSession, ago(60), ago(30))
+			},
+			wantStatus: "offline",
+		},
+		{
+			name: "newer CR session supplies the live slot",
+			seed: func() {
+				seedWitnessRow(t, pool, serverMemberID, "server", serverSession, "connected", ago(180), 290)
+				seedWitnessRow(t, pool, serverMemberID, "server", cfxSession, "connected", ago(60), 1038)
+			},
+			wantStatus: "connected",
+			wantSlot:   "1038",
+		},
+		{
+			name: "late old session exit cannot supersede a newer reconnect",
+			seed: func() {
+				seedWitnessRow(t, pool, serverMemberID, "server", serverSession, "connected", ago(180), 290)
+				seedWitnessRow(t, pool, serverMemberID, "server", cfxSession, "connected", ago(60), 1038)
+				seedWitnessRow(t, pool, serverMemberID, "server", serverSession, "disconnected", ago(1), 290)
+			},
+			wantStatus: "connected",
+			wantSlot:   "1038",
+		},
+		{
 			// Case 3: the roster alone, with its slot.
 			name: "CFX alone",
 			seed: func() {
