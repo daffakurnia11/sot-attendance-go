@@ -10,7 +10,7 @@ import (
 )
 
 func (h *Handler) safeboxStock(response http.ResponseWriter, request *http.Request) {
-	claims, ok := h.admin(response, request, "safebox stock")
+	claims, ok := h.authenticated(response, request)
 	if !ok {
 		return
 	}
@@ -28,7 +28,7 @@ func (h *Handler) safeboxStock(response http.ResponseWriter, request *http.Reque
 }
 
 func (h *Handler) safeboxStockTransactions(response http.ResponseWriter, request *http.Request) {
-	claims, ok := h.admin(response, request, "safebox stock transactions")
+	claims, ok := h.authenticated(response, request)
 	if !ok {
 		return
 	}

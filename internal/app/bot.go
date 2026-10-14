@@ -59,6 +59,7 @@ type Bot struct {
 	announces            bool
 	adminRoleIDs         []string
 	memberRoleID         string
+	playerRecapChannelID string
 	officeMoneyChannelID string
 	dirtyMoneyChannelID  string
 	stashChannels        stashChannels
@@ -192,6 +193,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		guildID:              cfg.GuildID,
 		announces:            cfg.Announces(),
 		adminRoleIDs:         cfg.DiscordAdminRoleIDs,
+		playerRecapChannelID: cfg.PlayerRecapChannelID,
 		memberRoleID:         cfg.DiscordMemberRoleID,
 		serverLogChannelID:   cfg.ServerLogChannelID,
 		serverLogs:           serverlog.NewRepository(pool),
@@ -569,7 +571,7 @@ func (b *Bot) onReady(session *discordgo.Session, event *discordgo.Ready) {
 		// token. Doing them again from a laptop duplicates or fights them.
 		go func() {
 			for _, command := range slashCommands() {
-				if command.Name == commandrecap.CheckCommand || command.Name == statusCommand {
+				if isReadOnlyCommand(command.Name) {
 					if _, err := session.ApplicationCommandCreate(event.User.ID, b.guildID, command); err != nil {
 						b.logger.Error("register local read-only command", "error", err)
 					}
@@ -689,7 +691,7 @@ func (b *Bot) onMessageCreate(session *discordgo.Session, message *discordgo.Mes
 		return
 	}
 	commandName := b.router.Match(message.Content)
-	if !b.announces && commandName != commandrecap.CheckCommand && commandName != statusCommand {
+	if !b.announces && !isReadOnlyCommand(commandName) {
 		return
 	}
 	if b.inStashChannel(message.ChannelID) {
@@ -846,37 +848,13 @@ func (b *Bot) handleCheck(session *discordgo.Session, message *discordgo.Message
 	return nil
 }
 
-func (b *Bot) handleRecap(session *discordgo.Session, message *discordgo.MessageCreate) error {
-	if !b.canRunRecap(message.Member) {
-		_, err := session.ChannelMessageSendReply(message.ChannelID, fmt.Sprintf("Recap is admin-only. Use /status or %sstatus to check your connection, and /check or %scheck to check attendance.", b.router.Prefix(), b.router.Prefix()), message.Reference())
-		return err
-	}
-
-	now := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	embed, participants, attendanceStart, err := b.buildRecapEmbed(ctx, now)
-	if err != nil {
-		return err
-	}
-	if _, err := session.ChannelMessageSendEmbed(message.ChannelID, embed); err != nil {
-		return fmt.Errorf("send attendance recap: %w", err)
-	}
-	b.logger.Info("attendance recap sent", "guild_id", message.GuildID, "channel_id", message.ChannelID, "user_id", message.Author.ID, "players", participants, "attendance_start", attendanceStart)
-	return nil
+func (b *Bot) recapChannelResponse() string {
+	return fmt.Sprintf("Manual recap commands are disabled. Open <#%s> to see the attendance recap.", b.playerRecapChannelID)
 }
 
-// Missing role configuration or member information denies manual recap access.
-func (b *Bot) canRunRecap(member *discordgo.Member) bool {
-	if member == nil {
-		return false
-	}
-	for _, role := range b.adminRoleIDs {
-		if role != "" && slices.Contains(member.Roles, role) {
-			return true
-		}
-	}
-	return false
+func (b *Bot) handleRecap(session *discordgo.Session, message *discordgo.MessageCreate) error {
+	_, err := session.ChannelMessageSendReply(message.ChannelID, b.recapChannelResponse(), message.Reference())
+	return err
 }
 
 // Match the Player Logs table: include connected and connecting characters,

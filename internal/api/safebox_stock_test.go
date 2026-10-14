@@ -48,6 +48,19 @@ func (s *stubSafeboxStock) Transact(_ context.Context, transaction stock.Transac
 	return s.err
 }
 
+func TestSafeboxReadsAllowMembersAndRequireAuthentication(t *testing.T) {
+	store := &stubSafeboxStock{}
+	handler := NewHandler(Deps{Members: &stubMembers{found: member.Member{ID: 7, IsAdmin: false}}, Tokens: stubTokens{claims: appauth.Claims{MemberID: 7}}, Stock: store, Logger: testLogger()})
+	for _, path := range []string{"/api/v1/safebox-stock", "/api/v1/safebox-stock/transactions?safebox=public"} {
+		if response := requestWithBody(handler, http.MethodGet, path, "Bearer app-token", ""); response.Code != http.StatusOK {
+			t.Fatalf("member GET %s = %d %s", path, response.Code, response.Body.String())
+		}
+		if response := requestWithBody(handler, http.MethodGet, path, "", ""); response.Code != http.StatusUnauthorized {
+			t.Fatalf("anonymous GET %s = %d", path, response.Code)
+		}
+	}
+}
+
 func TestSafeboxStockTransactionsListsSelectedSafebox(t *testing.T) {
 	store := &stubSafeboxStock{transactions: []stock.TransactionEntry{{ID: 1, Safebox: "boss", ItemName: "MP9"}}}
 	members := &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: true}}

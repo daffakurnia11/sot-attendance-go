@@ -15,8 +15,6 @@ import (
 	stockdomain "github.com/daffakurniawan/sot-discord-bot/internal/stock"
 )
 
-var errRecapAdminRequired = errors.New("recap requires a configured admin role")
-
 var errMoneyAdminRequired = errors.New("money command requires administrator permission")
 
 type moneyChannelError struct {
@@ -40,7 +38,7 @@ func slashCommands() []*discordgo.ApplicationCommand {
 			}},
 		},
 		{Name: statusCommand, Description: "Check current CR Roleplay connection", Contexts: &guildContexts, Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionUser, Name: "member", Description: "Member to check; defaults to you"}}},
-		{Name: commandrecap.Command, Description: "Show the current attendance recap", Contexts: &guildContexts},
+		{Name: commandrecap.Command, Description: "Find the attendance recap channel", Contexts: &guildContexts},
 		moneySlashCommand(guildContexts),
 		stashSlashCommand(guildContexts),
 	}
@@ -111,7 +109,7 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 	// a local bot would race the deployed one to answer it and post the craft or
 	// stash embed a second time. A quiet bot answers nothing, as with prefix
 	// commands.
-	if !b.announces && (event.Type != discordgo.InteractionApplicationCommand || (event.ApplicationCommandData().Name != commandrecap.CheckCommand && event.ApplicationCommandData().Name != statusCommand)) {
+	if !b.announces && (event.Type != discordgo.InteractionApplicationCommand || !isReadOnlyCommand(event.ApplicationCommandData().Name)) {
 		return
 	}
 	if event.Type == discordgo.InteractionMessageComponent || event.Type == discordgo.InteractionModalSubmit {
@@ -128,6 +126,15 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 	}
 	commandName := event.ApplicationCommandData().Name
 	if !isSlashCommand(commandName) {
+		return
+	}
+	if commandName == commandrecap.Command {
+		if err := session.InteractionRespond(event.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{Content: b.recapChannelResponse(), Flags: discordgo.MessageFlagsEphemeral},
+		}); err != nil {
+			b.logger.Error("respond with recap channel", "guild_id", event.GuildID, "channel_id", event.ChannelID, "error", err)
+		}
 		return
 	}
 	if commandName == commandcrafting.Command {
@@ -177,8 +184,9 @@ func (b *Bot) slashCommandResponse(interaction *discordgo.Interaction, commandNa
 		return nil, "", errors.New("guild member is required")
 	}
 	userID := interaction.Member.User.ID
-	if commandName == commandrecap.Command && !b.canRunRecap(interaction.Member) {
-		return nil, userID, errRecapAdminRequired
+	if commandName == commandrecap.Command {
+		content := b.recapChannelResponse()
+		return &discordgo.WebhookEdit{Content: &content}, userID, nil
 	}
 	now := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -198,9 +206,6 @@ func (b *Bot) slashCommandResponse(interaction *discordgo.Interaction, commandNa
 			return nil, userID, err
 		}
 		embed, _, _, err := b.buildCheckEmbed(ctx, targetUserID, now)
-		return embedEdit(embed), userID, err
-	case commandrecap.Command:
-		embed, _, _, err := b.buildRecapEmbed(ctx, now)
 		return embedEdit(embed), userID, err
 	case commandmoney.Command:
 		request, err := parseMoneySlashRequest(interaction)
@@ -263,9 +268,6 @@ func parseMoneySlashRequest(interaction *discordgo.Interaction) (commandmoney.Re
 }
 
 func slashUserError(err error) string {
-	if errors.Is(err, errRecapAdminRequired) {
-		return "Recap is admin-only. Use /status to check your connection or /check to check attendance."
-	}
 	if content, known := stashUserError(err); known {
 		return content
 	}
@@ -307,19 +309,6 @@ func embedEdit(messageEmbed *discordgo.MessageEmbed) *discordgo.WebhookEdit {
 	return &discordgo.WebhookEdit{Embeds: &embeds}
 }
 
-func (b *Bot) buildRecapEmbed(ctx context.Context, now time.Time) (*discordgo.MessageEmbed, int, time.Time, error) {
-	attendanceConfig, err := b.settings.LoadAttendance(ctx)
-	if err != nil {
-		return nil, 0, time.Time{}, fmt.Errorf("reload attendance settings: %w", err)
-	}
-	attendanceStart, attendanceEnd := commandrecap.AttendanceWindow(now, attendanceConfig.StartTime, attendanceConfig.EndTime, b.location)
-	recaps, err := b.members.PlaytimeRecap(ctx, attendanceStart, attendanceEnd)
-	if err != nil {
-		return nil, 0, time.Time{}, err
-	}
-	return commandrecap.Embed(recaps, attendanceStart, now, attendanceConfig.PlaytimeThreshold), len(recaps), attendanceStart, nil
-}
-
 func (b *Bot) buildCheckEmbed(ctx context.Context, userID string, now time.Time) (*discordgo.MessageEmbed, int, time.Time, error) {
 	attendanceConfig, err := b.settings.LoadAttendance(ctx)
 	if err != nil {
@@ -335,4 +324,9 @@ func (b *Bot) buildCheckEmbed(ctx context.Context, userID string, now time.Time)
 		return nil, 0, time.Time{}, err
 	}
 	return commandrecap.CheckEmbed(currentMember, recaps, attendanceStart, now, attendanceConfig.PlaytimeThreshold), len(recaps), attendanceStart, nil
+}
+
+// These commands only read state or direct members to an existing channel.
+func isReadOnlyCommand(name string) bool {
+	return name == statusCommand || name == commandrecap.CheckCommand || name == commandrecap.Command
 }
