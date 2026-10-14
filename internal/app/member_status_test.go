@@ -6,6 +6,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestConnectionStatus(t *testing.T) {
@@ -75,5 +76,37 @@ func TestDiscordActivityLabels(t *testing.T) {
 		if got := discordActivityStatus(tc.activity); got != tc.want {
 			t.Fatalf("got %s want %s", got, tc.want)
 		}
+	}
+}
+
+func TestStatusSessionTiming(t *testing.T) {
+	now := time.Unix(1800000000, 0)
+	start := now.Add(-90 * time.Minute)
+	future := now.Add(time.Minute)
+	for _, tc := range []struct {
+		name, webhook string
+		activity      presence.MemberPresence
+		start         *time.Time
+		want          string
+	}{
+		{"CR start", "connected", presence.MemberPresence{}, &start, "1h30m"},
+		{"Discord fallback", "unknown", presence.MemberPresence{Playing: true, StartedAt: &start}, nil, "1h30m"},
+		{"offline hides old start", "disconnected", presence.MemberPresence{}, &start, "—"},
+		{"connecting has no playtime", "connecting", presence.MemberPresence{Playing: true, Connecting: true, StartedAt: &start}, nil, "—"},
+		{"missing start", "connected", presence.MemberPresence{}, nil, "—"},
+		{"future start", "connected", presence.MemberPresence{}, &future, "—"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			connected, playtime := statusSessionTiming(tc.webhook, tc.activity, tc.start, now)
+			if playtime != tc.want {
+				t.Fatalf("playtime=%s want %s", playtime, tc.want)
+			}
+			if tc.want == "—" && connected != "—" {
+				t.Fatalf("connected=%s", connected)
+			}
+			if tc.want != "—" && connected != "<t:1799994600:f>" {
+				t.Fatalf("connected=%s", connected)
+			}
+		})
 	}
 }
