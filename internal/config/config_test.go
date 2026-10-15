@@ -166,3 +166,16 @@ func TestAnnouncesOnlyInProduction(t *testing.T) {
 		t.Error("local must stay quiet")
 	}
 }
+
+func TestBusinessChannels(t *testing.T) {
+	c, err := withBusinessChannels(Config{}, " 123 ")
+	if err != nil || c.BusinessOrderListChannelID != "123" {
+		t.Fatalf("config: %+v %v", c, err)
+	}
+	if _, err := withBusinessChannels(Config{}, "bad"); err == nil {
+		t.Fatal("invalid channel accepted")
+	}
+	if _, err := withBusinessChannels(Config{}, ""); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -1,0 +1,218 @@
+package app
+
+import (
+	"github.com/bwmarrin/discordgo"
+	"github.com/daffakurniawan/sot-discord-bot/internal/business"
+	"math"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestOrderPricingAndConversion(t *testing.T) {
+	entries := []business.Entry{{ID: 1, Direction: "purchase", PartnerCode: "BZ", Price: 3100, Name: "Ammo Rifle", StockItemName: "Ammo Rifle", Unit: "clip"}, {ID: 2, Direction: "purchase", PartnerCode: "BZ", Price: 500, Name: "Joint", Unit: "piece"}}
+	d, err := buildOrderDraft(entries, "purchase", "bz", "1:100,2:2", "2026-10-14", "2026-10-15", "discount", -1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Total != 310000 || d.Lines[0].Conversion != 180 || d.Lines[1].Conversion != 1 {
+		t.Fatalf("wrong pricing/conversion: %+v", d)
+	}
+	entries[0].Price = 1
+	if d.Lines[0].Entry.Price != 3100 {
+		t.Fatal("order price changed with catalog")
+	}
+}
+func TestOrderRejectsInvalidInput(t *testing.T) {
+	entries := []business.Entry{{ID: 1, Direction: "sale", PartnerCode: "DW", Price: 15000, Unit: "piece"}}
+	for _, tc := range []struct {
+		name, items, partner, date string
+		additional                 int64
+		notes                      string
+	}{
+		{name: "duplicate", items: "1:1,1:1", partner: "DW", date: "2026-10-14"},
+		{name: "negative quantity", items: "1:-1", partner: "DW", date: "2026-10-14"},
+		{name: "wrong partner", items: "1:1", partner: "BZ", date: "2026-10-14"},
+		{name: "bad date", items: "1:1", partner: "DW", date: "14/10/26"},
+		{name: "missing cost reason", items: "1:1", partner: "DW", date: "2026-10-14", additional: 100},
+		{name: "negative total", items: "1:1", partner: "DW", date: "2026-10-14", additional: -15001, notes: "discount"},
+		{name: "overflow", items: "1:1", partner: "DW", date: "2026-10-14", additional: math.MaxInt64, notes: "fee"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := buildOrderDraft(entries, "sale", tc.partner, tc.items, tc.date, "2026-10-15", tc.notes, tc.additional); err == nil {
+				t.Fatal("accepted invalid order")
+			}
+		})
+	}
+}
+func TestOrderChannels(t *testing.T) {
+	b := &Bot{businessSaleChannelID: "shared"}
+	if !b.inBusinessOrderChannel("shared") || b.inBusinessOrderChannel("other") || (&Bot{}).inBusinessOrderChannel("") {
+		t.Fatal("incorrect shared channel guard")
+	}
+	if orderCommandDirection("purchase") != "purchase" || orderCommandDirection("order") != "sale" || orderCommandDirection("invalid") != "" {
+		t.Fatal("incorrect command direction")
+	}
+}
+
+func TestOrderFormMenusAndSubmit(t *testing.T) {
+	d := &orderDraft{Direction: "sale", Catalog: []business.Entry{
+		{ID: 1, PartnerCode: "BZ", PartnerName: "Bladezay", Direction: "sale", StockGroup: "weapon", Name: "Vector", Unit: "piece", Price: 8000},
+		{ID: 2, PartnerCode: "DW", PartnerName: "Dwarriors", Direction: "sale", StockGroup: "weapon", Name: "CRX", Unit: "piece", Price: 15000},
+		{ID: 3, PartnerCode: "BZ", PartnerName: "Bladezay", Direction: "purchase", StockGroup: "ammo", Name: "Ammo", Unit: "clip"},
+	}}
+	rows := orderFormComponents("draft", d)
+	if len(rows) != 1 {
+		t.Fatalf("initial form rows=%d", len(rows))
+	}
+	buttons := rows[0].(discordgo.ActionsRow).Components
+	if !buttons[1].(discordgo.Button).Disabled {
+		t.Fatal("empty draft submit enabled")
+	}
+	d.Partner = "BZ"
+	rows = orderFormComponents("draft", d)
+	menu := rows[0].(discordgo.ActionsRow).Components[0].(discordgo.SelectMenu)
+	if len(menu.Options) != 1 || menu.Options[0].Value != "1" {
+		t.Fatalf("menu leaks another partner/direction: %+v", menu.Options)
+	}
+	d.Lines = []orderLine{{Entry: d.Catalog[0], Quantity: 1}}
+	rows = orderFormComponents("draft", d)
+	if rows[1].(discordgo.ActionsRow).Components[1].(discordgo.Button).Disabled {
+		t.Fatal("complete draft submit disabled")
+	}
+	commands := orderSlashCommand(nil)
+	if len(commands.Options) != 1 || commands.Options[0].Name != "partner" || !commands.Options[0].Required {
+		t.Fatal("order creation requires arguments")
+	}
+
+}
+
+func TestOrderStatusesMatchDirection(t *testing.T) {
+	for _, tc := range []struct{ direction, middle string }{{"sale", "ready"}, {"purchase", "paid"}} {
+		statuses := orderStatuses(tc.direction)
+		if len(statuses) != 3 || statuses[0] != "open" || statuses[1] != tc.middle || statuses[2] != "complete" {
+			t.Fatalf("wrong statuses: %v", statuses)
+		}
+		d := &orderDraft{OrderID: 42, Direction: tc.direction, Status: tc.middle}
+		menu := orderStatusComponents(d)[0].(discordgo.ActionsRow).Components[0].(discordgo.SelectMenu)
+		if menu.CustomID != "orderstatus:42" || !menu.Options[1].Default {
+			t.Fatalf("wrong persistent controls: %+v", menu)
+		}
+	}
+	if len(orderStatuses("unknown")) != 0 {
+		t.Fatal("unknown direction accepted")
+	}
+}
+
+func TestOrderStatusConfirmationDoesNotDuplicateControls(t *testing.T) {
+	response := orderStatusConfirmation(&orderDraft{OrderID: 2, Status: "complete"}, "office")
+	if response.Content == nil || !strings.Contains(*response.Content, "**Complete**") {
+		t.Fatal("missing saved status confirmation")
+	}
+	if response.Embeds == nil || len(*response.Embeds) != 0 || response.Components == nil || len(*response.Components) != 0 {
+		t.Fatal("success retained duplicate order controls")
+	}
+}
+
+func TestPurchaseProductsShownWithoutCategory(t *testing.T) {
+	d := &orderDraft{Direction: "purchase", Partner: "CR", Catalog: []business.Entry{
+		{ID: 1, PartnerCode: "CR", PartnerName: "Chaos", Direction: "purchase", StockGroup: "blueprint", Name: "Blueprint Vector", Unit: "piece"},
+		{ID: 2, PartnerCode: "BZ", PartnerName: "Bladezay", Direction: "purchase", StockGroup: "ammo", Name: "Ammo Rifle", Unit: "clip"},
+	}}
+	rows := orderFormComponents("draft", d)
+	if len(rows) != 2 {
+		t.Fatalf("want product/buttons, got %d rows", len(rows))
+	}
+	menu := rows[0].(discordgo.ActionsRow).Components[0].(discordgo.SelectMenu)
+	if menu.CustomID != "orderform:product:draft" || len(menu.Options) != 1 || menu.Options[0].Value != "1" {
+		t.Fatalf("unexpected products: %+v", menu)
+	}
+}
+
+func TestOrderEmbedHasNoDirectionField(t *testing.T) {
+	for _, direction := range []string{"sale", "purchase"} {
+		d := &orderDraft{Direction: direction}
+		embed := orderEmbed(d)
+		for _, field := range embed.Fields {
+			if field.Name == "Direction" {
+				t.Fatal("direction field remains")
+			}
+		}
+		if direction == "sale" && embed.Color != 0x57F287 || direction == "purchase" && embed.Color != 0xED4245 {
+			t.Fatal("incorrect embed color")
+		}
+	}
+}
+
+func TestRequiredPartnerCodeValidation(t *testing.T) {
+	entries := []business.Entry{{PartnerCode: "CR", Direction: "purchase"}, {PartnerCode: "GWF", Direction: "sale"}}
+	code, err := orderPartnerCode(entries, "purchase", " cr ")
+	if err != nil || code != "CR" {
+		t.Fatalf("normalized code: %q %v", code, err)
+	}
+	for _, raw := range []string{"", "unknown", "GWF"} {
+		if _, err := orderPartnerCode(entries, "purchase", raw); err == nil {
+			t.Fatalf("accepted unavailable partner %q", raw)
+		}
+	}
+}
+
+func TestOrderPickupDefaultsAcrossMonth(t *testing.T) {
+	date, err := time.Parse("2006-01-02", "2026-12-31")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := defaultOrderPickup("sale", date).Format("2006-01-02"); got != "2027-01-02" {
+		t.Fatal(got)
+	}
+	if !defaultOrderPickup("purchase", date).Equal(date) {
+		t.Fatal("purchase default changed")
+	}
+	if orderMoney(1700000) != "$1,700,000" || orderMoney(-10000) != "$-10,000" {
+		t.Fatal("incorrect currency format")
+	}
+}
+
+func TestOrderAdditionalPercentages(t *testing.T) {
+	for _, tc := range []struct {
+		raw            string
+		subtotal, want int64
+	}{{"+15%", 225000, 33750}, {"-10%", 225000, -22500}, {"+15000", 225000, 15000}, {"2.5%", 100, 3}, {"-2.5%", 100, -3}} {
+		got, err := parseOrderAdditional(tc.raw, tc.subtotal)
+		if err != nil || got != tc.want {
+			t.Fatalf("%s: %d %v", tc.raw, got, err)
+		}
+	}
+	for _, raw := range []string{"abc", "15%%", "1.234%", "1e3%"} {
+		if _, err := parseOrderAdditional(raw, 100); err == nil {
+			t.Fatalf("accepted %q", raw)
+		}
+	}
+	d := &orderDraft{Direction: "sale", Partner: "BZ", Date: time.Now(), Pickup: time.Now(), Notes: "fast track", AdditionalInput: "+15%", Catalog: []business.Entry{{ID: 1, Direction: "sale", PartnerCode: "BZ", Price: 9000, Unit: "piece"}}}
+	d.Lines = []orderLine{{Entry: d.Catalog[0], Quantity: 25}}
+	if err := recalculateOrder(d); err != nil || d.Total != 258750 {
+		t.Fatalf("initial percentage: %+v %v", d, err)
+	}
+	d.Lines[0].Quantity = 50
+	if err := recalculateOrder(d); err != nil || d.Total != 517500 {
+		t.Fatalf("updated percentage: %+v %v", d, err)
+	}
+}
+
+func TestOrderFooterUsesPersistedTimesInWIB(t *testing.T) {
+	created := time.Date(2026, 10, 15, 3, 0, 0, 0, time.UTC)
+	d := &orderDraft{Direction: "sale", CreatedAt: created, UpdatedAt: created.Add(time.Hour), UpdatedBy: "DeltaKilo"}
+	embed := orderEmbed(d)
+	if embed.Footer == nil {
+		t.Fatal("missing footer")
+	}
+	for _, want := range []string{"Created: 15 Oct 2026 10:00:00 WIB", "Updated: 15 Oct 2026 11:00:00 WIB", "Last updated by: DeltaKilo"} {
+		if !strings.Contains(embed.Footer.Text, want) {
+			t.Fatalf("missing %q: %s", want, embed.Footer.Text)
+		}
+	}
+	d.UpdatedBy = ""
+	if !strings.Contains(orderEmbed(d).Footer.Text, "Unknown") {
+		t.Fatal("invented historical updater")
+	}
+}

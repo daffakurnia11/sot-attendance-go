@@ -127,7 +127,7 @@ A pending disconnect is delayed for at least 15 seconds (or two poll intervals w
 
 `DISCORD_COMMAND_PREFIX` controls message commands.
 
-The bot also registers guild-scoped `/craft`, `/check`, `/recap`, `/money`, and `/stash` application commands at gateway startup. All but `/stash` mirror a prefix-command equivalent; `/stash` has none on purpose, for the reason below.
+The bot also registers guild-scoped `/craft`, `/check`, `/recap`, `/money`, and `/stash` application commands at gateway startup. The order command is slash-only. All other commands except `/stash` mirror a prefix-command equivalent; `/stash` has none on purpose, for the reason below.
 
 Run `/craft` to open an ephemeral multi-product crafting builder. Select a weapon, enter its quantity, and repeat for up to 20 products. The bot combines matching materials into one total, shows the total crafting time, and lets the caller explicitly post the completed result to the channel. Drafts expire after 10 minutes and quantities must be between 1 and 10,000.
 
@@ -280,3 +280,55 @@ With `APP_ENV=local`, `/check` and `<prefix>check` are enabled for read-only emb
 `/status [member]` and `<prefix>status [@member]` show current CR Roleplay connection evidence from the webhook and Discord activity. The latest webhook event across all member characters supplies webhook status; abandoned older sessions cannot override a newer disconnect. Discord activity supplies a separate fallback. Absent Discord activity displays `No Activity`; without connection evidence, current status displays `Not Connected`. Webhook open states older than 12 hours are treated as unknown. Both status forms are available locally with the production bot stopped.
 
 Manual `/recap` and `<prefix>recap` require at least one Discord role configured in `DISCORD_ADMIN_IDS`. Missing role configuration denies access. Scheduled attendance recaps are unaffected.
+
+### Business orders
+
+Configure `BUSINESS_ORDER_LIST_CHANNEL_ID` for both SOT sales and purchases.
+A missing ID disables business order commands. These commands require a registered administrator and run only
+in the configured channel on the production bot.
+
+1. Run `/purchase partner:CR` or `/order partner:GWF` in the shared business order channel.
+2. Partner code is required before opening the form. Select a product. A quantity modal adds or updates
+   that product. Enter zero to remove it. Changing partner clears selected items.
+3. **Order details** opens dates, signed additional price, and notes. Dates default
+   to today in Asia/Jakarta; nonzero additional price requires notes.
+4. Review the totals in the private form, then **Submit** to save and post the order.
+   **Clear items** resets the product list. No catalog IDs or item syntax are typed.
+
+Creating orders does not move stock or money. Completing orders settles both. Clip conversion uses the supported ammo products (80 pistol, 150
+SMG, 180 rifle rounds per clip); unsupported units are rejected rather than
+inferred from free-text notes.
+
+Previews expire after 15 minutes and are held in memory. Restarting the bot
+invalidates them. Repeated confirmation clicks in one process do not create
+another order. Failed posting can retry the saved order during the preview's
+lifetime. Without a persisted creation interaction ID, recovery across process
+restarts and ambiguous network failures requires checking saved orders before
+recreating them. No historical Discord messages are imported.
+
+Use `/order-status order_id:42` in the shared business order channel to load persisted
+status controls. Sales offer open/ready/complete; purchases offer
+open/paid/complete. New order messages include the same dropdown. Administrators
+can change status; changes update the database and refresh the linked channel
+message. Open has no ledger effect. Database status remains free text; the bot
+enforces the stages below.
+
+Order stages are forward-only. Sales advance Open → Ready → Complete: Ready
+withdraws Boss Safebox stock, Complete credits office money. Purchases advance
+Open → Paid → Complete: Paid debits office money, Complete deposits Boss stock
+using frozen unit conversions. Complete cannot skip Ready/Paid. Repeating a stage
+creates no additional ledger entries. Each movement, status, and notification
+snapshot commits together; insufficient funds or stock rolls that stage back.
+Existing Ready/Paid records missing their earlier ledger movement require manual
+reconciliation; historical records are never automatically backfilled.
+
+Stage movement embeds are stored in `business_order_notifications` in the status
+transaction (migration 000046). The announcing bot delivers pending office and
+Boss Safebox embeds at startup and every minute. Each destination has its own
+saved message ID; failed sends retry without repeating settlement or resending
+confirmed deliveries. Historical completed orders are not backfilled.
+Delivery is at least once: a crash after Discord accepts a message but before its
+ID commits can produce a duplicate embed, never a duplicate settlement.
+An uncertain creation commit retains its order ID. Retry checks that ID instead
+of inserting another order; if it cannot be found, inspect saved orders before
+starting a replacement. Draft locks are per order; busy edits reject immediately.

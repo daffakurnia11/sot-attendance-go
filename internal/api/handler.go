@@ -14,6 +14,7 @@ import (
 
 	attendancehistory "github.com/daffakurniawan/sot-discord-bot/internal/attendance"
 	appauth "github.com/daffakurniawan/sot-discord-bot/internal/auth"
+	"github.com/daffakurniawan/sot-discord-bot/internal/business"
 	"github.com/daffakurniawan/sot-discord-bot/internal/crafting"
 	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
@@ -69,7 +70,11 @@ type craftingStockWriter interface {
 type craftingStockNotifier interface {
 	Notify(context.Context, string, string, []stock.Movement, map[string]string) error
 }
+type businessCatalogReader interface {
+	List(context.Context) ([]business.Entry, error)
+}
 type Handler struct {
+	business    businessCatalogReader
 	verifier    discordIdentityVerifier
 	members     memberFinder
 	issuer      tokenIssuer
@@ -90,6 +95,7 @@ type Handler struct {
 // nil; the routes that use them answer 503 instead of being unregistered, so
 // the surface stays the same regardless of what is wired in.
 type Deps struct {
+	Business    businessCatalogReader
 	Verifier    discordIdentityVerifier
 	Members     memberFinder
 	Issuer      tokenIssuer
@@ -108,6 +114,7 @@ type Deps struct {
 
 func NewHandler(deps Deps) http.Handler {
 	handler := &Handler{
+		business:    deps.Business,
 		verifier:    deps.Verifier,
 		members:     deps.Members,
 		issuer:      deps.Issuer,
@@ -139,6 +146,8 @@ func NewHandler(deps Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/crafting/calculate-batch", handler.calculateCraftingBatch)
 	mux.HandleFunc("POST /api/v1/crafting/store-stock", handler.storeCraftingStock)
 	mux.HandleFunc("GET /api/v1/money-transactions/{account}", handler.moneyTransactions)
+	mux.HandleFunc("PATCH /api/v1/price-notes", handler.updatePriceNote)
+	mux.HandleFunc("GET /api/v1/price-notes", handler.priceNotes)
 	mux.HandleFunc("GET /api/v1/safebox-stock", handler.safeboxStock)
 	mux.HandleFunc("GET /api/v1/safebox-stock/transactions", handler.safeboxStockTransactions)
 	mux.HandleFunc("POST /api/v1/safebox-stock/transactions", handler.safeboxStockTransaction)

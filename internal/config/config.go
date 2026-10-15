@@ -10,23 +10,24 @@ import (
 )
 
 type Config struct {
-	AppEnv               string
-	Token                string
-	GuildID              string
-	DiscordRoleID        string
-	DiscordMemberRoleID  string
-	DiscordAdminRoleIDs  []string
-	ServerName           string
-	PollInterval         time.Duration
-	StatusPollInterval   time.Duration
-	CommandPrefix        string
-	ServerLogChannelID   string
-	PlayerChatChannelID  string
-	PlayerRecapChannelID string
-	OfficeMoneyChannelID string
-	DirtyMoneyChannelID  string
-	StashChannels        StashChannels
-	DatabaseURL          string
+	AppEnv                     string
+	Token                      string
+	GuildID                    string
+	DiscordRoleID              string
+	DiscordMemberRoleID        string
+	DiscordAdminRoleIDs        []string
+	ServerName                 string
+	PollInterval               time.Duration
+	StatusPollInterval         time.Duration
+	CommandPrefix              string
+	ServerLogChannelID         string
+	PlayerChatChannelID        string
+	PlayerRecapChannelID       string
+	OfficeMoneyChannelID       string
+	DirtyMoneyChannelID        string
+	BusinessOrderListChannelID string
+	StashChannels              StashChannels
+	DatabaseURL                string
 }
 
 // StashChannels names the four safebox channels. Each one fixes both the
@@ -74,6 +75,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	config, err = withServerLogChannel(config, os.Getenv("DISCORD_SERVER_LOG_CHANNEL_ID"))
+	if err != nil {
+		return Config{}, err
+	}
+	config, err = withBusinessChannels(config, os.Getenv("BUSINESS_ORDER_LIST_CHANNEL_ID"))
 	if err != nil {
 		return Config{}, err
 	}
@@ -277,4 +282,15 @@ func parseDiscordIDs(value string) ([]string, error) {
 		ids = append(ids, id)
 	}
 	return ids, nil
+}
+
+func withBusinessChannels(c Config, channel string) (Config, error) {
+	channel = strings.TrimSpace(channel)
+	if channel != "" {
+		if err := validateDiscordID(channel); err != nil {
+			return Config{}, fmt.Errorf("BUSINESS_ORDER_LIST_CHANNEL_ID: %w", err)
+		}
+	}
+	c.BusinessOrderListChannelID = channel
+	return c, nil
 }

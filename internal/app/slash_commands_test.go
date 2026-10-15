@@ -13,10 +13,10 @@ func TestSlashCommandsMirrorPrefixCommands(t *testing.T) {
 	t.Parallel()
 
 	commands := slashCommands()
-	if len(commands) != 6 {
-		t.Fatalf("slashCommands() count = %d, want 6", len(commands))
+	if len(commands) != 9 {
+		t.Fatalf("slashCommands() count = %d, want 9", len(commands))
 	}
-	wantNames := []string{"craft", "check", "status", "recap", "money", "stash"}
+	wantNames := []string{"craft", "check", "status", "recap", "money", "stash", "order", "purchase", "order-status"}
 	prefixRouter := router.NewRouter("!")
 	for index, command := range commands {
 		if command.Name != wantNames[index] || command.Description == "" {
@@ -28,6 +28,9 @@ func TestSlashCommandsMirrorPrefixCommands(t *testing.T) {
 		// Stash is deliberately the one command with no prefix twin: a
 		// written item name could name something the database does not hold,
 		// so movements go through the menu-driven slash command only.
+		if command.Name == "order" || command.Name == "purchase" || command.Name == "order-status" {
+			continue
+		}
 		if command.Name == commandstash.Command {
 			if got := prefixRouter.Match("!stash balance"); got != "" {
 				t.Errorf("stash still has a prefix command: %q", got)

@@ -34,23 +34,26 @@ import (
 )
 
 type Bot struct {
-	session            *discordgo.Session
-	status             *presence.Counter
-	router             *router.Router
-	logger             *slog.Logger
-	pollInterval       time.Duration
-	statusPollInterval time.Duration
-	attendance         *attendancescheduler.Scheduler
-	members            *member.Repository
-	settings           *dbsettings.Repository
-	crafting           craftingdomain.Store
-	money              *moneydomain.Repository
-	stock              *stockdomain.Repository
-	craftDrafts        *craftDraftStore
-	stashDrafts        *stashDraftStore
-	location           *time.Location
-	database           *pgxpool.Pool
-	guildID            string
+	session               *discordgo.Session
+	status                *presence.Counter
+	router                *router.Router
+	logger                *slog.Logger
+	pollInterval          time.Duration
+	statusPollInterval    time.Duration
+	attendance            *attendancescheduler.Scheduler
+	members               *member.Repository
+	settings              *dbsettings.Repository
+	crafting              craftingdomain.Store
+	money                 *moneydomain.Repository
+	stock                 *stockdomain.Repository
+	craftDrafts           *craftDraftStore
+	stashDrafts           *stashDraftStore
+	orderMu               sync.Mutex
+	orderDrafts           map[string]*orderDraft
+	businessSaleChannelID string
+	location              *time.Location
+	database              *pgxpool.Pool
+	guildID               string
 	// announces is true only in production. A local run holds the same token
 	// and usually the same database as the deployed bot, so anything it does is
 	// done twice: every announcement posted again, the roster sync fighting the
@@ -174,33 +177,35 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 	})
 
 	bot := &Bot{
-		session:              session,
-		status:               presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.DiscordRoleID, logger),
-		router:               router.NewRouter(cfg.CommandPrefix),
-		logger:               logger,
-		pollInterval:         cfg.PollInterval,
-		statusPollInterval:   cfg.StatusPollInterval,
-		attendance:           attendance,
-		members:              members,
-		settings:             settingsRepository,
-		crafting:             craftingRepository,
-		money:                moneydomain.NewRepository(pool),
-		stock:                stockdomain.NewRepository(pool),
-		craftDrafts:          newCraftDraftStore(10 * time.Minute),
-		stashDrafts:          newStashDraftStore(10 * time.Minute),
-		location:             location,
-		database:             pool,
-		guildID:              cfg.GuildID,
-		announces:            cfg.Announces(),
-		adminRoleIDs:         cfg.DiscordAdminRoleIDs,
-		playerRecapChannelID: cfg.PlayerRecapChannelID,
-		memberRoleID:         cfg.DiscordMemberRoleID,
-		serverLogChannelID:   cfg.ServerLogChannelID,
-		serverLogs:           serverlog.NewRepository(pool),
-		playerDashboard:      dashboard.NewRepository(pool, logger),
-		officeMoneyChannelID: cfg.OfficeMoneyChannelID,
-		dirtyMoneyChannelID:  cfg.DirtyMoneyChannelID,
-		stashChannels:        stashChannels{public: cfg.StashChannels.Public, boss: cfg.StashChannels.Boss},
+		session:               session,
+		status:                presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.DiscordRoleID, logger),
+		router:                router.NewRouter(cfg.CommandPrefix),
+		logger:                logger,
+		pollInterval:          cfg.PollInterval,
+		statusPollInterval:    cfg.StatusPollInterval,
+		attendance:            attendance,
+		members:               members,
+		settings:              settingsRepository,
+		crafting:              craftingRepository,
+		money:                 moneydomain.NewRepository(pool),
+		stock:                 stockdomain.NewRepository(pool),
+		craftDrafts:           newCraftDraftStore(10 * time.Minute),
+		stashDrafts:           newStashDraftStore(10 * time.Minute),
+		location:              location,
+		database:              pool,
+		guildID:               cfg.GuildID,
+		announces:             cfg.Announces(),
+		adminRoleIDs:          cfg.DiscordAdminRoleIDs,
+		playerRecapChannelID:  cfg.PlayerRecapChannelID,
+		memberRoleID:          cfg.DiscordMemberRoleID,
+		serverLogChannelID:    cfg.ServerLogChannelID,
+		serverLogs:            serverlog.NewRepository(pool),
+		playerDashboard:       dashboard.NewRepository(pool, logger),
+		officeMoneyChannelID:  cfg.OfficeMoneyChannelID,
+		businessSaleChannelID: cfg.BusinessOrderListChannelID,
+		orderDrafts:           make(map[string]*orderDraft),
+		dirtyMoneyChannelID:   cfg.DirtyMoneyChannelID,
+		stashChannels:         stashChannels{public: cfg.StashChannels.Public, boss: cfg.StashChannels.Boss},
 	}
 	session.AddHandler(bot.onReady)
 	session.AddHandler(bot.onDisconnect)
@@ -270,6 +275,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	if b.announces {
 		go b.attendance.Run(ctx, b.session)
 		go b.runServerLogPoller(ctx)
+		go b.runOrderNotifications(ctx)
 	}
 
 	discordTicker := time.NewTicker(b.pollInterval)

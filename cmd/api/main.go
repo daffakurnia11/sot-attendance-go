@@ -20,6 +20,7 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/api"
 	attendancehistory "github.com/daffakurniawan/sot-discord-bot/internal/attendance"
 	appauth "github.com/daffakurniawan/sot-discord-bot/internal/auth"
+	"github.com/daffakurniawan/sot-discord-bot/internal/business"
 	"github.com/daffakurniawan/sot-discord-bot/internal/crafting"
 	"github.com/daffakurniawan/sot-discord-bot/internal/dashboard"
 	"github.com/daffakurniawan/sot-discord-bot/internal/database"
@@ -115,6 +116,7 @@ func main() {
 		Money:       money.NewRepository(pool),
 		ServerLogs:  webhook,
 		Stock:       stockRepository,
+		Business:    business.NewRepository(pool),
 		StockNotify: stockNotifier,
 		Logger:      logger,
 	})

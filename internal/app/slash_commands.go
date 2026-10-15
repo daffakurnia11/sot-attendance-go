@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -41,6 +42,9 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		{Name: commandrecap.Command, Description: "Find the attendance recap channel", Contexts: &guildContexts},
 		moneySlashCommand(guildContexts),
 		stashSlashCommand(guildContexts),
+		orderSlashCommand(guildContexts),
+		businessSlashCommand("purchase", "Create a purchase order", guildContexts),
+		{Name: "order-status", Description: "Update an existing order status", Contexts: &guildContexts, Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionInteger, Name: "order_id", Description: "Order or purchase number", Required: true}}},
 	}
 }
 
@@ -114,6 +118,12 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 	}
 	if event.Type == discordgo.InteractionMessageComponent || event.Type == discordgo.InteractionModalSubmit {
 		switch {
+		case event.Type == discordgo.InteractionMessageComponent && strings.HasPrefix(event.MessageComponentData().CustomID, "orderstatus:"):
+			b.handleOrderUpdate(session, event.Interaction)
+		case isOrderFormInteraction(event.Interaction):
+			b.handleOrderForm(session, event.Interaction)
+		case event.Type == discordgo.InteractionMessageComponent && strings.HasPrefix(event.MessageComponentData().CustomID, "order:"):
+			b.handleOrderConfirm(session, event.Interaction)
 		case isCraftInteraction(event.Interaction):
 			b.handleCraftInteraction(session, event.Interaction)
 		case isStashInteraction(event.Interaction):
@@ -125,6 +135,14 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 		return
 	}
 	commandName := event.ApplicationCommandData().Name
+	if commandName == "order-status" {
+		b.handleOrderUpdate(session, event.Interaction)
+		return
+	}
+	if commandName == "order" || commandName == "purchase" {
+		b.handleOrderStart(session, event.Interaction)
+		return
+	}
 	if !isSlashCommand(commandName) {
 		return
 	}
@@ -172,7 +190,7 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 
 func isSlashCommand(name string) bool {
 	switch name {
-	case statusCommand, commandrecap.CheckCommand, commandrecap.Command, commandcrafting.Command, commandmoney.Command, commandstash.Command:
+	case "order", "purchase", "order-status", statusCommand, commandrecap.CheckCommand, commandrecap.Command, commandcrafting.Command, commandmoney.Command, commandstash.Command:
 		return true
 	default:
 		return false
