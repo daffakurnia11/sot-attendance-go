@@ -332,3 +332,10 @@ ID commits can produce a duplicate embed, never a duplicate settlement.
 An uncertain creation commit retains its order ID. Retry checks that ID instead
 of inserting another order; if it cannot be found, inspect saved orders before
 starting a replacement. Draft locks are per order; busy edits reject immediately.
+
+Use `/catalog partner:GWF` in any server channel or thread to view live sale and
+purchase prices privately. Registered members can use it without creating orders.
+Large catalogs are attached in full as a text file.
+
+Add `public:true` to `/catalog partner:GWF` to share both catalogs with everyone
+in the current channel or thread. Omit it (or use `public:false`) for a private response.

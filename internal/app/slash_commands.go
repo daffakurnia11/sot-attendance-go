@@ -45,6 +45,7 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		orderSlashCommand(guildContexts),
 		businessSlashCommand("purchase", "Create a purchase order", guildContexts),
 		{Name: "order-status", Description: "Update an existing order status", Contexts: &guildContexts, Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionInteger, Name: "order_id", Description: "Order or purchase number", Required: true}}},
+		catalogSlashCommand(guildContexts),
 	}
 }
 
@@ -135,6 +136,10 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 		return
 	}
 	commandName := event.ApplicationCommandData().Name
+	if commandName == "catalog" {
+		b.handleCatalog(session, event.Interaction)
+		return
+	}
 	if commandName == "order-status" {
 		b.handleOrderUpdate(session, event.Interaction)
 		return
@@ -190,7 +195,7 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 
 func isSlashCommand(name string) bool {
 	switch name {
-	case "order", "purchase", "order-status", statusCommand, commandrecap.CheckCommand, commandrecap.Command, commandcrafting.Command, commandmoney.Command, commandstash.Command:
+	case "catalog", "order", "purchase", "order-status", statusCommand, commandrecap.CheckCommand, commandrecap.Command, commandcrafting.Command, commandmoney.Command, commandstash.Command:
 		return true
 	default:
 		return false
@@ -346,5 +351,5 @@ func (b *Bot) buildCheckEmbed(ctx context.Context, userID string, now time.Time)
 
 // These commands only read state or direct members to an existing channel.
 func isReadOnlyCommand(name string) bool {
-	return name == statusCommand || name == commandrecap.CheckCommand || name == commandrecap.Command
+	return name == "catalog" || name == statusCommand || name == commandrecap.CheckCommand || name == commandrecap.Command
 }
