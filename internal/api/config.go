@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -14,15 +15,41 @@ type Config struct {
 	// FiveMWebhookSecret is the shared HMAC secret the CR Roleplay server signs
 	// its player log webhook requests with.
 	FiveMWebhookSecret string
+	// BlacklistedSteamHex holds lowercased steam:... identifiers whose webhook
+	// events are acknowledged and dropped. FIVEM_BLACKLISTED_STEAMHEX, comma
+	// separated.
+	BlacklistedSteamHex map[string]bool
 }
 
 func LoadConfig() (Config, error) {
-	return ConfigFromValues(
+	config, err := ConfigFromValues(
 		os.Getenv("WEB_API_ADDRESS"),
 		os.Getenv("APP_JWT_SECRET"),
 		os.Getenv("APP_JWT_TTL"),
 		os.Getenv("FIVEM_WEBHOOK_SECRET"),
 	)
+	if err != nil {
+		return Config{}, err
+	}
+	config.BlacklistedSteamHex, err = parseSteamHexList(os.Getenv("FIVEM_BLACKLISTED_STEAMHEX"))
+	return config, err
+}
+
+// parseSteamHexList fails on an entry without the steam: prefix: a typo would
+// otherwise silently let the player through.
+func parseSteamHexList(value string) (map[string]bool, error) {
+	list := make(map[string]bool)
+	for _, entry := range strings.Split(value, ",") {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry == "" {
+			continue
+		}
+		if !strings.HasPrefix(entry, "steam:") || len(entry) == len("steam:") {
+			return nil, fmt.Errorf("FIVEM_BLACKLISTED_STEAMHEX entry %q must look like steam:1100001...", entry)
+		}
+		list[entry] = true
+	}
+	return list, nil
 }
 
 func ConfigFromValues(address, jwtSecret, jwtTTL, fiveMWebhookSecret string) (Config, error) {

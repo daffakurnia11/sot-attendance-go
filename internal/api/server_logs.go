@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/daffakurniawan/sot-discord-bot/internal/serverlog"
@@ -25,6 +26,9 @@ type ServerLogWebhook struct {
 	Store   serverLogStore
 	Auth    *serverlog.Authenticator
 	Limiter *rateLimiter
+	// Blacklist is keyed by lowercased steamhex. A listed player's events are
+	// answered 202 so the sender does not retry, and never stored.
+	Blacklist map[string]bool
 }
 
 // Rate limits published in contract section 6.
@@ -127,6 +131,12 @@ func (h *Handler) serverLogWebhook(response http.ResponseWriter, request *http.R
 	// is not a replay defence: anyone holding the secret can mint a fresh time.
 	if !h.serverLogs.Auth.Fresh(valid.OccurredAt) {
 		writeWebhookError(response, http.StatusUnauthorized, "EXPIRED_TIMESTAMP", "event.timestamp is outside the allowed window", requestID)
+		return
+	}
+
+	if h.serverLogs.Blacklist[strings.ToLower(valid.SteamHex)] {
+		h.logger.Info("server log ignored: blacklisted steamhex", "request_id", requestID, "status", valid.Status)
+		writeJSON(response, http.StatusAccepted, map[string]any{"accepted": true, "ignored": true})
 		return
 	}
 

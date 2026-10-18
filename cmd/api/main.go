@@ -84,6 +84,7 @@ func main() {
 	serverLogRepository := serverlog.NewRepository(pool)
 	stockRepository := stock.NewRepository(pool)
 	webhook := api.NewServerLogWebhook(serverLogRepository, serverlog.NewAuthenticator(config.FiveMWebhookSecret, nil))
+	webhook.Blacklist = config.BlacklistedSteamHex
 	stockNotifier := api.NewDiscordStockNotifier(client, stockDiscordConfig.Token, stockDiscordConfig.Channels)
 	guestRoles := strings.TrimSpace(os.Getenv("DISCORD_GUEST_ROLE_IDS"))
 	if guestRoles == "" {

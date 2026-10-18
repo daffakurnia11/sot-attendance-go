@@ -37,3 +37,15 @@ func TestConfigFromValues(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSteamHexList(t *testing.T) {
+	list, err := parseSteamHexList(" steam:11000015EAB2EB3 , ,steam:abc")
+	if err != nil || len(list) != 2 || !list["steam:11000015eab2eb3"] || !list["steam:abc"] {
+		t.Fatalf("list=%v err=%v", list, err)
+	}
+	for _, bad := range []string{"11000015eab2eb3", "steam:", "license:abc"} {
+		if _, err := parseSteamHexList(bad); err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+}

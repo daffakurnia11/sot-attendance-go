@@ -387,3 +387,25 @@ func TestServerLogWebhookRateLimits(t *testing.T) {
 		t.Fatal("429 missing Retry-After")
 	}
 }
+
+func TestServerLogWebhookDropsBlacklistedSteamHex(t *testing.T) {
+	store := &fakeServerLogStore{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	webhook := NewServerLogWebhook(store, serverlog.NewAuthenticator(webhookSecret, nil))
+	webhook.Blacklist = map[string]bool{"steam:1100001abc": true}
+	handler := NewHandler(Deps{ServerLogs: webhook, Logger: logger})
+
+	recorder := httptest.NewRecorder()
+	body := webhookBody(t, func(event *serverlog.Event) { event.Player.Identifiers.SteamHex = "steam:1100001ABC" })
+	handler.ServeHTTP(recorder, signedRequest(body, nil))
+	if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"ignored":true`) || store.calls != 0 {
+		t.Fatalf("blacklisted: status=%d body=%s calls=%d", recorder.Code, recorder.Body.String(), store.calls)
+	}
+
+	recorder = httptest.NewRecorder()
+	body = webhookBody(t, func(event *serverlog.Event) { event.Player.Identifiers.SteamHex = "steam:1100001999" })
+	handler.ServeHTTP(recorder, signedRequest(body, nil))
+	if recorder.Code != http.StatusAccepted || store.calls != 1 {
+		t.Fatalf("other player: status=%d calls=%d", recorder.Code, store.calls)
+	}
+}
