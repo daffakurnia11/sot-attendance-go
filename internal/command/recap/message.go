@@ -18,8 +18,9 @@ const (
 
 func CheckEmbed(currentMember member.Member, recaps []member.PlaytimeRecap, attendanceStart, now time.Time, requiredPlaytime time.Duration) *discordgo.MessageEmbed {
 	playtime := time.Duration(0)
+	// Discord ID, not member ID: every guest's recap rows carry member ID 0.
 	for _, recap := range recaps {
-		if recap.MemberID == currentMember.ID {
+		if recap.DiscordUserID == currentMember.DiscordUserID {
 			playtime = recap.Playtime
 			break
 		}

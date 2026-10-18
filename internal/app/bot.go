@@ -61,7 +61,7 @@ type Bot struct {
 	// local bot reads the gateway, answers GET /presence, and acts on nothing.
 	announces            bool
 	adminRoleIDs         []string
-	memberRoleID         string
+	memberRoleIDs        []string
 	playerRecapChannelID string
 	officeMoneyChannelID string
 	dirtyMoneyChannelID  string
@@ -178,7 +178,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 
 	bot := &Bot{
 		session:               session,
-		status:                presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.DiscordRoleID, logger),
+		status:                presence.NewCounter(cfg.GuildID, cfg.ServerName, cfg.DiscordRoleIDs, logger),
 		router:                router.NewRouter(cfg.CommandPrefix),
 		logger:                logger,
 		pollInterval:          cfg.PollInterval,
@@ -197,7 +197,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		announces:             cfg.Announces(),
 		adminRoleIDs:          cfg.DiscordAdminRoleIDs,
 		playerRecapChannelID:  cfg.PlayerRecapChannelID,
-		memberRoleID:          cfg.DiscordMemberRoleID,
+		memberRoleIDs:         cfg.DiscordMemberRoleIDs,
 		serverLogChannelID:    cfg.ServerLogChannelID,
 		serverLogs:            serverlog.NewRepository(pool),
 		playerDashboard:       dashboard.NewRepository(pool, logger),
@@ -614,7 +614,7 @@ func (b *Bot) syncGuildMembers(session *discordgo.Session) {
 		b.logger.Error("fetch Discord members for startup sync", "guild_id", b.guildID, "error", err)
 		return
 	}
-	roleMembers := matchingRoleMembers(members, []string{b.memberRoleID})
+	roleMembers := matchingRoleMembers(members, b.memberRoleIDs)
 	players := make([]member.Player, 0, len(roleMembers))
 	for _, guildMember := range roleMembers {
 		players = append(players, member.Player{DiscordUserID: guildMember.User.ID, Username: guildMember.User.Username, DisplayName: guildMember.DisplayName()})

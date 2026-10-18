@@ -81,9 +81,9 @@ Crafting calculator stock updates post Discord embeds after database commit. Bot
 
 The bot reads the same four channel IDs and refuses to start unless all four are present, digits-only, and distinct. A shared ID would make one channel mean two things, and the channel is the only thing naming the safebox and the action.
 
-Set `APP_ENV=production` to restrict status counts and player transition logs to members holding `DISCORD_ROLE_ID`. `DISCORD_ROLE_ID` is required in production. Set `APP_ENV=local` to inspect all non-bot guild members during testing; role filtering is disabled even when a role ID is present.
+Set `APP_ENV=production` to restrict status counts and player transition logs to members holding any of `DISCORD_ROLE_IDS` (comma-separated, e.g. member and guest roles; the old single `DISCORD_ROLE_ID` is still read when it is unset). `DISCORD_ROLE_IDS` is required in production. Set `APP_ENV=local` to inspect all non-bot guild members during testing; role filtering is disabled even when a role ID is present.
 
-On gateway startup, bot fetches every guild member. Members holding `DISCORD_ROLE_ID` are bulk-upserted into `members` without creating activity logs. `DISCORD_ADMIN_IDS` accepts comma-separated Discord role IDs and synchronizes `members.is_admin`; members without any configured admin role are cleared.
+On gateway startup, bot fetches every guild member. Members holding any of `DISCORD_ROLE_IDS` are bulk-upserted into `members` without creating activity logs. `DISCORD_ADMIN_IDS` accepts comma-separated Discord role IDs and synchronizes `members.is_admin`; members without any configured admin role are cleared.
 
 The Discord activity log is gone. It polled rich presence, posted a transition embed to `DISCORD_PLAYER_LOG_CHANNEL_ID`, and wrote a row per transition to `activity_logs`. The game server reports the same events over the webhook and reports them better, so the second record was a worse copy of the first: `DISCORD_PLAYER_LOG_CHANNEL_ID` and `BLACKLISTED_USERS` are no longer read, and nothing writes `activity_logs` any more. Its rows are kept and are still the pre-webhook half of every playtime figure.
 

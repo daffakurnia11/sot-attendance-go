@@ -106,8 +106,8 @@ func TestCheckEmbedShowsCurrentMemberStatusAndGlobalSummary(t *testing.T) {
 		ID: 2, DiscordUserID: "123456789", Username: "prince", DisplayName: "Prince Lim", CharacterName: "Prince Nakamura", CFXName: "SOT - Prince", CID: "QN123",
 	}
 	recaps := []member.PlaytimeRecap{
-		{MemberID: 1, Playtime: 2 * time.Hour},
-		{MemberID: 2, Playtime: 49 * time.Minute},
+		{MemberID: 1, DiscordUserID: "111", Playtime: 2 * time.Hour},
+		{MemberID: 2, DiscordUserID: "123456789", Playtime: 49 * time.Minute},
 	}
 
 	embed := CheckEmbed(currentMember, recaps, now.Add(-6*time.Hour), now, time.Hour)

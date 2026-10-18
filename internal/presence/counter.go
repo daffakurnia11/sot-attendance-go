@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +16,7 @@ import (
 type Counter struct {
 	guildID    string
 	serverName string
-	roleID     string
+	roleIDs    []string
 	logger     *slog.Logger
 
 	mu        sync.Mutex
@@ -30,11 +31,11 @@ type Counter struct {
 // webhook, and duplicating them from a guess about rich presence bought a
 // second, worse record. What remains reads the gateway cache and writes
 // nothing.
-func NewCounter(guildID, serverName, roleID string, logger *slog.Logger) *Counter {
+func NewCounter(guildID, serverName string, roleIDs []string, logger *slog.Logger) *Counter {
 	return &Counter{
 		guildID:    guildID,
 		serverName: serverName,
-		roleID:     roleID,
+		roleIDs:    roleIDs,
 		logger:     logger,
 		lastCount:  -1,
 	}
@@ -51,7 +52,7 @@ func (c *Counter) Refresh(session *discordgo.Session) {
 		return
 	}
 
-	count := len(matchingMemberIDs(guild, c.serverName, c.roleID))
+	count := len(matchingMemberIDs(guild, c.serverName, c.roleIDs))
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -72,11 +73,11 @@ func (c *Counter) GuildID() string { return c.guildID }
 
 func (c *Counter) ServerName() string { return c.serverName }
 
-func matchingMemberIDs(guild *discordgo.Guild, serverName, roleID string) map[string]struct{} {
+func matchingMemberIDs(guild *discordgo.Guild, serverName string, roleIDs []string) map[string]struct{} {
 	eligible := make(map[string]bool, len(guild.Members))
 	for _, member := range guild.Members {
 		if member != nil && member.User != nil {
-			eligible[member.User.ID] = !member.User.Bot && memberHasRole(member, roleID)
+			eligible[member.User.ID] = !member.User.Bot && memberHasRole(member, roleIDs)
 		}
 	}
 
@@ -86,7 +87,7 @@ func matchingMemberIDs(guild *discordgo.Guild, serverName, roleID string) map[st
 			continue
 		}
 		isEligible, memberKnown := eligible[presence.User.ID]
-		if (roleID != "" && !isEligible) || (roleID == "" && memberKnown && !isEligible) {
+		if (len(roleIDs) > 0 && !isEligible) || (len(roleIDs) == 0 && memberKnown && !isEligible) {
 			continue
 		}
 		if presence.Status == discordgo.StatusOffline || presence.Status == discordgo.StatusInvisible {
@@ -99,12 +100,12 @@ func matchingMemberIDs(guild *discordgo.Guild, serverName, roleID string) map[st
 	return playing
 }
 
-func memberHasRole(member *discordgo.Member, roleID string) bool {
-	if roleID == "" {
+func memberHasRole(member *discordgo.Member, roleIDs []string) bool {
+	if len(roleIDs) == 0 {
 		return true
 	}
 	for _, memberRoleID := range member.Roles {
-		if memberRoleID == roleID {
+		if slices.Contains(roleIDs, memberRoleID) {
 			return true
 		}
 	}
@@ -198,7 +199,7 @@ func (c *Counter) Snapshot(session *discordgo.Session) ([]MemberPresence, error)
 	eligible := make(map[string]bool, len(guild.Members))
 	for _, member := range guild.Members {
 		if member != nil && member.User != nil {
-			eligible[member.User.ID] = !member.User.Bot && memberHasRole(member, c.roleID)
+			eligible[member.User.ID] = !member.User.Bot && memberHasRole(member, c.roleIDs)
 		}
 	}
 
@@ -208,7 +209,7 @@ func (c *Counter) Snapshot(session *discordgo.Session) ([]MemberPresence, error)
 			continue
 		}
 		isEligible, memberKnown := eligible[presence.User.ID]
-		if (c.roleID != "" && !isEligible) || (c.roleID == "" && memberKnown && !isEligible) {
+		if (len(c.roleIDs) > 0 && !isEligible) || (len(c.roleIDs) == 0 && memberKnown && !isEligible) {
 			continue
 		}
 

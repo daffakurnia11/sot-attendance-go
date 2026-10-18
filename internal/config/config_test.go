@@ -12,7 +12,7 @@ func TestFromValues(t *testing.T) {
 	tests := []struct {
 		name                 string
 		appEnv               string
-		discordRoleID        string
+		discordRoleIDs       string
 		discordAdminIDs      string
 		token                string
 		guildID              string
@@ -27,7 +27,7 @@ func TestFromValues(t *testing.T) {
 		{
 			name:                 "valid",
 			appEnv:               " local ",
-			discordRoleID:        "123456789",
+			discordRoleIDs:       "123456789",
 			token:                " token ",
 			guildID:              " 123456 ",
 			serverName:           " CR Roleplay ",
@@ -38,7 +38,7 @@ func TestFromValues(t *testing.T) {
 			playerRecapChannelID: " 901234 ",
 			want: Config{
 				AppEnv: "local",
-				Token:  "token", GuildID: "123456", DiscordMemberRoleID: "123456789", ServerName: "CR Roleplay",
+				Token:  "token", GuildID: "123456", DiscordMemberRoleIDs: []string{"123456789"}, ServerName: "CR Roleplay",
 				PollInterval: 5 * time.Second, CommandPrefix: "$",
 				DiscordAdminRoleIDs:  []string{"333", "444"},
 				PlayerChatChannelID:  "345678",
@@ -47,10 +47,10 @@ func TestFromValues(t *testing.T) {
 			},
 		},
 		{
-			name: "valid production", appEnv: " PRODUCTION ", discordRoleID: " 555666 ",
+			name: "valid production", appEnv: " PRODUCTION ", discordRoleIDs: " 555666, 777 ",
 			token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000",
 			want: Config{
-				AppEnv: "production", DiscordRoleID: "555666", DiscordMemberRoleID: "555666", Token: "token", GuildID: "123", ServerName: "CR Roleplay",
+				AppEnv: "production", DiscordRoleIDs: []string{"555666", "777"}, DiscordMemberRoleIDs: []string{"555666", "777"}, Token: "token", GuildID: "123", ServerName: "CR Roleplay",
 				PollInterval: time.Second, CommandPrefix: "!", PlayerChatChannelID: "789",
 				PlayerRecapChannelID: "987", DatabaseURL: "postgres://test",
 			},
@@ -58,7 +58,7 @@ func TestFromValues(t *testing.T) {
 		{name: "missing app env", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", wantErr: true},
 		{name: "invalid app env", appEnv: "staging", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", wantErr: true},
 		{name: "production missing role", appEnv: "production", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", wantErr: true},
-		{name: "production invalid role", appEnv: "production", discordRoleID: "role", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", wantErr: true},
+		{name: "production invalid role", appEnv: "production", discordRoleIDs: "role", token: "token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", wantErr: true},
 		{name: "missing token", guildID: "123", serverName: "CR Roleplay", pollInterval: "1000", wantErr: true},
 		{name: "missing guild", token: "token", serverName: "CR Roleplay", pollInterval: "1000", wantErr: true},
 		{name: "invalid guild", token: "token", guildID: "12abc", serverName: "CR Roleplay", pollInterval: "1000", wantErr: true},
@@ -90,7 +90,7 @@ func TestFromValues(t *testing.T) {
 			if tt.playerRecapChannelID == "" && !tt.wantErr {
 				tt.playerRecapChannelID = "987"
 			}
-			got, err := FromValues(tt.token, tt.guildID, tt.serverName, tt.pollInterval, tt.commandPrefix, tt.playerChatChannelID, tt.playerRecapChannelID, "postgres://test", tt.appEnv, tt.discordRoleID, tt.discordAdminIDs)
+			got, err := FromValues(tt.token, tt.guildID, tt.serverName, tt.pollInterval, tt.commandPrefix, tt.playerChatChannelID, tt.playerRecapChannelID, "postgres://test", tt.appEnv, tt.discordRoleIDs, tt.discordAdminIDs)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("FromValues() error = %v, wantErr %v", err, tt.wantErr)
 			}

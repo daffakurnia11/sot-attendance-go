@@ -10,11 +10,15 @@ import (
 )
 
 type Config struct {
-	AppEnv                     string
-	Token                      string
-	GuildID                    string
-	DiscordRoleID              string
-	DiscordMemberRoleID        string
+	AppEnv  string
+	Token   string
+	GuildID string
+	// DiscordRoleIDs filters the Discord activity witness and player count;
+	// empty outside production. DiscordMemberRoleIDs picks who is synced into
+	// members, which is the web login allow-list. Both come from
+	// DISCORD_ROLE_IDS; a member needs any one of the roles.
+	DiscordRoleIDs             []string
+	DiscordMemberRoleIDs       []string
 	DiscordAdminRoleIDs        []string
 	ServerName                 string
 	PollInterval               time.Duration
@@ -60,7 +64,7 @@ func Load() (Config, error) {
 		os.Getenv("DISCORD_PLAYER_RECAP_CHANNEL_ID"),
 		os.Getenv("DATABASE_URL"),
 		os.Getenv("APP_ENV"),
-		os.Getenv("DISCORD_ROLE_ID"),
+		roleIDsFromEnv(),
 		os.Getenv("DISCORD_ADMIN_IDS"),
 	)
 	if err != nil {
@@ -155,24 +159,30 @@ func parseMilliseconds(name, value string) (time.Duration, error) {
 	return time.Duration(milliseconds) * time.Millisecond, nil
 }
 
-func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerChatChannelID, playerRecapChannelID, databaseURL, appEnv, discordRoleID, discordAdminIDs string) (Config, error) {
+// roleIDsFromEnv reads DISCORD_ROLE_IDS, falling back to the single-role
+// DISCORD_ROLE_ID it replaced so an env file not yet renamed keeps working.
+func roleIDsFromEnv() string {
+	if value := os.Getenv("DISCORD_ROLE_IDS"); strings.TrimSpace(value) != "" {
+		return value
+	}
+	return os.Getenv("DISCORD_ROLE_ID")
+}
+
+func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerChatChannelID, playerRecapChannelID, databaseURL, appEnv, discordRoleIDs, discordAdminIDs string) (Config, error) {
 	appEnv = strings.ToLower(strings.TrimSpace(appEnv))
 	if appEnv != "local" && appEnv != "production" {
 		return Config{}, errors.New("APP_ENV must be local or production")
 	}
-	discordRoleID = strings.TrimSpace(discordRoleID)
-	discordMemberRoleID := discordRoleID
-	if discordMemberRoleID != "" {
-		if err := validateDiscordID(discordMemberRoleID); err != nil {
-			return Config{}, fmt.Errorf("DISCORD_ROLE_ID: %w", err)
-		}
+	discordMemberRoleIDs, err := parseDiscordIDs(discordRoleIDs)
+	if err != nil {
+		return Config{}, fmt.Errorf("DISCORD_ROLE_IDS: %w", err)
 	}
+	var activityRoleIDs []string
 	if appEnv == "production" {
-		if err := validateDiscordID(discordRoleID); err != nil {
-			return Config{}, fmt.Errorf("DISCORD_ROLE_ID: %w", err)
+		if len(discordMemberRoleIDs) == 0 {
+			return Config{}, errors.New("DISCORD_ROLE_IDS: is required")
 		}
-	} else {
-		discordRoleID = ""
+		activityRoleIDs = discordMemberRoleIDs
 	}
 
 	token = strings.TrimSpace(token)
@@ -234,8 +244,8 @@ func FromValues(token, guildID, serverName, pollInterval, commandPrefix, playerC
 		AppEnv:               appEnv,
 		Token:                token,
 		GuildID:              guildID,
-		DiscordRoleID:        discordRoleID,
-		DiscordMemberRoleID:  discordMemberRoleID,
+		DiscordRoleIDs:       activityRoleIDs,
+		DiscordMemberRoleIDs: discordMemberRoleIDs,
 		DiscordAdminRoleIDs:  discordAdminRoleIDs,
 		ServerName:           serverName,
 		PollInterval:         time.Duration(pollMilliseconds) * time.Millisecond,
