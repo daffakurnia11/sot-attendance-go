@@ -337,5 +337,9 @@ Use `/catalog partner:GWF` in any server channel or thread to view live sale and
 purchase prices privately. Registered members can use it without creating orders.
 Large catalogs are attached in full as a text file.
 
-Add `public:true` to `/catalog partner:GWF` to share both catalogs with everyone
+Click **Post Result** on the private `/catalog partner:GWF` preview to share both catalogs with everyone
 in the current channel or thread. Omit it (or use `public:false`) for a private response.
+
+Use `/catalog partner:SOT` for member packages and internal à-la-carte prices grouped by Weapons, Ammo, and Body & Drugs. Click **Post Result** to share in the current channel.
+
+Use `/order member:@buyer` for internal member orders, including packages and à-la-carte items. Existing admin/channel restrictions apply. Internal order embeds are blue. Ready withdraws all included Boss stock (including free joints); Complete deposits the order total to office money. Migration 000048 stores supplemental package stock quantities; order creation freezes these into order items.

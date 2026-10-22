@@ -22,6 +22,8 @@ type orderLine struct {
 type orderDraft struct {
 	mu                                           *sync.Mutex
 	Closed                                       bool
+	BuyerMemberID                                int64
+	BuyerDiscordID                               string
 	AdditionalInput                              string
 	UserID, ChannelID, Direction, Partner, Notes string
 	Date, Pickup                                 time.Time
@@ -42,9 +44,11 @@ func businessSlashCommand(name, description string, contexts []discordgo.Interac
 	if name == "purchase" {
 		partnerDescription = "Partner code: BZ, CH, DTM, DVG, DW, GWF, NOCTIS"
 	}
-	return &discordgo.ApplicationCommand{Name: name, Description: description, Contexts: &contexts, Options: []*discordgo.ApplicationCommandOption{
-		{Type: discordgo.ApplicationCommandOptionString, Name: "partner", Description: partnerDescription, Required: true, MaxLength: 50},
-	}}
+	options := []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionString, Name: "partner", Description: partnerDescription, Required: name == "purchase", MaxLength: 50}}
+	if name == "order" {
+		options = append(options, &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionUser, Name: "member", Description: "Member buying from SOT internal catalog (choose member OR partner)"})
+	}
+	return &discordgo.ApplicationCommand{Name: name, Description: description, Contexts: &contexts, Options: options}
 }
 
 func (b *Bot) inBusinessOrderChannel(channel string) bool {
@@ -104,7 +108,16 @@ func buildOrderDraft(entries []business.Entry, direction, partner, items, date, 
 			return nil, fmt.Errorf("Product %d unavailable for this partner/direction.", id)
 		}
 		conversion := int64(1)
-		if selected.Unit != "piece" {
+		if selected.Unit == "package" && selected.PartnerCode == "SOT" && direction == "sale" {
+			if len(selected.Components) == 0 {
+				return nil, errors.New("Package stock components unavailable.")
+			}
+			for _, component := range selected.Components {
+				if component.StockItemID <= 0 || component.Quantity <= 0 || qty > math.MaxInt32/component.Quantity {
+					return nil, errors.New("Package quantity exceeds supported stock range.")
+				}
+			}
+		} else if selected.Unit != "piece" {
 			if selected.Unit != "clip" {
 				return nil, errors.New("Product unit has no supported stock conversion.")
 			}
@@ -160,6 +173,9 @@ func orderEmbed(d *orderDraft) *discordgo.MessageEmbed {
 		products = strings.Join(lines, "\n")
 	}
 	color := 0x57F287
+	if d.Partner == "SOT" && d.Direction == "sale" {
+		color = 0x3498DB
+	}
 	if d.Direction == "purchase" {
 		color = 0xED4245
 	}
@@ -169,6 +185,9 @@ func orderEmbed(d *orderDraft) *discordgo.MessageEmbed {
 		{Name: "Pickup date", Value: d.Pickup.Format("02 Jan 2006"), Inline: true},
 		{Name: "Products", Value: products},
 		{Name: "Price summary", Value: fmt.Sprintf("Subtotal: %s\nAdditional: %s\n**Total: %s**", orderMoney(subtotal), orderMoney(d.Additional), orderMoney(d.Total))},
+	}
+	if d.BuyerDiscordID != "" {
+		fields = append([]*discordgo.MessageEmbedField{{Name: "Buyer", Value: "<@" + d.BuyerDiscordID + ">"}}, fields...)
 	}
 	if d.Notes != "" {
 		fields = append(fields, &discordgo.MessageEmbedField{Name: "Notes", Value: d.Notes})
@@ -228,18 +247,30 @@ func (b *Bot) handleOrderStart(s *discordgo.Session, i *discordgo.Interaction) {
 		fail("Could not load catalog.")
 		return
 	}
+	entries = orderCatalog(entries)
 	options := i.ApplicationCommandData().Options
-	if len(options) != 1 || options[0].Name != "partner" {
-		fail("Partner code required.")
-		return
-	}
-	partner, err := orderPartnerCode(entries, direction, options[0].StringValue())
+	rawPartner, buyerDiscord, err := orderTarget(options, direction)
 	if err != nil {
 		fail(err.Error())
 		return
 	}
+	var buyerMemberID int64
+	if buyerDiscord != "" {
+		buyer, lookupErr := b.members.FindByDiscordUserID(ctx, buyerDiscord)
+		if lookupErr != nil {
+			fail("Buyer must be a registered SOT member.")
+			return
+		}
+		buyerMemberID = buyer.ID
+	}
+	partner, err := orderPartnerCode(entries, direction, rawPartner)
+	if err != nil {
+		fail(err.Error())
+		return
+	}
+
 	today, _ := time.Parse("2006-01-02", time.Now().In(b.location).Format("2006-01-02"))
-	d := &orderDraft{mu: &sync.Mutex{}, UserID: uid, ChannelID: i.ChannelID, Direction: direction, Partner: partner, Date: today, Pickup: defaultOrderPickup(direction, today), Catalog: entries, Expires: time.Now().Add(15 * time.Minute)}
+	d := &orderDraft{mu: &sync.Mutex{}, UserID: uid, ChannelID: i.ChannelID, Direction: direction, Partner: partner, BuyerMemberID: buyerMemberID, BuyerDiscordID: buyerDiscord, Date: today, Pickup: defaultOrderPickup(direction, today), Catalog: entries, Expires: time.Now().Add(15 * time.Minute)}
 	b.orderMu.Lock()
 	if b.orderDrafts == nil {
 		b.orderDrafts = map[string]*orderDraft{}
@@ -340,6 +371,17 @@ func (b *Bot) handleOrderConfirm(s *discordgo.Session, i *discordgo.Interaction)
 	fail(fmt.Sprintf("Order #%d created. Money and stock unchanged.", d.OrderID))
 }
 
+// Internal prices retain their source in the repository and use sale settlement in orders.
+func orderCatalog(entries []business.Entry) []business.Entry {
+	result := append([]business.Entry(nil), entries...)
+	for index := range result {
+		if result[index].Direction == "internal" && result[index].PartnerCode == "SOT" {
+			result[index].Direction = "sale"
+		}
+	}
+	return result
+}
+
 func orderPartnerCode(entries []business.Entry, direction, raw string) (string, error) {
 	code := strings.TrimSpace(raw)
 	for _, entry := range entries {
@@ -393,10 +435,18 @@ func saveBusinessOrder(ctx context.Context, tx pgx.Tx, d *orderDraft, memberID i
 		return nil
 	}
 
-	err := tx.QueryRow(ctx, `INSERT INTO business_orders(partner_id,direction,order_date,pickup_date,additional_price,total_price,notes,created_by_member_id,updated_by_member_id) SELECT id,$2,$3,$4,$5,$6,$7,$8,$8 FROM business_partners WHERE code=$1 RETURNING id,created_at,updated_at`, d.Partner, d.Direction, d.Date, d.Pickup, d.Additional, d.Total, d.Notes, memberID).Scan(&d.OrderID, &d.CreatedAt, &d.UpdatedAt)
+	err := tx.QueryRow(ctx, `INSERT INTO business_orders(partner_id,direction,order_date,pickup_date,additional_price,total_price,notes,created_by_member_id,updated_by_member_id,buyer_member_id) SELECT id,$2,$3,$4,$5,$6,$7,$8,$8,NULLIF($9,0) FROM business_partners WHERE code=$1 RETURNING id,created_at,updated_at`, d.Partner, d.Direction, d.Date, d.Pickup, d.Additional, d.Total, d.Notes, memberID, d.BuyerMemberID).Scan(&d.OrderID, &d.CreatedAt, &d.UpdatedAt)
 	if err == nil {
 		for _, line := range d.Lines {
 			_, err = tx.Exec(ctx, `INSERT INTO business_order_items(order_id,stock_item_id,product_name,unit,unit_price,quantity,stock_units_per_unit) VALUES($1,$2,$3,$4,$5,$6,$7)`, d.OrderID, line.Entry.StockItemID, line.Entry.Name, line.Entry.Unit, line.Entry.Price, line.Quantity, line.Conversion)
+			if err == nil && line.Entry.Unit == "package" {
+				for _, component := range line.Entry.Components {
+					_, err = tx.Exec(ctx, `INSERT INTO business_order_items(order_id,stock_item_id,product_name,unit,unit_price,quantity,stock_units_per_unit) VALUES($1,$2,$3,'piece',0,$4,$5)`, d.OrderID, component.StockItemID, fmt.Sprintf("%s · %d %s per package (included)", line.Entry.Name, component.Quantity, component.Name), line.Quantity, component.Quantity)
+					if err != nil {
+						break
+					}
+				}
+			}
 			if err != nil {
 				break
 			}
@@ -408,4 +458,25 @@ func saveBusinessOrder(ctx context.Context, tx pgx.Tx, d *orderDraft, memberID i
 	}
 	// A commit error may mean the response was lost after the database saved it.
 	return tx.Commit(ctx)
+}
+
+func orderTarget(options []*discordgo.ApplicationCommandInteractionDataOption, direction string) (string, string, error) {
+	partner, buyer := "", ""
+	for _, option := range options {
+		switch {
+		case option.Name == "partner" && option.Type == discordgo.ApplicationCommandOptionString:
+			partner = strings.TrimSpace(option.StringValue())
+		case option.Name == "member" && option.Type == discordgo.ApplicationCommandOptionUser:
+			buyer, _ = option.Value.(string)
+		default:
+			return "", "", errors.New("Choose partner or member.")
+		}
+	}
+	if buyer != "" && partner == "" && direction == "sale" {
+		return "SOT", buyer, nil
+	}
+	if partner != "" && buyer == "" && !strings.EqualFold(partner, "SOT") {
+		return partner, "", nil
+	}
+	return "", "", errors.New("Choose exactly one: partner code or member. Internal orders require /order member:@buyer.")
 }

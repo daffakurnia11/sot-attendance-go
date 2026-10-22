@@ -119,6 +119,8 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 	}
 	if event.Type == discordgo.InteractionMessageComponent || event.Type == discordgo.InteractionModalSubmit {
 		switch {
+		case event.Type == discordgo.InteractionMessageComponent && strings.HasPrefix(event.MessageComponentData().CustomID, "catalog:post:"):
+			b.handleCatalog(session, event.Interaction)
 		case event.Type == discordgo.InteractionMessageComponent && strings.HasPrefix(event.MessageComponentData().CustomID, "orderstatus:"):
 			b.handleOrderUpdate(session, event.Interaction)
 		case isOrderFormInteraction(event.Interaction):

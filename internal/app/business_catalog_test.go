@@ -69,24 +69,70 @@ func TestCatalogInteractionRoutesAndAcknowledgesInForumThread(t *testing.T) {
 	}
 }
 
-func TestCatalogVisibility(t *testing.T) {
-	command := catalogSlashCommand(nil)
-	if len(command.Options) != 2 || command.Options[1].Name != "public" || command.Options[1].Required || command.Options[1].Type != discordgo.ApplicationCommandOptionBoolean {
-		t.Fatal("missing optional public flag")
+func TestCatalogPostButton(t *testing.T) {
+	if options := catalogSlashCommand(nil).Options; len(options) != 1 || options[0].Name != "partner" {
+		t.Fatal("public parameter must be removed")
 	}
-	for _, tc := range []struct {
-		name    string
-		options []*discordgo.ApplicationCommandInteractionDataOption
-		want    discordgo.MessageFlags
-	}{
-		{name: "default private", want: discordgo.MessageFlagsEphemeral},
-		{name: "explicit private", options: []*discordgo.ApplicationCommandInteractionDataOption{{Name: "public", Type: discordgo.ApplicationCommandOptionBoolean, Value: false}}, want: discordgo.MessageFlagsEphemeral},
-		{name: "public", options: []*discordgo.ApplicationCommandInteractionDataOption{{Name: "partner", Type: discordgo.ApplicationCommandOptionString, Value: "BZ"}, {Name: "public", Type: discordgo.ApplicationCommandOptionBoolean, Value: true}}, want: 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := catalogResponseFlags(tc.options); got != tc.want {
-				t.Fatalf("flags=%v want %v", got, tc.want)
-			}
-		})
+	for _, posted := range []bool{false, true} {
+		button := catalogPostButton("123", "SOT", posted)[0].(discordgo.ActionsRow).Components[0].(discordgo.Button)
+		if button.Disabled != posted || button.CustomID != "catalog:post:123:SOT" {
+			t.Fatal("incorrect button state")
+		}
+	}
+}
+
+func TestInternalCatalog(t *testing.T) {
+	entries := []business.Entry{
+		{PartnerCode: "SOT", Direction: "internal", Name: "Vector package", Unit: "package", Price: 18500, Notes: "2 Joint: Free", StockGroup: "weapon"},
+		{PartnerCode: "SOT", Direction: "internal", Name: "Vector", Unit: "piece", Price: 8500, StockGroup: "weapon"},
+		{PartnerCode: "SOT", Direction: "internal", Name: "Ammo SMG", Unit: "clip", Price: 2500, StockGroup: "ammo", Notes: "150 rounds/clip."},
+		{PartnerCode: "SOT", Direction: "internal", Name: "Joint", Unit: "piece", Price: 500, StockGroup: "body_drugs"},
+		{PartnerCode: "BZ", Direction: "sale", Name: "Hidden", Price: 1},
+	}
+	edit, err := partnerCatalogResponse(entries, " sot ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*edit.Embeds) != 4 {
+		t.Fatalf("expected four groups: %+v", edit.Embeds)
+	}
+	labels := []string{"Member packages", "À la carte · Weapons", "À la carte · Ammo", "À la carte · Body & Drugs"}
+	for index, embed := range *edit.Embeds {
+		if embed.Title != "SOT · "+labels[index] || len(embed.Fields) != 1 {
+			t.Fatalf("incorrect group: %+v", embed)
+		}
+	}
+	if !strings.Contains((*edit.Embeds)[0].Fields[0].Value, "2 Joint: Free") {
+		t.Fatal("package contents missing")
+	}
+	if !strings.Contains((*edit.Embeds)[2].Fields[0].Value, "150 rounds/clip.") {
+		t.Fatal("ammo quantity missing")
+	}
+	entries[1].Price = 9000
+	edit, _ = partnerCatalogResponse(entries, "SOT")
+	if !strings.Contains((*edit.Embeds)[1].Fields[0].Value, "$9,000") {
+		t.Fatal("database price not reflected")
+	}
+	entries[0].Notes = strings.Repeat("x", 5000)
+	edit, err = partnerCatalogResponse(entries, "SOT")
+	if err != nil || len(edit.Files) != 1 {
+		t.Fatal("large internal catalog fallback missing")
+	}
+}
+
+func TestCatalogPostRejectsOtherUser(t *testing.T) {
+	called := false
+	session := &discordgo.Session{Ratelimiter: discordgo.NewRatelimiter(), Client: &http.Client{Transport: orderTestTransport(func(r *http.Request) (*http.Response, error) {
+		called = true
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), "Only the catalog requester") || !strings.Contains(string(body), `"flags":64`) {
+			t.Fatalf("unexpected rejection: %s", body)
+		}
+		return &http.Response{StatusCode: 204, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+	})}}
+	b := &Bot{guildID: "guild", announces: true}
+	b.onInteractionCreate(session, &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{ID: "id", Token: "token", GuildID: "guild", Type: discordgo.InteractionMessageComponent, Member: &discordgo.Member{User: &discordgo.User{ID: "other"}}, Data: discordgo.MessageComponentInteractionData{CustomID: "catalog:post:owner:SOT"}}})
+	if !called {
+		t.Fatal("catalog post component not routed")
 	}
 }

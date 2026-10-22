@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/daffakurniawan/sot-discord-bot/internal/business"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -172,5 +173,36 @@ func TestBusyOrderDoesNotBlockOtherDrafts(t *testing.T) {
 	d.mu.Unlock()
 	if b.lockOrderDraft("second") != nil || !d.Closed {
 		t.Fatal("closed draft remains available")
+	}
+}
+
+func TestSaveInternalPackageFreezesAllStockComponents(t *testing.T) {
+	draft := &orderDraft{Partner: "SOT", Direction: "sale", Total: 37000, Lines: []orderLine{{Entry: business.Entry{Name: "Vector package", Unit: "package", Price: 18500, StockItemID: 10, Components: []business.PackageComponent{{StockItemID: 11, Name: "Ammo SMG", Quantity: 300}, {StockItemID: 12, Name: "Vest", Quantity: 2}, {StockItemID: 13, Name: "Joint", Quantity: 2}}}, Quantity: 2, Conversion: 1}}}
+	var saved [][]any
+	tx := &orderTestTx{row: func(_ string, _ ...any) pgx.Row {
+		return orderTestRow(func(v ...any) error {
+			*v[0].(*int64) = 1
+			*v[1].(*time.Time) = time.Now()
+			*v[2].(*time.Time) = time.Now()
+			return nil
+		})
+	}, exec: func(_ string, args ...any) (pgconn.CommandTag, error) {
+		saved = append(saved, args)
+		return pgconn.CommandTag{}, nil
+	}}
+	if err := saveBusinessOrder(context.Background(), tx, draft, 3); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved) != 4 {
+		t.Fatalf("expected weapon and three stock components: %d", len(saved))
+	}
+	if saved[0][4] != int64(18500) || saved[0][5] != int64(2) {
+		t.Fatal("package price or quantity changed")
+	}
+	for index, conversion := range []int64{300, 2, 2} {
+		args := saved[index+1]
+		if args[3] != int64(2) || args[4] != conversion {
+			t.Fatalf("incorrect package stock snapshot: %+v", args)
+		}
 	}
 }

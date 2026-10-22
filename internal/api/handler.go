@@ -148,6 +148,7 @@ func NewHandler(deps Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/money-transactions/{account}", handler.moneyTransactions)
 	mux.HandleFunc("PATCH /api/v1/price-notes", handler.updatePriceNote)
 	mux.HandleFunc("GET /api/v1/price-notes", handler.priceNotes)
+	mux.HandleFunc("GET /api/v1/order-log", handler.orderLog)
 	mux.HandleFunc("GET /api/v1/safebox-stock", handler.safeboxStock)
 	mux.HandleFunc("GET /api/v1/safebox-stock/transactions", handler.safeboxStockTransactions)
 	mux.HandleFunc("POST /api/v1/safebox-stock/transactions", handler.safeboxStockTransaction)

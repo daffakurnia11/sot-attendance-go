@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS business_internal_package_components;

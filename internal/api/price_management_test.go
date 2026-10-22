@@ -44,3 +44,17 @@ func TestPriceManagementAuthorizationAndConflict(t *testing.T) {
 		})
 	}
 }
+
+func TestInternalPriceManagement(t *testing.T) {
+	for _, admin := range []bool{false, true} {
+		store := &stubPriceWriter{}
+		h := NewHandler(Deps{Tokens: stubTokens{claims: appauth.Claims{MemberID: 7, DiscordUserID: "123"}}, Members: &stubMembers{found: member.Member{ID: 7, DiscordUserID: "123", IsAdmin: admin}}, Business: store, Logger: testLogger()})
+		response := requestWithBody(h, http.MethodPatch, "/api/v1/price-notes", "Bearer token", `{"id":1,"direction":"internal","version":1,"price":18500,"unit":"package","notes":"Updated member package"}`)
+		if admin && (response.Code != 200 || !store.called || store.actor != 7) {
+			t.Fatalf("admin update rejected: %d", response.Code)
+		}
+		if !admin && (response.Code != 403 || store.called) {
+			t.Fatal("non-admin internal write allowed")
+		}
+	}
+}

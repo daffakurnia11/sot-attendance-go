@@ -27,7 +27,7 @@ type Update struct {
 }
 
 func (u Update) Valid() bool {
-	return u.ID > 0 && u.Version > 0 && (u.Direction == "sale" || u.Direction == "purchase") && u.Price >= 0 && u.Price <= 9007199254740991 && strings.TrimSpace(u.Unit) != "" && utf8.RuneCountInString(u.Unit) <= 50 && utf8.RuneCountInString(u.Notes) <= 2000
+	return u.ID > 0 && u.Version > 0 && (u.Direction == "sale" || u.Direction == "purchase" || u.Direction == "internal") && u.Price >= 0 && u.Price <= 9007199254740991 && strings.TrimSpace(u.Unit) != "" && utf8.RuneCountInString(u.Unit) <= 50 && utf8.RuneCountInString(u.Notes) <= 2000
 }
 func (r *Repository) Update(ctx context.Context, u Update, actor int64) (int64, error) {
 	if !u.Valid() || actor <= 0 {
@@ -36,6 +36,9 @@ func (r *Repository) Update(ctx context.Context, u Update, actor int64) (int64, 
 	table := "business_partner_products"
 	if u.Direction == "sale" {
 		table = "business_partner_prices"
+	}
+	if u.Direction == "internal" {
+		table = "business_internal_prices"
 	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -59,6 +62,9 @@ func (r *Repository) Update(ctx context.Context, u Update, actor int64) (int64, 
 		return 0, ErrConflict
 	}
 	u.Unit = strings.TrimSpace(u.Unit)
+	if u.Direction == "internal" && u.Unit != old.Unit {
+		return 0, ErrInvalid
+	}
 	var duplicate bool
 	err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM "+table+" WHERE partner_id=$1 AND stock_item_id=$2 AND LOWER(BTRIM(unit))=LOWER($3) AND id<>$4)", partner, item, u.Unit, u.ID).Scan(&duplicate)
 	if err != nil {

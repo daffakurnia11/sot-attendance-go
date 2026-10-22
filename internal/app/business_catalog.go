@@ -11,32 +11,48 @@ import (
 )
 
 func catalogSlashCommand(contexts []discordgo.InteractionContextType) *discordgo.ApplicationCommand {
-	return &discordgo.ApplicationCommand{Name: "catalog", Description: "Show a partner's current sale and purchase prices", Contexts: &contexts, Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionString, Name: "partner", Description: "Partner code", Required: true, MaxLength: 50}, {Type: discordgo.ApplicationCommandOptionBoolean, Name: "public", Description: "Show catalog to everyone in this channel (default: private)"}}}
+	return &discordgo.ApplicationCommand{Name: "catalog", Description: "Show partner or SOT internal prices", Contexts: &contexts, Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionString, Name: "partner", Description: "Partner code, or SOT for member packages and ala carte prices", Required: true, MaxLength: 50}}}
 }
 
 func (b *Bot) handleCatalog(s *discordgo.Session, i *discordgo.Interaction) {
+	posting := i.Type == discordgo.InteractionMessageComponent
+	partner := ""
+	uid, userErr := interactionUserID(i)
+	if posting {
+		parts := strings.SplitN(i.MessageComponentData().CustomID, ":", 4)
+		if len(parts) != 4 || parts[2] != uid || userErr != nil {
+			_ = s.InteractionRespond(i, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Content: "Only the catalog requester can post this result.", Flags: discordgo.MessageFlagsEphemeral}})
+			return
+		}
+		partner = parts[3]
+	}
+	flags := discordgo.MessageFlagsEphemeral
+	responseType := discordgo.InteractionResponseDeferredChannelMessageWithSource
+	if posting {
+		responseType = discordgo.InteractionResponseDeferredMessageUpdate
+		flags = 0
+	}
 	b.logger.Info("catalog interaction received", "interaction_id", i.ID, "channel_id", i.ChannelID)
-	if err := s.InteractionRespond(i, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Flags: catalogResponseFlags(i.ApplicationCommandData().Options)}}); err != nil {
+	if err := s.InteractionRespond(i, &discordgo.InteractionResponse{Type: responseType, Data: &discordgo.InteractionResponseData{Flags: flags}}); err != nil {
 		b.logger.Error("acknowledge catalog interaction", "interaction_id", i.ID, "channel_id", i.ChannelID, "error", err)
 		return
 	}
 	fail := func(message string) { b.orderReply(s, i, message, nil, []discordgo.MessageComponent{}) }
-	uid, err := interactionUserID(i)
-	if err != nil {
+	if userErr != nil {
 		fail("Guild member required.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err = b.members.FindByDiscordUserID(ctx, uid); err != nil {
+	if _, err := b.members.FindByDiscordUserID(ctx, uid); err != nil {
 		fail("Registered member required.")
 		return
 	}
-	opts := i.ApplicationCommandData().Options
-	partner := ""
-	for _, opt := range opts {
-		if opt.Name == "partner" && opt.Type == discordgo.ApplicationCommandOptionString {
-			partner = opt.StringValue()
+	if !posting {
+		for _, opt := range i.ApplicationCommandData().Options {
+			if opt.Name == "partner" && opt.Type == discordgo.ApplicationCommandOptionString {
+				partner = opt.StringValue()
+			}
 		}
 	}
 	if strings.TrimSpace(partner) == "" {
@@ -54,6 +70,28 @@ func (b *Bot) handleCatalog(s *discordgo.Session, i *discordgo.Interaction) {
 		fail(err.Error())
 		return
 	}
+	canonical := ""
+	for _, entry := range entries {
+		if strings.EqualFold(entry.PartnerCode, strings.TrimSpace(partner)) {
+			canonical = entry.PartnerCode
+			break
+		}
+	}
+	components := catalogPostButton(uid, canonical, false)
+	if posting {
+		_, err = s.ChannelMessageSendComplex(i.ChannelID, &discordgo.MessageSend{Embeds: *response.Embeds, Files: response.Files, AllowedMentions: &discordgo.MessageAllowedMentions{}})
+		if err != nil {
+			b.logger.Error("post catalog", "channel_id", i.ChannelID, "user_id", uid, "error", err)
+			fail("Could not post catalog. Check channel permissions and retry.")
+			return
+		}
+		components = catalogPostButton(uid, canonical, true)
+		content := "Catalog posted to this channel."
+		response.Content = &content
+		response.Files = nil
+		b.logger.Info("catalog posted", "channel_id", i.ChannelID, "user_id", uid, "partner", canonical)
+	}
+	response.Components = &components
 	if _, err = s.InteractionResponseEdit(i, response); err != nil {
 		b.logger.Error("respond partner catalog", "error", err)
 	}
@@ -66,15 +104,34 @@ func partnerCatalogResponse(entries []business.Entry, code string) (*discordgo.W
 	embeds := []*discordgo.MessageEmbed{}
 	size := 0
 	oversized := false
-	for _, direction := range []string{"sale", "purchase"} {
+	sections := []string{"sale", "purchase"}
+	if strings.EqualFold(code, "SOT") {
+		sections = []string{"package", "weapon", "ammo", "body_drugs", "other"}
+	}
+	for _, direction := range sections {
 		heading, label, color := "SOT sells to partner", "Sales", 0x57F287
 		if direction == "purchase" {
 			heading, label, color = "SOT buys from partner", "Purchases", 0xED4245
 		}
+		if strings.EqualFold(code, "SOT") {
+			heading, color = "SOT member prices", 0xF1C40F
+			label = map[string]string{"package": "Member packages", "weapon": "À la carte · Weapons", "ammo": "À la carte · Ammo", "body_drugs": "À la carte · Body & Drugs", "other": "À la carte · Other"}[direction]
+		}
 		embed := &discordgo.MessageEmbed{Description: heading, Color: color, Footer: &discordgo.MessageEmbedFooter{Text: "Current database prices"}}
 		fmt.Fprintf(&text, "%s\n", heading)
 		for _, e := range entries {
-			if !strings.EqualFold(e.PartnerCode, code) || e.Direction != direction {
+			matches := e.Direction == direction
+			if strings.EqualFold(code, "SOT") {
+				group := e.StockGroup
+				if group != "weapon" && group != "ammo" && group != "body_drugs" {
+					group = "other"
+				}
+				if e.Unit == "package" {
+					group = "package"
+				}
+				matches = e.Direction == "internal" && group == direction
+			}
+			if !strings.EqualFold(e.PartnerCode, code) || !matches {
 				continue
 			}
 			name = e.PartnerCode
@@ -90,6 +147,9 @@ func partnerCatalogResponse(entries []business.Entry, code string) (*discordgo.W
 			}
 		}
 		if len(embed.Fields) == 0 {
+			if strings.EqualFold(code, "SOT") {
+				continue
+			}
 			embed.Description += "\nNo products listed."
 		}
 		embed.Title = label
@@ -111,11 +171,10 @@ func partnerCatalogResponse(entries []business.Entry, code string) (*discordgo.W
 	return edit, nil
 }
 
-func catalogResponseFlags(options []*discordgo.ApplicationCommandInteractionDataOption) discordgo.MessageFlags {
-	for _, option := range options {
-		if option.Name == "public" && option.Type == discordgo.ApplicationCommandOptionBoolean && option.BoolValue() {
-			return 0
-		}
+func catalogPostButton(userID, code string, posted bool) []discordgo.MessageComponent {
+	label := "Post Result"
+	if posted {
+		label = "Posted"
 	}
-	return discordgo.MessageFlagsEphemeral
+	return []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{discordgo.Button{Label: label, Style: discordgo.SuccessButton, CustomID: "catalog:post:" + userID + ":" + code, Disabled: posted}}}}
 }

@@ -81,7 +81,7 @@ func TestOrderFormMenusAndSubmit(t *testing.T) {
 		t.Fatal("complete draft submit disabled")
 	}
 	commands := orderSlashCommand(nil)
-	if len(commands.Options) != 1 || commands.Options[0].Name != "partner" || !commands.Options[0].Required {
+	if len(commands.Options) != 2 || commands.Options[0].Name != "partner" || commands.Options[0].Required || commands.Options[1].Type != discordgo.ApplicationCommandOptionUser {
 		t.Fatal("order creation requires arguments")
 	}
 
@@ -214,5 +214,62 @@ func TestOrderFooterUsesPersistedTimesInWIB(t *testing.T) {
 	d.UpdatedBy = ""
 	if !strings.Contains(orderEmbed(d).Footer.Text, "Unknown") {
 		t.Fatal("invented historical updater")
+	}
+}
+
+func TestInternalOrderPackagesAndAlacarte(t *testing.T) {
+	source := []business.Entry{
+		{ID: 1, PartnerCode: "SOT", Direction: "internal", Name: "Vector package", Unit: "package", Price: 18500, StockItemID: 10, Components: []business.PackageComponent{{StockItemID: 11, Name: "Ammo SMG", Quantity: 300}, {StockItemID: 12, Name: "Vest", Quantity: 2}, {StockItemID: 13, Name: "Joint", Quantity: 2}}},
+		{ID: 2, PartnerCode: "SOT", Direction: "internal", Name: "Ammo SMG", StockItemName: "Ammo SMG", Unit: "clip", Price: 2500, StockItemID: 11},
+	}
+	catalog := orderCatalog(source)
+	if source[0].Direction != "internal" {
+		t.Fatal("repository catalog mutated")
+	}
+	partner, err := orderPartnerCode(catalog, "sale", "sot")
+	if err != nil || partner != "SOT" {
+		t.Fatal("internal partner unavailable")
+	}
+	if _, err = orderPartnerCode(catalog, "purchase", "SOT"); err == nil {
+		t.Fatal("internal purchase allowed")
+	}
+	draft, err := buildOrderDraft(catalog, "sale", "SOT", "1:2,2:1", "2026-10-22", "2026-10-24", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.Total != 39500 || len(draft.Lines) != 2 || draft.Lines[1].Conversion != 150 {
+		t.Fatalf("incorrect internal draft: %+v", draft)
+	}
+	if orderEmbed(draft).Color != 0x3498DB {
+		t.Fatal("internal embed must be blue")
+	}
+	catalog[0].Components = nil
+	if _, err = buildOrderDraft(catalog, "sale", "SOT", "1:1", "2026-10-22", "2026-10-24", "", 0); err == nil {
+		t.Fatal("package missing stock components accepted")
+	}
+	catalog[0].Components = []business.PackageComponent{{StockItemID: 11, Quantity: 300}}
+	if _, err = buildOrderDraft(catalog, "sale", "SOT", "1:10000000", "2026-10-22", "2026-10-24", "", 0); err == nil {
+		t.Fatal("package stock overflow accepted")
+	}
+}
+
+func TestOrderMemberTarget(t *testing.T) {
+	member := &discordgo.ApplicationCommandInteractionDataOption{Name: "member", Type: discordgo.ApplicationCommandOptionUser, Value: "123"}
+	partner := &discordgo.ApplicationCommandInteractionDataOption{Name: "partner", Type: discordgo.ApplicationCommandOptionString, Value: "GWF"}
+	code, buyer, err := orderTarget([]*discordgo.ApplicationCommandInteractionDataOption{member}, "sale")
+	if err != nil || code != "SOT" || buyer != "123" {
+		t.Fatal("member target not resolved")
+	}
+	for _, opts := range [][]*discordgo.ApplicationCommandInteractionDataOption{nil, {member, partner}, {{Name: "partner", Type: discordgo.ApplicationCommandOptionString, Value: "SOT"}}} {
+		if _, _, err := orderTarget(opts, "sale"); err == nil {
+			t.Fatal("invalid target accepted")
+		}
+	}
+	if _, _, err := orderTarget([]*discordgo.ApplicationCommandInteractionDataOption{member}, "purchase"); err == nil {
+		t.Fatal("purchase member accepted")
+	}
+	embed := orderEmbed(&orderDraft{Direction: "sale", Partner: "SOT", BuyerDiscordID: "123"})
+	if embed.Fields[0].Name != "Buyer" || embed.Fields[0].Value != "<@123>" || embed.Color != 0x3498DB {
+		t.Fatal("buyer embed incorrect")
 	}
 }
