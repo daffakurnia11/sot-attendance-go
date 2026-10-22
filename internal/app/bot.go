@@ -34,6 +34,7 @@ import (
 )
 
 type Bot struct {
+	currentLogChannelID   string
 	session               *discordgo.Session
 	status                *presence.Counter
 	router                *router.Router
@@ -201,6 +202,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		serverLogChannelID:    cfg.ServerLogChannelID,
 		serverLogs:            serverlog.NewRepository(pool),
 		playerDashboard:       dashboard.NewRepository(pool, logger),
+		currentLogChannelID:   cfg.CurrentLogChannelID,
 		officeMoneyChannelID:  cfg.OfficeMoneyChannelID,
 		businessSaleChannelID: cfg.BusinessOrderListChannelID,
 		orderDrafts:           make(map[string]*orderDraft),
@@ -276,6 +278,7 @@ func (b *Bot) Run(ctx context.Context) error {
 		go b.attendance.Run(ctx, b.session)
 		go b.runServerLogPoller(ctx)
 		go b.runOrderNotifications(ctx)
+		go b.runPlayerReports(ctx)
 	}
 
 	discordTicker := time.NewTicker(b.pollInterval)

@@ -10,9 +10,10 @@ import (
 )
 
 type Config struct {
-	AppEnv  string
-	Token   string
-	GuildID string
+	CurrentLogChannelID string
+	AppEnv              string
+	Token               string
+	GuildID             string
 	// DiscordRoleIDs filters the Discord activity witness and player count;
 	// empty outside production. DiscordMemberRoleIDs picks who is synced into
 	// members, which is the web login allow-list. Both come from
@@ -85,6 +86,12 @@ func Load() (Config, error) {
 	config, err = withBusinessChannels(config, os.Getenv("BUSINESS_ORDER_LIST_CHANNEL_ID"))
 	if err != nil {
 		return Config{}, err
+	}
+	config.CurrentLogChannelID = strings.TrimSpace(os.Getenv("DISCORD_CURRENT_LOG_CHANNEL_ID"))
+	if config.CurrentLogChannelID != "" {
+		if err := validateDiscordID(config.CurrentLogChannelID); err != nil {
+			return Config{}, err
+		}
 	}
 	return withStatusPolling(config, os.Getenv("DISCORD_POLL_STATUS"))
 }

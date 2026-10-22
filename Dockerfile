@@ -1,6 +1,6 @@
 FROM golang:1.24-alpine AS development
 
-RUN apk add --no-cache ca-certificates git \
+RUN apk add --no-cache ca-certificates git chromium font-dejavu \
     && addgroup -S bot \
     && adduser -S -G bot -h /app bot \
     && go install github.com/air-verse/air@v1.61.7
@@ -25,7 +25,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/bot ./c
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
 
 FROM alpine:3.21 AS production
-RUN apk add --no-cache ca-certificates \
+RUN apk add --no-cache ca-certificates chromium font-dejavu \
     && addgroup -S bot \
     && adduser -S -G bot bot
 COPY --from=build /out/bot /usr/local/bin/bot

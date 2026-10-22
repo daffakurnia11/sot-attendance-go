@@ -46,6 +46,7 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		businessSlashCommand("purchase", "Create a purchase order", guildContexts),
 		{Name: "order-status", Description: "Update an existing order status", Contexts: &guildContexts, Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionInteger, Name: "order_id", Description: "Order or purchase number", Required: true}}},
 		catalogSlashCommand(guildContexts),
+		{Name: "currentlog", Description: "Post current server-connected members with screenshot (admin)", Contexts: &guildContexts},
 	}
 }
 
@@ -138,6 +139,10 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 		return
 	}
 	commandName := event.ApplicationCommandData().Name
+	if commandName == "currentlog" {
+		b.handleCurrentLog(session, event.Interaction)
+		return
+	}
 	if commandName == "catalog" {
 		b.handleCatalog(session, event.Interaction)
 		return
@@ -197,7 +202,7 @@ func (b *Bot) onInteractionCreate(session *discordgo.Session, event *discordgo.I
 
 func isSlashCommand(name string) bool {
 	switch name {
-	case "catalog", "order", "purchase", "order-status", statusCommand, commandrecap.CheckCommand, commandrecap.Command, commandcrafting.Command, commandmoney.Command, commandstash.Command:
+	case "currentlog", "catalog", "order", "purchase", "order-status", statusCommand, commandrecap.CheckCommand, commandrecap.Command, commandcrafting.Command, commandmoney.Command, commandstash.Command:
 		return true
 	default:
 		return false
