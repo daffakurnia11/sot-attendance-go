@@ -150,7 +150,7 @@ func (b *Bot) deliverPlayerPeak(ctx context.Context, today string) error {
 	if err = tx.Commit(ctx); err != nil {
 		return err
 	}
-	b.logger.Info("player peak report posted", "date", date, "members", snapshot.ConnectedCount(), "message_id", id)
+	b.logger.Info("player peak report posted", "date", date, "connected_members", snapshot.ConnectedCount(), "total_members", len(snapshot.Players), "message_id", id)
 	return nil
 }
 func (b *Bot) handleCurrentLog(s *discordgo.Session, i *discordgo.Interaction) {
@@ -184,8 +184,8 @@ func (b *Bot) handleCurrentLog(s *discordgo.Session, i *discordgo.Interaction) {
 		reply("Could not post current log. Check renderer and channel permissions; retry shortly.")
 		return
 	}
-	b.logger.Info("current player report posted", "user_id", uid, "channel_id", i.ChannelID, "members", snapshot.ConnectedCount())
-	reply(fmt.Sprintf("Current log posted to <#%s> · %d connected members.", i.ChannelID, snapshot.ConnectedCount()))
+	b.logger.Info("current player report posted", "user_id", uid, "channel_id", i.ChannelID, "connected_members", snapshot.ConnectedCount(), "total_members", len(snapshot.Players))
+	reply(fmt.Sprintf("Current log posted to <#%s> · %d members (connected + connecting).", i.ChannelID, len(snapshot.Players)))
 }
 
 func savePlayerPeak(ctx context.Context, tx pgx.Tx, guild, date string, snapshot playerreport.Snapshot) error {

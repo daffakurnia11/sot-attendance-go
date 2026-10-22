@@ -71,7 +71,7 @@ func WindowDate(now time.Time, loc *time.Location) (string, bool) {
 }
 func Caption(s Snapshot, peak bool, loc *time.Location) string {
 	at := s.At.In(loc)
-	return fmt.Sprintf("```\nTanggal : %s\nWaktu   : %s WIB\nJumlah  : %d Orang\n```", at.Format("02/01/2006"), at.Format("15:04:05"), s.ConnectedCount())
+	return fmt.Sprintf("```\nTanggal : %s\nWaktu   : %s WIB\nJumlah  : %d Orang\n```", at.Format("02/01/2006"), at.Format("15:04:05"), len(s.Players))
 }
 
 //go:embed report.html assets/*

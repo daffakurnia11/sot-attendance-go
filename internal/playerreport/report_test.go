@@ -83,8 +83,8 @@ func TestRenderPNG(t *testing.T) {
 func TestConnectingRowsDoNotCountAsPeak(t *testing.T) {
 	loc, _ := time.LoadLocation("Asia/Jakarta")
 	s := Snapshot{At: time.Now(), Players: []Player{{Name: "Connected", ServerStatus: "connected"}, {Name: "Joining", ServerStatus: "connecting"}}}
-	if s.ConnectedCount() != 1 || !strings.Contains(Caption(s, true, loc), "1 Orang") {
-		t.Fatal("connecting player counted")
+	if s.ConnectedCount() != 1 || !strings.Contains(Caption(s, true, loc), "2 Orang") {
+		t.Fatal("peak must count connected only; caption must count all rows")
 	}
 	html, err := HTML(s, loc)
 	if err != nil || !bytes.Contains(html, []byte("CONNECTING")) || bytes.Contains(html, []byte("SNAPSHOT")) {
