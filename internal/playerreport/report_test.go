@@ -12,27 +12,33 @@ import (
 	_ "time/tzdata"
 )
 
-func TestCaptureConnectedAndConnectingMembers(t *testing.T) {
+func TestCaptureMatchesPlayerLogsRoster(t *testing.T) {
 	id := int64(1)
 	slot := "45"
+	empty := ""
 	at := time.Date(2026, 10, 22, 15, 0, 0, 0, time.UTC)
-	member := dashboard.Player{MemberID: &id, DiscordUserID: "123", CharacterName: "Kenji", Username: "delta", Status: "connected", ServerID: &slot}
-	connecting := member
-	connecting.DiscordUserID = "other"
-	connecting.Status = "connecting"
-	connecting.ServerID = nil
-	discordOnly := member
-	discordOnly.DiscordUserID = "discord-only"
-	discordOnly.ServerID = nil
-	guest := member
-	guest.DiscordUserID = "guest"
-	guest.MemberID = nil
-	snapshot := Capture(at, []dashboard.Player{member, member, connecting, discordOnly, guest})
-	if len(snapshot.Players) != 2 || snapshot.ConnectedCount() != 1 || snapshot.Players[0].Name != "Kenji" || !snapshot.At.Equal(at) {
-		t.Fatalf("incorrect snapshot: %+v", snapshot)
+	players := []dashboard.Player{
+		{MemberID: &id, DiscordUserID: "123", CharacterName: "Kenji", CID: "A", Status: "connected", ServerID: &slot},
+		{MemberID: &id, DiscordUserID: "123", CharacterName: "Another character", CID: "B", Status: "connected"},
+		{CharacterName: "Guest", CID: "C", Status: "connected", ServerID: &empty},
+		{CharacterName: "Arriving", CID: "D", Status: "connecting"},
+		{CharacterName: "Offline", CID: "E", Status: "offline", DiscordPlaying: true},
 	}
-	member.CharacterName = "Changed"
-	if snapshot.Players[0].Name != "Kenji" {
+	snapshot := Capture(at, players)
+	if len(snapshot.Players) != 4 || snapshot.ConnectedCount() != 3 || !snapshot.At.Equal(at) {
+		t.Fatalf("wrong roster: %+v", snapshot)
+	}
+	want := []string{"Another character", "Guest", "Kenji", "Arriving"}
+	for i, name := range want {
+		if snapshot.Players[i].Name != name {
+			t.Fatalf("row %d: got %s want %s", i, snapshot.Players[i].Name, name)
+		}
+	}
+	if snapshot.Players[0].ServerID != "" || snapshot.Players[1].ServerID != "" {
+		t.Fatal("missing slots must remain optional")
+	}
+	players[0].CharacterName = "Changed"
+	if snapshot.Players[2].Name != "Kenji" {
 		t.Fatal("snapshot not frozen")
 	}
 }

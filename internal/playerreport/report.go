@@ -34,15 +34,15 @@ type Snapshot struct {
 
 func Capture(at time.Time, players []dashboard.Player) Snapshot {
 	result := Snapshot{At: at, Players: []Player{}}
-	seen := map[string]bool{}
 	for _, p := range players {
-		if p.MemberID == nil || p.DiscordUserID == "" || (p.Status != "connected" && p.Status != "connecting") || (p.Status == "connected" && (p.ServerID == nil || *p.ServerID == "")) || seen[p.DiscordUserID] {
+		// Match Player Logs: retain every active character, including Discord fallback
+		// connections, guests, and multiple characters belonging to one member.
+		if p.Status != "connected" && p.Status != "connecting" {
 			continue
 		}
-		seen[p.DiscordUserID] = true
 		name := p.CharacterName
 		if name == "" {
-			name = p.DisplayName
+			name = "-"
 		}
 		slot := ""
 		if p.ServerID != nil {
@@ -50,7 +50,16 @@ func Capture(at time.Time, players []dashboard.Player) Snapshot {
 		}
 		result.Players = append(result.Players, Player{ServerStatus: p.Status, Name: name, Username: p.Username, ServerID: slot, DisplayName: p.DisplayName, DiscordStatus: discordStatus(p), ServerName: p.CFXName, CID: p.CID})
 	}
-	sort.Slice(result.Players, func(i, j int) bool { return result.Players[i].Name < result.Players[j].Name })
+	sort.SliceStable(result.Players, func(i, j int) bool {
+		a, b := result.Players[i], result.Players[j]
+		if a.ServerStatus != b.ServerStatus {
+			return a.ServerStatus == "connected"
+		}
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		return a.CID < b.CID
+	})
 	return result
 }
 
