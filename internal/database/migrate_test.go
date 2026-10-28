@@ -104,3 +104,46 @@ func lockTestSchema(t *testing.T, databaseURL string) {
 		connection.Close(ctx)
 	})
 }
+
+// TestMigratePreservesActivityCompatibilityView reproduces startup after legacy
+// activity storage has moved to server_logs but older readers still use a view.
+func TestMigratePreservesActivityCompatibilityView(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is not set; use a disposable database")
+	}
+	requireDisposable(t, databaseURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	lockTestSchema(t, databaseURL)
+	if _, err := pool.Exec(ctx, "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+        CREATE TABLE archived_activity AS SELECT * FROM activity_logs;
+        DROP TABLE activity_logs;
+        CREATE VIEW activity_logs AS SELECT * FROM archived_activity;
+    `); err != nil {
+		t.Fatal(err)
+	}
+	for pass := 1; pass <= 2; pass++ {
+		if err := Migrate(ctx, pool); err != nil {
+			t.Fatalf("migration replay %d: %v", pass, err)
+		}
+	}
+	var kind string
+	if err := pool.QueryRow(ctx, "SELECT relkind::text FROM pg_class WHERE oid='public.activity_logs'::regclass").Scan(&kind); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "v" {
+		t.Fatalf("activity_logs kind = %q, want view", kind)
+	}
+}

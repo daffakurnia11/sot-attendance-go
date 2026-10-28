@@ -20,6 +20,15 @@
 
 DO $$
 BEGIN
+    -- Consolidated databases expose legacy events through a compatibility view.
+    -- Views already provide the read contract and cannot receive table indexes.
+    IF EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = to_regclass('public.activity_logs') AND relkind = 'v'
+    ) THEN
+        RETURN;
+    END IF;
+
     IF to_regclass('public.player_logs') IS NOT NULL THEN
         RETURN;
     END IF;
