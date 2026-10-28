@@ -24,6 +24,9 @@ func SettleOrderStatus(ctx context.Context, tx pgx.Tx, orderID, actor int64, saf
 	if err != nil || destination == "" {
 		return "", err
 	}
+	if destination == "cancel" {
+		return reverseOrder(ctx, tx, orderID, actor, safebox)
+	}
 	var moneyPosted, stockPosted bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM money_transactions WHERE business_order_id=$1), EXISTS(SELECT 1 FROM safebox_stock_transactions t JOIN business_order_items i ON i.id=t.business_order_item_id WHERE i.order_id=$1)`, orderID).Scan(&moneyPosted, &stockPosted); err != nil {
 		return "", err
@@ -105,13 +108,19 @@ func SettleOrderStatus(ctx context.Context, tx pgx.Tx, orderID, actor int64, saf
 	return destination, nil
 }
 
-// Stages are forward-only because ledger movements cannot be undone by a label change.
+// Normal stages advance; cancellation compensates recorded ledger movements.
 func OrderStatusMovement(direction, current, target string) (string, error) {
 	stage := "ready"
 	if direction == "purchase" {
 		stage = "paid"
 	} else if direction != "sale" {
 		return "", errors.New("Invalid order direction.")
+	}
+	if target == "cancelled" && (current == "open" || current == stage) {
+		return "cancel", nil
+	}
+	if current == "cancelled" && target == "cancelled" {
+		return "", nil
 	}
 	if current == target && (current == "open" || current == stage || current == "complete") {
 		return "", nil
@@ -128,5 +137,5 @@ func OrderStatusMovement(direction, current, target string) (string, error) {
 		}
 		return "boss", nil
 	}
-	return "", fmt.Errorf("Status must advance Open → %s → Complete; ledger movements cannot be reversed here.", stage)
+	return "", fmt.Errorf("Status must advance Open → %s → Complete; use Cancel to reverse recorded ledger movements.", stage)
 }

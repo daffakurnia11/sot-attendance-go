@@ -16,11 +16,27 @@ import (
 
 // Queue ledger snapshots in the settlement transaction; delivery never replays balances.
 func (b *Bot) queueOrderMovement(ctx context.Context, tx pgx.Tx, d *orderDraft, actorDiscordID, destination string) error {
+	if destination == "cancel" {
+		var office, boss bool
+		reason := fmt.Sprintf("Business order #%d cancelled", d.OrderID)
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM money_transactions WHERE business_order_id=$1 AND reason=$2),EXISTS(SELECT 1 FROM safebox_stock_transactions t JOIN business_order_items i ON i.id=t.business_order_item_id WHERE i.order_id=$1 AND t.reason=$2)`, d.OrderID, reason).Scan(&office, &boss); err != nil {
+			return err
+		}
+		if office {
+			if err := b.queueOrderMovement(ctx, tx, d, actorDiscordID, "office"); err != nil {
+				return err
+			}
+		}
+		if boss {
+			return b.queueOrderMovement(ctx, tx, d, actorDiscordID, "boss")
+		}
+		return nil
+	}
 	var failures []error
 	send := func(destination string, embed *discordgo.MessageEmbed) {
 		payload, err := json.Marshal(embed)
 		if err == nil {
-			_, err = tx.Exec(ctx, `INSERT INTO business_order_notifications(order_id,destination,embed) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, d.OrderID, destination, payload)
+			_, err = tx.Exec(ctx, `INSERT INTO business_order_notifications(order_id,destination,embed) VALUES($1,$2,$3) ON CONFLICT(order_id,destination) DO UPDATE SET embed=EXCLUDED.embed,delivered_message_id=NULL,next_attempt_at=NOW() WHERE $4`, d.OrderID, destination, payload, d.Status == "cancelled")
 		}
 		if err != nil {
 			failures = append(failures, err)
@@ -28,7 +44,7 @@ func (b *Bot) queueOrderMovement(ctx context.Context, tx pgx.Tx, d *orderDraft, 
 	}
 	if destination == "office" {
 		var t moneydomain.Transaction
-		err := tx.QueryRow(ctx, `SELECT id,account_type,CASE WHEN direction='credit' THEN 'deposit' ELSE 'withdraw' END,amount,balance_before,balance_after,reason,actor_member_id FROM money_transactions WHERE business_order_id=$1 ORDER BY id LIMIT 1`, d.OrderID).Scan(&t.ID, &t.Account, &t.Action, &t.Amount, &t.BalanceBefore, &t.BalanceAfter, &t.Reason, &t.ActorMemberID)
+		err := tx.QueryRow(ctx, `SELECT id,account_type,CASE WHEN direction='credit' THEN 'deposit' ELSE 'withdraw' END,amount,balance_before,balance_after,reason,actor_member_id FROM money_transactions WHERE business_order_id=$1 AND ($2='' OR reason=$2) ORDER BY id DESC LIMIT 1`, d.OrderID, cancellationReason(d)).Scan(&t.ID, &t.Account, &t.Action, &t.Amount, &t.BalanceBefore, &t.BalanceAfter, &t.Reason, &t.ActorMemberID)
 		if err != nil {
 			failures = append(failures, err)
 		} else {
@@ -41,7 +57,7 @@ func (b *Bot) queueOrderMovement(ctx context.Context, tx pgx.Tx, d *orderDraft, 
 	if destination != "boss" {
 		return fmt.Errorf("invalid ledger destination %q", destination)
 	}
-	rows, err := tx.Query(ctx, `SELECT i.name,abs(t.delta),t.quantity_after,t.action,t.reason FROM safebox_stock_transactions t JOIN business_order_items o ON o.id=t.business_order_item_id JOIN safebox_stock_items i ON i.id=t.item_id WHERE o.order_id=$1 ORDER BY t.id`, d.OrderID)
+	rows, err := tx.Query(ctx, `SELECT i.name,abs(t.delta),t.quantity_after,t.action,t.reason FROM safebox_stock_transactions t JOIN business_order_items o ON o.id=t.business_order_item_id JOIN safebox_stock_items i ON i.id=t.item_id WHERE o.order_id=$1 AND ($2='' OR t.reason=$2) ORDER BY t.id`, d.OrderID, cancellationReason(d))
 	if err != nil {
 		return fmt.Errorf("read order stock ledger: %w", err)
 	}
@@ -139,4 +155,11 @@ func (b *Bot) deliverOrderNotification(ctx context.Context, tx pgx.Tx, s *discor
 	}
 	_, err = tx.Exec(ctx, `UPDATE business_order_notifications SET delivered_message_id=$3 WHERE order_id=$1 AND destination=$2`, id, destination, message.ID)
 	return true, err
+}
+
+func cancellationReason(d *orderDraft) string {
+	if d.Status == "cancelled" {
+		return fmt.Sprintf("Business order #%d cancelled", d.OrderID)
+	}
+	return ""
 }

@@ -313,7 +313,7 @@ can change status; changes update the database and refresh the linked channel
 message. Open has no ledger effect. Database status remains free text; the bot
 enforces the stages below.
 
-Order stages are forward-only. Sales advance Open → Ready → Complete: Ready
+Order messages expose Cancel plus the next Ready/Paid/Complete action as buttons. Cancel is available only from Open and Ready/Paid; Complete and Cancelled are terminal. Cancellation posts compensating entries for the actual linked ledgers: sale withdrawals return to Boss stock, purchase payments return to office money. Cancellation fails atomically if a reversal cannot be recorded. Repeated cancellation has no ledger effect. Existing dropdown messages remain supported; `/order-status order_id:...` provides current buttons. Sales advance Open → Ready → Complete: Ready
 withdraws Boss Safebox stock, Complete credits office money. Purchases advance
 Open → Paid → Complete: Paid debits office money, Complete deposits Boss stock
 using frozen unit conversions. Complete cannot skip Ready/Paid. Repeating a stage

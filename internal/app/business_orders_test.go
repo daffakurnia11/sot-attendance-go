@@ -90,13 +90,13 @@ func TestOrderFormMenusAndSubmit(t *testing.T) {
 func TestOrderStatusesMatchDirection(t *testing.T) {
 	for _, tc := range []struct{ direction, middle string }{{"sale", "ready"}, {"purchase", "paid"}} {
 		statuses := orderStatuses(tc.direction)
-		if len(statuses) != 3 || statuses[0] != "open" || statuses[1] != tc.middle || statuses[2] != "complete" {
+		if len(statuses) != 4 || statuses[0] != "open" || statuses[1] != tc.middle || statuses[2] != "complete" {
 			t.Fatalf("wrong statuses: %v", statuses)
 		}
 		d := &orderDraft{OrderID: 42, Direction: tc.direction, Status: tc.middle}
-		menu := orderStatusComponents(d)[0].(discordgo.ActionsRow).Components[0].(discordgo.SelectMenu)
-		if menu.CustomID != "orderstatus:42" || !menu.Options[1].Default {
-			t.Fatalf("wrong persistent controls: %+v", menu)
+		buttons := orderStatusComponents(d)[0].(discordgo.ActionsRow).Components
+		if len(buttons) != 2 || buttons[0].(discordgo.Button).CustomID != "orderstatus:42:cancelled" || buttons[1].(discordgo.Button).CustomID != "orderstatus:42:complete" {
+			t.Fatalf("wrong persistent buttons: %+v", buttons)
 		}
 	}
 	if len(orderStatuses("unknown")) != 0 {
@@ -271,5 +271,25 @@ func TestOrderMemberTarget(t *testing.T) {
 	embed := orderEmbed(&orderDraft{Direction: "sale", Partner: "SOT", BuyerDiscordID: "123"})
 	if embed.Fields[0].Name != "Buyer" || embed.Fields[0].Value != "<@123>" || embed.Color != 0x3498DB {
 		t.Fatal("buyer embed incorrect")
+	}
+}
+
+func TestOrderCancellationButtons(t *testing.T) {
+	for _, dir := range []string{"sale", "purchase"} {
+		for _, status := range []string{"open"} {
+			buttons := orderStatusComponents(&orderDraft{OrderID: 1, Direction: dir, Status: status})[0].(discordgo.ActionsRow).Components
+			if buttons[0].(discordgo.Button).Label != "Cancel" {
+				t.Fatal("missing cancel")
+			}
+			if status == "complete" && len(buttons) != 1 {
+				t.Fatal("completed order can advance")
+			}
+		}
+	}
+	if len(orderStatusComponents(&orderDraft{Status: "complete"})) != 0 {
+		t.Fatal("completed order has controls")
+	}
+	if len(orderStatusComponents(&orderDraft{Status: "cancelled"})) != 0 {
+		t.Fatal("cancelled order has controls")
 	}
 }

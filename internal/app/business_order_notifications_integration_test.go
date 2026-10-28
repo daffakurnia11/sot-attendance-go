@@ -87,4 +87,16 @@ func TestOrderNotificationQueueRollsBackWithSettlement(t *testing.T) {
 	if err = fixture.QueryRow(ctx, `SELECT COUNT(*) FROM business_order_notifications WHERE delivered_message_id IS NULL AND next_attempt_at>NOW()`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("failure not scheduled: %d %v", count, err)
 	}
+	// Cancellation queues compensating entries rather than replaying originals.
+	if _, err = fixture.Exec(ctx, `UPDATE business_order_notifications SET delivered_message_id='already-sent'; INSERT INTO money_transactions VALUES(2,'office','debit',200,1200,1000,'Business order #42 cancelled',1,42); INSERT INTO safebox_stock_transactions VALUES(1,1,2,10,'deposit','Business order #42 cancelled',2);`); err != nil {
+		t.Fatal(err)
+	}
+	d.Status = "cancelled"
+	if err = b.queueOrderMovement(ctx, fixture, d, "member", "cancel"); err != nil {
+		t.Fatal(err)
+	}
+	if err = fixture.QueryRow(ctx, `SELECT COUNT(*) FROM business_order_notifications WHERE delivered_message_id IS NULL AND embed::text LIKE '%cancelled%'`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("reversal notifications missing: %d %v", count, err)
+	}
+
 }

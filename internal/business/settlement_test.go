@@ -119,20 +119,40 @@ func TestStagedOrderAtomicSettlement(t *testing.T) {
 	if balance != "900" || quantity != 188 || count != 2 {
 		t.Fatalf("settlement/rollback mismatch: money=%s stock=%d entries=%d", balance, quantity, count)
 	}
+
+	// Completed orders cannot be cancelled; their balances remain unchanged.
+	apply(1, "cancelled", true)
+	apply(2, "cancelled", true)
+	check("900", 188, 2)
+	if _, err = fixture.Exec(ctx, `INSERT INTO business_orders VALUES(5,'sale','open',200),(6,'purchase','open',300); INSERT INTO business_order_items VALUES(5,5,1,2,1),(6,6,1,1,180);`); err != nil {
+		t.Fatal(err)
+	}
+	apply(5, "ready", false)
+	check("900", 186, 2)
+	apply(5, "cancelled", false)
+	check("900", 188, 2)
+	apply(5, "cancelled", false)
+	check("900", 188, 2)
+	apply(5, "ready", true)
+	apply(6, "paid", false)
+	check("600", 188, 3)
+	apply(6, "cancelled", false)
+	check("900", 188, 4)
+
 }
 
 func TestOrderStatusMovement(t *testing.T) {
 	for _, tc := range []struct{ direction, current, target, want string }{
 		{"sale", "open", "ready", "boss"}, {"sale", "ready", "complete", "office"},
 		{"purchase", "open", "paid", "office"}, {"purchase", "paid", "complete", "boss"},
-		{"sale", "ready", "ready", ""}, {"purchase", "paid", "paid", ""},
+		{"sale", "open", "cancelled", "cancel"}, {"sale", "ready", "cancelled", "cancel"}, {"purchase", "paid", "cancelled", "cancel"}, {"sale", "cancelled", "cancelled", ""}, {"sale", "ready", "ready", ""}, {"purchase", "paid", "paid", ""},
 	} {
 		got, err := OrderStatusMovement(tc.direction, tc.current, tc.target)
 		if err != nil || got != tc.want {
 			t.Fatalf("%+v: %s %v", tc, got, err)
 		}
 	}
-	for _, tc := range [][3]string{{"sale", "open", "complete"}, {"purchase", "open", "complete"}, {"sale", "ready", "open"}, {"purchase", "paid", "open"}, {"sale", "open", "paid"}, {"purchase", "open", "ready"}, {"sale", "complete", "ready"}} {
+	for _, tc := range [][3]string{{"sale", "open", "complete"}, {"purchase", "open", "complete"}, {"sale", "ready", "open"}, {"purchase", "paid", "open"}, {"sale", "open", "paid"}, {"purchase", "open", "ready"}, {"sale", "complete", "ready"}, {"sale", "complete", "cancelled"}, {"purchase", "complete", "cancelled"}} {
 		if _, err := OrderStatusMovement(tc[0], tc[1], tc[2]); err == nil {
 			t.Fatalf("accepted invalid transition: %v", tc)
 		}

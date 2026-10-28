@@ -12,19 +12,29 @@ import (
 
 func orderStatuses(direction string) []string {
 	if direction == "sale" {
-		return []string{"open", "ready", "complete"}
+		return []string{"open", "ready", "complete", "cancelled"}
 	}
 	if direction == "purchase" {
-		return []string{"open", "paid", "complete"}
+		return []string{"open", "paid", "complete", "cancelled"}
 	}
 	return nil
 }
 func orderStatusComponents(d *orderDraft) []discordgo.MessageComponent {
-	opts := []discordgo.SelectMenuOption{}
-	for _, status := range orderStatuses(d.Direction) {
-		opts = append(opts, discordgo.SelectMenuOption{Label: orderStatusLabel(status), Value: status, Default: d.Status == status || d.Status == "" && status == "open"})
+	if d.Status == "cancelled" || d.Status == "complete" {
+		return []discordgo.MessageComponent{}
 	}
-	return []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{discordgo.SelectMenu{CustomID: fmt.Sprintf("orderstatus:%d", d.OrderID), Placeholder: "Update order status", Options: opts}}}}
+	buttons := []discordgo.MessageComponent{discordgo.Button{CustomID: fmt.Sprintf("orderstatus:%d:cancelled", d.OrderID), Label: "Cancel", Style: discordgo.DangerButton}}
+	next := "complete"
+	if d.Status == "open" || d.Status == "" {
+		next = "ready"
+		if d.Direction == "purchase" {
+			next = "paid"
+		}
+	}
+	if d.Status != "complete" {
+		buttons = append(buttons, discordgo.Button{CustomID: fmt.Sprintf("orderstatus:%d:%s", d.OrderID, next), Label: orderStatusLabel(next), Style: discordgo.SuccessButton})
+	}
+	return []discordgo.MessageComponent{discordgo.ActionsRow{Components: buttons}}
 }
 func (b *Bot) handleOrderUpdate(s *discordgo.Session, i *discordgo.Interaction) {
 	if err := s.InteractionRespond(i, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral}}); err != nil {
@@ -55,12 +65,17 @@ func (b *Bot) handleOrderUpdate(s *discordgo.Session, i *discordgo.Interaction) 
 		id = opts[0].IntValue()
 	} else {
 		data := i.MessageComponentData()
-		id, err = strconv.ParseInt(strings.TrimPrefix(data.CustomID, "orderstatus:"), 10, 64)
-		if err != nil || len(data.Values) != 1 {
-			reply("Invalid status selection.")
+		parts := strings.Split(strings.TrimPrefix(data.CustomID, "orderstatus:"), ":")
+		id, err = strconv.ParseInt(parts[0], 10, 64)
+		if len(parts) == 2 {
+			status = parts[1]
+		} else if len(parts) == 1 && len(data.Values) == 1 {
+			status = data.Values[0]
+		}
+		if err != nil || status == "" {
+			reply("Invalid status action.")
 			return
 		}
-		status = data.Values[0]
 	}
 	if id <= 0 {
 		reply("Invalid order ID.")
@@ -165,11 +180,14 @@ func (b *Bot) handleOrderUpdate(s *discordgo.Session, i *discordgo.Interaction) 
 		}
 		return
 	}
-	b.orderReply(s, i, "Sales: Ready withdraws Boss stock, Complete credits office money. Purchases: Paid debits office money, Complete deposits Boss stock. Stages cannot be reversed.", orderEmbed(d), orderStatusComponents(d))
+	b.orderReply(s, i, "Sales: Ready withdraws Boss stock, Complete credits office money. Purchases: Paid debits office money, Complete deposits Boss stock. Cancel reverses recorded money and stock movements.", orderEmbed(d), orderStatusComponents(d))
 }
 
 func orderStatusConfirmation(d *orderDraft, movement string) *discordgo.WebhookEdit {
 	effect := "No new money or stock transactions."
+	if movement == "cancel" {
+		effect = "Recorded money and stock movements reversed. Reversal notifications queued where applicable."
+	}
 	if movement == "boss" {
 		effect = "Boss Safebox stock updated. Ledger notification queued."
 	}
@@ -187,6 +205,8 @@ func orderStatusLabel(status string) string {
 	switch status {
 	case "open":
 		return "Open"
+	case "cancelled":
+		return "Cancelled"
 	case "ready":
 		return "Ready"
 	case "paid":
