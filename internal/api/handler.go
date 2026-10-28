@@ -43,12 +43,9 @@ type dashboardReader interface {
 	GetMemberRecords(context.Context, int64) (dashboard.MemberRecords, error)
 	GetDiscordMemberRecords(context.Context, string) (dashboard.MemberRecords, error)
 }
-type guildRoleReader interface {
-	Load(context.Context) (map[string]payslip.GuildMemberRoles, error)
-}
-
 type attendanceReader interface {
 	GetMonthly(context.Context, int, time.Month, int) (attendancehistory.MonthlyReport, error)
+	GetMonthlyPayslips(context.Context, int, time.Month, int) (attendancehistory.MonthlyReport, error)
 }
 type settingsStore interface {
 	Load(context.Context) (dbsettings.Values, error)
@@ -82,7 +79,6 @@ type Handler struct {
 	dashboard   dashboardReader
 	attendance  attendanceReader
 	settings    settingsStore
-	guildRoles  guildRoleReader
 	crafting    crafting.Store
 	money       moneyLedgerReader
 	serverLogs  *ServerLogWebhook
@@ -103,7 +99,6 @@ type Deps struct {
 	Dashboard   dashboardReader
 	Attendance  attendanceReader
 	Settings    settingsStore
-	GuildRoles  guildRoleReader
 	Crafting    crafting.Store
 	Money       moneyLedgerReader
 	ServerLogs  *ServerLogWebhook
@@ -122,7 +117,6 @@ func NewHandler(deps Deps) http.Handler {
 		dashboard:   deps.Dashboard,
 		attendance:  deps.Attendance,
 		settings:    deps.Settings,
-		guildRoles:  deps.GuildRoles,
 		crafting:    deps.Crafting,
 		money:       deps.Money,
 		serverLogs:  deps.ServerLogs,
@@ -207,7 +201,7 @@ func (h *Handler) monthlyPayslips(response http.ResponseWriter, request *http.Re
 	if _, ok := h.admin(response, request, "payslips"); !ok {
 		return
 	}
-	claims, report, ok := h.loadMonthlyAttendance(response, request)
+	claims, report, ok := h.loadMonthlyRoster(response, request, true)
 	if !ok {
 		return
 	}
@@ -221,18 +215,17 @@ func (h *Handler) monthlyPayslips(response http.ResponseWriter, request *http.Re
 		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Payslips could not be loaded")
 		return
 	}
-	if h.guildRoles == nil {
-		writeError(response, http.StatusServiceUnavailable, "GUILD_ROLES_UNAVAILABLE", "Guild roles are unavailable")
-		return
+	roles := map[string]payslip.GuildMemberRoles{}
+	// Persisted role snapshot is authoritative for this roster and payout exclusion.
+	filtered := report.Members[:0]
+	for _, m := range report.Members {
+		if m.RoleName != "SOT CR" && m.RoleName != "SOT CR Guest" {
+			continue
+		}
+		filtered = append(filtered, m)
+		roles[m.DiscordUserID] = payslip.GuildMemberRoles{Roles: []string{m.RoleName}}
 	}
-	roleContext, cancelRoles := context.WithTimeout(request.Context(), 4*time.Second)
-	roles, err := h.guildRoles.Load(roleContext)
-	cancelRoles()
-	if err != nil {
-		h.logger.Error("load payslip guild roles", "member_id", claims.MemberID, "error", err)
-		writeError(response, http.StatusServiceUnavailable, "GUILD_ROLES_UNAVAILABLE", "Guild roles could not be loaded")
-		return
-	}
+	report.Members = filtered
 	payslipReport, err := payslip.Calculate(report, values, roles)
 	if err != nil {
 		h.logger.Error("calculate payslips", "member_id", claims.MemberID, "month", report.Month, "error", err)
@@ -470,6 +463,9 @@ func (h *Handler) monthlyAttendance(response http.ResponseWriter, request *http.
 }
 
 func (h *Handler) loadMonthlyAttendance(response http.ResponseWriter, request *http.Request) (appauth.Claims, attendancehistory.MonthlyReport, bool) {
+	return h.loadMonthlyRoster(response, request, false)
+}
+func (h *Handler) loadMonthlyRoster(response http.ResponseWriter, request *http.Request, payslips bool) (appauth.Claims, attendancehistory.MonthlyReport, bool) {
 	accessToken, ok := bearerToken(request.Header.Get("Authorization"))
 	if !ok {
 		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Member bearer token is required")
@@ -500,7 +496,12 @@ func (h *Handler) loadMonthlyAttendance(response http.ResponseWriter, request *h
 		writeError(response, http.StatusBadRequest, "INVALID_MONTH", "Month must use YYYY-MM format")
 		return appauth.Claims{}, attendancehistory.MonthlyReport{}, false
 	}
-	report, err := h.attendance.GetMonthly(request.Context(), year, month, contractStartDay)
+	var report attendancehistory.MonthlyReport
+	if payslips {
+		report, err = h.attendance.GetMonthlyPayslips(request.Context(), year, month, contractStartDay)
+	} else {
+		report, err = h.attendance.GetMonthly(request.Context(), year, month, contractStartDay)
+	}
 	if err != nil {
 		h.logger.Error("load monthly attendance", "member_id", claims.MemberID, "month", fmt.Sprintf("%04d-%02d", year, month), "error", err)
 		writeError(response, http.StatusInternalServerError, "INTERNAL_ERROR", "Attendance could not be loaded")

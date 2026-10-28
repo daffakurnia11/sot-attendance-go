@@ -210,8 +210,11 @@ func TestPlaytimeRecapFallsBackToPresence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO activity_logs (member_id, status, started_at, occurred_at, playtime)
-		VALUES ($1, 'disconnected', $2, $3, INTERVAL '3 hours')`,
+		WITH input(member_id,status,started_at,occurred_at,playtime) AS (VALUES ($1::bigint, 'disconnected', $2::timestamptz, $3::timestamptz, INTERVAL '3 hours')), data AS (
+ SELECT nextval(pg_get_serial_sequence('server_logs','id')) AS id,input.*,NOW() AS created_at FROM input
+ ) INSERT INTO server_logs(server_member_id,session_id,status,occurred_at,source,payload)
+ SELECT NULL,md5('legacy-activity:'||data.id::text)::uuid,data.status,data.occurred_at,'discord',jsonb_build_object('legacy_activity',to_jsonb(data),'discord_user_id',m.discord_user_id)
+ FROM data JOIN members m ON m.id=data.member_id`,
 		memberID, windowStart, windowStart.Add(3*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +239,7 @@ func TestPlaytimeRecapPrefersServerLogsAfterTheHandover(t *testing.T) {
 	windowEnd := windowStart.Add(5 * time.Hour)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM server_logs; DELETE FROM server_members; DELETE FROM activity_logs; DELETE FROM members;"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM server_logs; DELETE FROM server_members; DELETE FROM members;"); err != nil {
 		t.Fatal(err)
 	}
 	// One webhook visit of two hours inside the window, and a presence row
@@ -248,8 +251,11 @@ func TestPlaytimeRecapPrefersServerLogsAfterTheHandover(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO activity_logs (member_id, status, started_at, occurred_at, playtime)
-		VALUES ($1, 'disconnected', $2::timestamptz, $3::timestamptz, INTERVAL '4 hours')`,
+		WITH input(member_id,status,started_at,occurred_at,playtime) AS (VALUES ($1::bigint, 'disconnected', $2::timestamptz, $3::timestamptz, INTERVAL '4 hours')), data AS (
+ SELECT nextval(pg_get_serial_sequence('server_logs','id')) AS id,input.*,NOW() AS created_at FROM input
+ ) INSERT INTO server_logs(server_member_id,session_id,status,occurred_at,source,payload)
+ SELECT NULL,md5('legacy-activity:'||data.id::text)::uuid,data.status,data.occurred_at,'discord',jsonb_build_object('legacy_activity',to_jsonb(data),'discord_user_id',m.discord_user_id)
+ FROM data JOIN members m ON m.id=data.member_id`,
 		memberID, windowStart, windowStart.Add(4*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +308,7 @@ func TestPlaytimeRecapRowPerCharacter(t *testing.T) {
 	windowEnd := windowStart.Add(5 * time.Hour)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM server_logs; DELETE FROM server_members; DELETE FROM activity_logs; DELETE FROM members;"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM server_logs; DELETE FROM server_members; DELETE FROM members;"); err != nil {
 		t.Fatal(err)
 	}
 	seedVisits(t, pool, "111", []visit{
@@ -340,7 +346,7 @@ func TestPlaytimeRecapPresenceRowHasNoCharacter(t *testing.T) {
 	windowEnd := windowStart.Add(5 * time.Hour)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM server_logs; DELETE FROM server_members; DELETE FROM activity_logs; DELETE FROM members;"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM server_logs; DELETE FROM server_members; DELETE FROM members;"); err != nil {
 		t.Fatal(err)
 	}
 	var memberID int64
@@ -350,8 +356,11 @@ func TestPlaytimeRecapPresenceRowHasNoCharacter(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO activity_logs (member_id, status, started_at, occurred_at, playtime)
-		VALUES ($1, 'disconnected', $2::timestamptz, $3::timestamptz, INTERVAL '3 hours')`,
+		WITH input(member_id,status,started_at,occurred_at,playtime) AS (VALUES ($1::bigint, 'disconnected', $2::timestamptz, $3::timestamptz, INTERVAL '3 hours')), data AS (
+ SELECT nextval(pg_get_serial_sequence('server_logs','id')) AS id,input.*,NOW() AS created_at FROM input
+ ) INSERT INTO server_logs(server_member_id,session_id,status,occurred_at,source,payload)
+ SELECT NULL,md5('legacy-activity:'||data.id::text)::uuid,data.status,data.occurred_at,'discord',jsonb_build_object('legacy_activity',to_jsonb(data),'discord_user_id',m.discord_user_id)
+ FROM data JOIN members m ON m.id=data.member_id`,
 		memberID, windowStart, windowStart.Add(3*time.Hour)); err != nil {
 		t.Fatal(err)
 	}

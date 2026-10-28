@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/daffakurniawan/sot-discord-bot/internal/database"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -46,6 +47,8 @@ type Member struct {
 	CFXName       string `json:"cfx_name"`
 	CID           string `json:"cid"`
 	IsAdmin       bool   `json:"is_admin"`
+	RoleID        string `json:"role_id"`
+	RoleName      string `json:"role_name"`
 }
 
 // latestCharacter resolves the names that used to be members.character_name and
@@ -150,7 +153,7 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 		), presence_closed AS (
 			SELECT b.member_id,
 				SUM(EXTRACT(EPOCH FROM (LEAST(a.occurred_at, b.presence_end) - GREATEST(a.started_at, $1)))) AS seconds
-			FROM activity_logs a
+			FROM (` + database.LegacyActivitySQL + `) a
 			JOIN bounds b ON b.member_id = a.member_id
 			WHERE a.status = 'disconnected'
 				AND a.started_at IS NOT NULL
@@ -158,7 +161,7 @@ func (r *Repository) PlaytimeRecap(ctx context.Context, attendanceStart, attenda
 			GROUP BY b.member_id
 		), presence_latest AS (
 			SELECT DISTINCT ON (a.member_id) a.member_id, a.status, a.started_at
-			FROM activity_logs a
+			FROM (` + database.LegacyActivitySQL + `) a
 			JOIN bounds b ON b.member_id = a.member_id
 			WHERE a.occurred_at <= b.presence_end
 			ORDER BY a.member_id, a.occurred_at DESC, a.id DESC
@@ -306,7 +309,7 @@ func (r *Repository) FindByDiscordUserID(ctx context.Context, discordUserID stri
 		SELECT m.id, m.discord_user_id, m.username, m.display_name,
 			COALESCE(latest_character.character_name, ''),
 			COALESCE(latest_character.username, ''),
-			m.is_admin, COALESCE(latest_character.cid, '')
+			m.is_admin, COALESCE(latest_character.cid, ''),COALESCE(m.role_id,''),COALESCE(m.role_name,'')
 		FROM members m` + latestCharacter + `
 		WHERE m.discord_user_id = $1`
 
@@ -320,6 +323,8 @@ func (r *Repository) FindByDiscordUserID(ctx context.Context, discordUserID stri
 		&found.CFXName,
 		&found.IsAdmin,
 		&found.CID,
+		&found.RoleID,
+		&found.RoleName,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Member{}, ErrNotFound

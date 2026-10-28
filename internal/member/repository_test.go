@@ -146,6 +146,10 @@ func (r memberRow) Scan(destinations ...any) error {
 	if len(destinations) > 7 {
 		*destinations[7].(*string) = r.member.CID
 	}
+	if len(destinations) > 9 {
+		*destinations[8].(*string) = r.member.RoleID
+		*destinations[9].(*string) = r.member.RoleName
+	}
 	return nil
 }
 

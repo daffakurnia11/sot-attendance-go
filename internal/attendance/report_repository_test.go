@@ -31,9 +31,8 @@ func TestServerRosterAndAttendanceWithoutAuthentication(t *testing.T) {
  CREATE TEMP TABLE members (id bigint PRIMARY KEY, discord_user_id text, username text, display_name text);
  CREATE TEMP TABLE server_members (id bigint PRIMARY KEY, discord_user_id text, username text, player_name text, cid text, updated_at timestamptz);
  CREATE TEMP TABLE attendance_logs (member_id bigint NOT NULL, server_member_id bigint, attendance_start timestamptz, attendance_end timestamptz, playtime interval, required_playtime interval, is_attended boolean);
- CREATE TEMP TABLE server_logs (server_member_id bigint, occurred_at timestamptz);
+ CREATE TEMP TABLE server_logs (server_member_id bigint, occurred_at timestamptz, payload jsonb, status text);
  CREATE TEMP TABLE server_visits (server_member_id bigint, connected_at timestamptz, disconnected_at timestamptz, last_event_at timestamptz);
- CREATE TEMP TABLE activity_logs (member_id bigint, status text, started_at timestamptz, occurred_at timestamptz, id bigint);
  INSERT INTO members VALUES (1, '111', 'auth', 'Auth'), (2, '222', 'authonly', 'Auth only');
  INSERT INTO server_members VALUES
  (10, '111', 'game', 'Old character', 'A', '2026-09-28'),
@@ -95,4 +94,18 @@ func TestServerRosterAndAttendanceWithoutAuthentication(t *testing.T) {
 	if report.Members[1].DiscordUserID != "333" || report.Members[1].TotalAttended != 1 {
 		t.Fatalf("server account = %+v", report.Members[1])
 	}
+	if _, err = pool.Exec(ctx, `ALTER TABLE members ADD COLUMN role_id text, ADD COLUMN role_name text;
+ UPDATE members SET role_id='cr',role_name='SOT CR' WHERE id=1;
+ UPDATE members SET role_id='guest',role_name='SOT CR Guest' WHERE id=2;
+ INSERT INTO members(id,discord_user_id,username,display_name,role_id,role_name) VALUES(4,'444','other','Other','other','UNDERBOSS');`); err != nil {
+		t.Fatal(err)
+	}
+	payslips, err := NewReportRepository(pool, loc).GetMonthlyPayslips(ctx, 2026, time.September, 28)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payslips.Members) != 2 || payslips.Members[0].MemberID != 1 || payslips.Members[0].CharacterName != "Latest character" || payslips.Members[0].TotalAttended != 1 || payslips.Members[1].MemberID != 2 || payslips.Members[1].CharacterName != "Auth only" || payslips.Members[1].RoleName != "SOT CR Guest" || payslips.Members[1].TotalAttended != 1 {
+		t.Fatalf("wrong members-based payslip roster: %+v", payslips)
+	}
+
 }

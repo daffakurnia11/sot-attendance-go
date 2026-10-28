@@ -70,8 +70,11 @@ func seedMember(t *testing.T, pool *pgxpool.Pool) (memberID int64, serverMemberI
 func seedDiscordVisit(t *testing.T, pool *pgxpool.Pool, memberID int64, startedAt, endedAt time.Time) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO activity_logs (member_id, status, started_at, occurred_at, playtime)
-		VALUES ($1, 'disconnected', $2::timestamptz, $3::timestamptz, $3::timestamptz - $2::timestamptz)`, memberID, startedAt, endedAt); err != nil {
+		WITH input(member_id,status,started_at,occurred_at,playtime) AS (VALUES ($1::bigint, 'disconnected', $2::timestamptz, $3::timestamptz, $3::timestamptz - $2::timestamptz)), data AS (
+ SELECT nextval(pg_get_serial_sequence('server_logs','id')) AS id,input.*,NOW() AS created_at FROM input
+ ) INSERT INTO server_logs(server_member_id,session_id,status,occurred_at,source,payload)
+ SELECT NULL,md5('legacy-activity:'||data.id::text)::uuid,data.status,data.occurred_at,'discord',jsonb_build_object('legacy_activity',to_jsonb(data),'discord_user_id',m.discord_user_id)
+ FROM data JOIN members m ON m.id=data.member_id`, memberID, startedAt, endedAt); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -273,8 +276,11 @@ func TestDashboardPlayerStatusPrefersServerLogs(t *testing.T) {
 	seedServerVisit(t, pool, serverMemberID, "00000000-0000-4000-8000-000000000030", now.Add(-time.Hour), time.Time{})
 	// Presence disagrees and says offline; the webhook wins.
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO activity_logs (member_id, status, started_at, occurred_at, playtime)
-		VALUES ($1, 'disconnected', $2::timestamptz, $3::timestamptz, INTERVAL '30 minutes')`,
+		WITH input(member_id,status,started_at,occurred_at,playtime) AS (VALUES ($1::bigint, 'disconnected', $2::timestamptz, $3::timestamptz, INTERVAL '30 minutes')), data AS (
+ SELECT nextval(pg_get_serial_sequence('server_logs','id')) AS id,input.*,NOW() AS created_at FROM input
+ ) INSERT INTO server_logs(server_member_id,session_id,status,occurred_at,source,payload)
+ SELECT NULL,md5('legacy-activity:'||data.id::text)::uuid,data.status,data.occurred_at,'discord',jsonb_build_object('legacy_activity',to_jsonb(data),'discord_user_id',m.discord_user_id)
+ FROM data JOIN members m ON m.id=data.member_id`,
 		memberID, now.Add(-3*time.Hour), now.Add(-150*time.Minute)); err != nil {
 		t.Fatal(err)
 	}

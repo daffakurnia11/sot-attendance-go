@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -26,7 +25,6 @@ import (
 	"github.com/daffakurniawan/sot-discord-bot/internal/database"
 	"github.com/daffakurniawan/sot-discord-bot/internal/member"
 	"github.com/daffakurniawan/sot-discord-bot/internal/money"
-	"github.com/daffakurniawan/sot-discord-bot/internal/payslip"
 	"github.com/daffakurniawan/sot-discord-bot/internal/serverlog"
 	dbsettings "github.com/daffakurniawan/sot-discord-bot/internal/settings"
 	"github.com/daffakurniawan/sot-discord-bot/internal/stock"
@@ -86,24 +84,6 @@ func main() {
 	webhook := api.NewServerLogWebhook(serverLogRepository, serverlog.NewAuthenticator(config.FiveMWebhookSecret, nil))
 	webhook.Blacklist = config.BlacklistedSteamHex
 	stockNotifier := api.NewDiscordStockNotifier(client, stockDiscordConfig.Token, stockDiscordConfig.Channels)
-	guestRoles := strings.TrimSpace(os.Getenv("DISCORD_GUEST_ROLE_IDS"))
-	if guestRoles == "" {
-		guestRoles = "1554058898028101696"
-	}
-	guestRoleIDs := strings.Split(guestRoles, ",")
-	for index, id := range guestRoleIDs {
-		id = strings.TrimSpace(id)
-		if len(id) == 0 || strings.Trim(id, "0123456789") != "" {
-			logger.Error("invalid DISCORD_GUEST_ROLE_IDS")
-			os.Exit(1)
-		}
-		guestRoleIDs[index] = id
-	}
-	guildRoles, err := payslip.NewGuildRoleReader(client, stockDiscordConfig.Token, os.Getenv("DISCORD_GUILD_ID"), guestRoleIDs)
-	if err != nil {
-		logger.Error("configure payslip guild roles", "error", err)
-		os.Exit(1)
-	}
 	handler := api.NewHandler(api.Deps{
 		Verifier:    api.NewDiscordVerifier(client),
 		Members:     member.NewRepository(pool),
@@ -112,7 +92,6 @@ func main() {
 		Dashboard:   dashboard.NewRepository(pool, logger).WithPresence(dashboard.NewPresenceClient(&http.Client{Timeout: 3 * time.Second}, os.Getenv("BOT_PRESENCE_URL"))),
 		Attendance:  attendancehistory.NewReportRepository(pool, location),
 		Settings:    settingsRepository,
-		GuildRoles:  guildRoles,
 		Crafting:    crafting.NewRepository(pool),
 		Money:       money.NewRepository(pool),
 		ServerLogs:  webhook,

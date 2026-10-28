@@ -77,7 +77,13 @@ jobs:
       # Every test that needs a database skips without one, and this is the
       # only job that has one, so it runs those packages whole rather than a
       # list of test names that silently missed every test added since.
-      - run: go test ./internal/database/ ./internal/serverlog/ ./internal/member/ ./internal/dashboard/ -v
+      - run: go test ./internal/database/ ./internal/serverlog/ ./internal/member/ ./internal/dashboard/ ./internal/attendance/ -v
+      # These tests manage their own isolated fixtures. Run after shared-schema
+      # tests so the consolidation test cannot reset another package's schema.
+      - name: Verify legacy activity consolidation
+        run: ACTIVITY_MIGRATION_TEST_DATABASE_URL="$TEST_DATABASE_URL" go test ./internal/database/ -run '^TestConsolidateLegacyActivity$' -count=1 -v
+      - name: Verify stored member roles
+        run: MEMBER_ROLE_TEST_DATABASE_URL="$TEST_DATABASE_URL" go test ./internal/member/ -run '^TestSyncRolesReconcilesExistingAccounts$' -count=1 -v
 
   build-app:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

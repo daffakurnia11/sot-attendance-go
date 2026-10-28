@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"fmt"
+	"github.com/daffakurniawan/sot-discord-bot/internal/database"
 	"log/slog"
 	"strconv"
 	"time"
@@ -117,11 +118,11 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 		SELECT
 			(SELECT COUNT(*) FROM members),
 			COALESCE((SELECT value FROM settings WHERE settings = 'player_threshold'), ''),
-			COALESCE((SELECT SUM(EXTRACT(EPOCH FROM playtime))::bigint FROM activity_logs WHERE member_id = $1 AND status = 'disconnected'), 0)
+			COALESCE((SELECT SUM(EXTRACT(EPOCH FROM playtime))::bigint FROM (` + database.LegacyActivitySQL + `) legacy_activity WHERE member_id = $1 AND status = 'disconnected'), 0)
 			+ COALESCE((
 				SELECT EXTRACT(EPOCH FROM (NOW() - latest.started_at))::bigint
 				FROM (
-					SELECT status, started_at FROM activity_logs
+					SELECT status, started_at FROM (` + database.LegacyActivitySQL + `) legacy_activity
 					WHERE member_id = $1 ORDER BY occurred_at DESC, id DESC LIMIT 1
 				) latest
 				WHERE latest.status = 'connected' AND latest.started_at IS NOT NULL
@@ -249,11 +250,11 @@ func (r *Repository) Get(ctx context.Context, memberID int64) (Snapshot, error) 
 			GROUP BY discord_user_id
 		), presence_latest AS (
 			SELECT DISTINCT ON (a.member_id) a.member_id, a.status, a.started_at
-			FROM activity_logs a
+			FROM (` + database.LegacyActivitySQL + `) a
 			ORDER BY a.member_id, a.occurred_at DESC, a.id DESC
 		), presence_seconds AS (
 			SELECT a.member_id, SUM(EXTRACT(EPOCH FROM a.playtime))::bigint AS seconds
-			FROM activity_logs a
+			FROM (` + database.LegacyActivitySQL + `) a
 			JOIN members m ON m.id = a.member_id
 			LEFT JOIN handovers h ON h.discord_user_id = m.discord_user_id
 			WHERE a.status = 'disconnected'
@@ -428,7 +429,7 @@ func (r *Repository) GetDiscordMemberRecords(ctx context.Context, discordUserID 
 		), discord_seconds AS (
 			SELECT COALESCE((
 				SELECT SUM(EXTRACT(EPOCH FROM a.playtime))
-				FROM activity_logs a
+				FROM (` + database.LegacyActivitySQL + `) a
 				WHERE a.member_id IN (SELECT id FROM members WHERE discord_user_id = $1)
 					AND a.status = 'disconnected'
 					AND a.playtime IS NOT NULL
@@ -439,7 +440,7 @@ func (r *Repository) GetDiscordMemberRecords(ctx context.Context, discordUserID 
 				SELECT EXTRACT(EPOCH FROM (COALESCE((SELECT at FROM cutover), NOW()) - latest.started_at))
 				FROM (
 					SELECT status, started_at
-					FROM activity_logs
+					FROM (` + database.LegacyActivitySQL + `) legacy_activity
 					WHERE member_id IN (SELECT id FROM members WHERE discord_user_id = $1)
 					ORDER BY occurred_at DESC, id DESC
 					LIMIT 1
@@ -474,7 +475,7 @@ func (r *Repository) GetDiscordMemberRecords(ctx context.Context, discordUserID 
 		SELECT id, status, source, started_at, occurred_at, playtime_seconds FROM (
 			SELECT a.id, a.status, 'discord' AS source, a.started_at, a.occurred_at,
 				CASE WHEN a.playtime IS NULL THEN NULL ELSE EXTRACT(EPOCH FROM a.playtime)::bigint END AS playtime_seconds
-			FROM activity_logs a
+			FROM (` + database.LegacyActivitySQL + `) a
 			WHERE a.member_id IN (SELECT id FROM members WHERE discord_user_id = $1)
 			UNION ALL
 			SELECT sl.id, sl.status, 'fivem', s.connected_at, sl.occurred_at,

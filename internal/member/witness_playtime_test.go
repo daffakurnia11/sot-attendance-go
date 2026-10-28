@@ -14,7 +14,7 @@ import (
 func witnessCharacter(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, "DELETE FROM server_logs; DELETE FROM server_members; DELETE FROM activity_logs; DELETE FROM members;"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM server_logs; DELETE FROM server_members; DELETE FROM members;"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO members (discord_user_id, username, display_name) VALUES ('111', 'player', 'Player')`); err != nil {

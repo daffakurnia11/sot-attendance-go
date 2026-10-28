@@ -20,6 +20,11 @@
 
 DO $$
 BEGIN
+    -- Do not recreate legacy storage after consolidation removes the view.
+    IF to_regclass('public.server_logs_legacy_activity_id_idx') IS NOT NULL THEN
+        RETURN;
+    END IF;
+
     -- Consolidated databases expose legacy events through a compatibility view.
     -- Views already provide the read contract and cannot receive table indexes.
     IF EXISTS (

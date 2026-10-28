@@ -210,6 +210,21 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		stashChannels:         stashChannels{public: cfg.StashChannels.Public, boss: cfg.StashChannels.Boss},
 	}
 	session.AddHandler(bot.onReady)
+	session.AddHandler(func(s *discordgo.Session, e *discordgo.GuildMemberUpdate) {
+		if bot.announces && e.GuildID == bot.guildID {
+			go bot.syncGuildMembers(s)
+		}
+	})
+	session.AddHandler(func(s *discordgo.Session, e *discordgo.GuildMemberAdd) {
+		if bot.announces && e.GuildID == bot.guildID {
+			go bot.syncGuildMembers(s)
+		}
+	})
+	session.AddHandler(func(s *discordgo.Session, e *discordgo.GuildMemberRemove) {
+		if bot.announces && e.GuildID == bot.guildID {
+			go bot.syncGuildMembers(s)
+		}
+	})
 	session.AddHandler(bot.onDisconnect)
 	session.AddHandler(bot.onResumed)
 	session.AddHandler(bot.onGuildCreate)
@@ -279,6 +294,7 @@ func (b *Bot) Run(ctx context.Context) error {
 		go b.runServerLogPoller(ctx)
 		go b.runOrderNotifications(ctx)
 		go b.runPlayerReports(ctx)
+		go b.runMemberRoleSync(ctx)
 	}
 
 	discordTicker := time.NewTicker(b.pollInterval)
@@ -617,6 +633,11 @@ func (b *Bot) syncGuildMembers(session *discordgo.Session) {
 		b.logger.Error("fetch Discord members for startup sync", "guild_id", b.guildID, "error", err)
 		return
 	}
+	roles, err := session.GuildRoles(b.guildID, discordgo.WithContext(ctx))
+	if err != nil {
+		b.logger.Error("fetch guild roles for member sync", "guild_id", b.guildID, "error", err)
+		return
+	}
 	roleMembers := matchingRoleMembers(members, b.memberRoleIDs)
 	players := make([]member.Player, 0, len(roleMembers))
 	for _, guildMember := range roleMembers {
@@ -624,6 +645,10 @@ func (b *Bot) syncGuildMembers(session *discordgo.Session) {
 	}
 	if err := b.members.UpsertGuildMembers(ctx, players); err != nil {
 		b.logger.Error("upsert Discord role members", "guild_id", b.guildID, "error", err)
+		return
+	}
+	if err := b.members.SyncRoles(ctx, roleSnapshot(members, roles)); err != nil {
+		b.logger.Error("sync member roles", "guild_id", b.guildID, "error", err)
 		return
 	}
 	adminUserIDs := matchingRoleMemberIDs(members, b.adminRoleIDs)

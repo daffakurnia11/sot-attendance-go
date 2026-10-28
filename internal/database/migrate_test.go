@@ -105,9 +105,9 @@ func lockTestSchema(t *testing.T, databaseURL string) {
 	})
 }
 
-// TestMigratePreservesActivityCompatibilityView reproduces startup after legacy
-// activity storage has moved to server_logs but older readers still use a view.
-func TestMigratePreservesActivityCompatibilityView(t *testing.T) {
+// TestMigrateRemovesActivityCompatibilityView preserves history across the
+// compatibility stage and repeated startup migration runs.
+func TestMigrateRemovesActivityCompatibilityView(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("TEST_DATABASE_URL is not set; use a disposable database")
@@ -124,26 +124,56 @@ func TestMigratePreservesActivityCompatibilityView(t *testing.T) {
 	if _, err := pool.Exec(ctx, "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Migrate(ctx, pool); err != nil {
+
+	entries, err := migrations.ReadDir("migrations")
+	if err != nil {
 		t.Fatal(err)
 	}
+	for _, entry := range entries {
+		if entry.Name() >= "000054" {
+			break
+		}
+		sql, err := migrations.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, string(sql)); err != nil {
+			t.Fatalf("%s: %v", entry.Name(), err)
+		}
+	}
 	if _, err := pool.Exec(ctx, `
-        CREATE TABLE archived_activity AS SELECT * FROM activity_logs;
-        DROP TABLE activity_logs;
-        CREATE VIEW activity_logs AS SELECT * FROM archived_activity;
+        WITH account AS (
+            INSERT INTO members(discord_user_id,username,display_name)
+            VALUES('migration-test','test','Test') RETURNING id
+        )
+        INSERT INTO activity_logs(member_id,status,started_at,occurred_at,playtime)
+        SELECT id,'disconnected','2026-08-14 21:00+07'::timestamptz,
+            '2026-08-14 23:00+07'::timestamptz,interval '2 hours' FROM account;
     `); err != nil {
 		t.Fatal(err)
+	}
+	consolidate, err := migrations.ReadFile("migrations/000054_consolidate_activity_logs.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(consolidate)); err != nil {
+		t.Fatal(err)
+	}
+	var kind string
+	if err := pool.QueryRow(ctx, "SELECT relkind::text FROM pg_class WHERE oid='public.activity_logs'::regclass").Scan(&kind); err != nil || kind != "v" {
+		t.Fatalf("compatibility fixture: kind=%q error=%v", kind, err)
 	}
 	for pass := 1; pass <= 2; pass++ {
 		if err := Migrate(ctx, pool); err != nil {
 			t.Fatalf("migration replay %d: %v", pass, err)
 		}
-	}
-	var kind string
-	if err := pool.QueryRow(ctx, "SELECT relkind::text FROM pg_class WHERE oid='public.activity_logs'::regclass").Scan(&kind); err != nil {
-		t.Fatal(err)
-	}
-	if kind != "v" {
-		t.Fatalf("activity_logs kind = %q, want view", kind)
+		var absent bool
+		if err := pool.QueryRow(ctx, "SELECT to_regclass('public.activity_logs') IS NULL").Scan(&absent); err != nil || !absent {
+			t.Fatalf("compatibility view remains: %v", err)
+		}
+		var count, seconds int64
+		if err := pool.QueryRow(ctx, "SELECT count(*),SUM(EXTRACT(EPOCH FROM playtime))::bigint FROM ("+LegacyActivitySQL+") legacy").Scan(&count, &seconds); err != nil || count != 1 || seconds != 7200 {
+			t.Fatalf("history changed: count=%d seconds=%d error=%v", count, seconds, err)
+		}
 	}
 }

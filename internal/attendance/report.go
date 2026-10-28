@@ -22,6 +22,7 @@ type MemberRecord struct {
 	Username      string        `json:"username"`
 	DisplayName   string        `json:"display_name"`
 	CharacterName string        `json:"character_name"`
+	RoleName      string        `json:"role_name,omitempty"`
 	TotalAttended int           `json:"total_attended"`
 	Records       []DailyRecord `json:"records"`
 }
@@ -48,6 +49,14 @@ func NewReportRepository(database *pgxpool.Pool, location *time.Location) *Repor
 }
 
 func (r *ReportRepository) GetMonthly(ctx context.Context, year int, month time.Month, contractStartDay int) (MonthlyReport, error) {
+	return r.getMonthly(ctx, year, month, contractStartDay, false)
+}
+
+func (r *ReportRepository) GetMonthlyPayslips(ctx context.Context, year int, month time.Month, contractStartDay int) (MonthlyReport, error) {
+	return r.getMonthly(ctx, year, month, contractStartDay, true)
+}
+
+func (r *ReportRepository) getMonthly(ctx context.Context, year int, month time.Month, contractStartDay int, payslips bool) (MonthlyReport, error) {
 	start := contractBoundary(year, month, contractStartDay, r.location)
 	nextMonth := time.Date(year, month, 1, 0, 0, 0, 0, r.location).AddDate(0, 1, 0)
 	end := contractBoundary(nextMonth.Year(), nextMonth.Month(), contractStartDay, r.location)
@@ -67,12 +76,17 @@ func (r *ReportRepository) GetMonthly(ctx context.Context, year int, month time.
 
 	// The server roster owns attendance identity. The latest character supplies
 	// the name; attendance remains one row per Discord account.
-	const membersQuery = `
+	membersQuery := `
 		SELECT DISTINCT ON (sm.discord_user_id)
-			sm.id, sm.discord_user_id, sm.username, sm.player_name, sm.player_name
+			sm.id, sm.discord_user_id, sm.username, sm.player_name, sm.player_name, ''::text
 		FROM server_members sm
 		WHERE COALESCE(sm.discord_user_id, '') <> ''
 		ORDER BY sm.discord_user_id, sm.updated_at DESC, sm.id DESC`
+	if payslips {
+		membersQuery = `SELECT m.id,m.discord_user_id,m.username,m.display_name,COALESCE(NULLIF(BTRIM(c.player_name),''),NULLIF(BTRIM(m.display_name),''),NULLIF(BTRIM(m.username),''),m.discord_user_id),m.role_name
+ FROM members m LEFT JOIN LATERAL (SELECT sm.player_name FROM server_members sm WHERE sm.discord_user_id=m.discord_user_id ORDER BY sm.updated_at DESC,sm.id DESC LIMIT 1) c ON true
+ WHERE m.role_id IS NOT NULL AND m.role_id<>'' AND m.role_name IN ('SOT CR','SOT CR Guest') ORDER BY m.id`
+	}
 	memberRows, err := r.database.Query(ctx, membersQuery)
 	if err != nil {
 		return MonthlyReport{}, fmt.Errorf("query attendance members: %w", err)
@@ -80,7 +94,7 @@ func (r *ReportRepository) GetMonthly(ctx context.Context, year int, month time.
 	memberIndexes := make(map[string]int)
 	for memberRows.Next() {
 		var record MemberRecord
-		if err := memberRows.Scan(&record.MemberID, &record.DiscordUserID, &record.Username, &record.DisplayName, &record.CharacterName); err != nil {
+		if err := memberRows.Scan(&record.MemberID, &record.DiscordUserID, &record.Username, &record.DisplayName, &record.CharacterName, &record.RoleName); err != nil {
 			memberRows.Close()
 			return MonthlyReport{}, fmt.Errorf("scan attendance member: %w", err)
 		}
