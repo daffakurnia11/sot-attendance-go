@@ -595,7 +595,7 @@ func (b *Bot) onReady(session *discordgo.Session, event *discordgo.Ready) {
 		// are all things the deployed bot is already doing with this same
 		// token. Doing them again from a laptop duplicates or fights them.
 		go func() {
-			for _, command := range slashCommands() {
+			for _, command := range slashCommands(nil) {
 				if isReadOnlyCommand(command.Name) {
 					if _, err := session.ApplicationCommandCreate(event.User.ID, b.guildID, command); err != nil {
 						b.logger.Error("register local read-only command", "error", err)

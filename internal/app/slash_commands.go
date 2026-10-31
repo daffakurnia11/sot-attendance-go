@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/daffakurniawan/sot-discord-bot/internal/business"
 	commandcrafting "github.com/daffakurniawan/sot-discord-bot/internal/command/crafting"
 	commandmoney "github.com/daffakurniawan/sot-discord-bot/internal/command/money"
 	commandrecap "github.com/daffakurniawan/sot-discord-bot/internal/command/recap"
@@ -27,7 +28,7 @@ func (err moneyChannelError) Error() string {
 	return "money command used outside configured money channels"
 }
 
-func slashCommands() []*discordgo.ApplicationCommand {
+func slashCommands(partners map[string][]string) []*discordgo.ApplicationCommand {
 	guildContexts := []discordgo.InteractionContextType{discordgo.InteractionContextGuild}
 	return []*discordgo.ApplicationCommand{
 		{Name: commandcrafting.Command, Description: "Build a multi-product crafting plan", Contexts: &guildContexts},
@@ -42,8 +43,8 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		{Name: commandrecap.Command, Description: "Find the attendance recap channel", Contexts: &guildContexts},
 		moneySlashCommand(guildContexts),
 		stashSlashCommand(guildContexts),
-		orderSlashCommand(guildContexts),
-		businessSlashCommand("purchase", "Create a purchase order", guildContexts),
+		orderSlashCommand(guildContexts, partners),
+		businessSlashCommand("purchase", "Create a purchase order", guildContexts, partners),
 		{Name: "order-status", Description: "Update an existing order status", Contexts: &guildContexts, Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionInteger, Name: "order_id", Description: "Order or purchase number", Required: true}}},
 		catalogSlashCommand(guildContexts),
 		{Name: "currentlog", Description: "Post current server-connected members with screenshot (admin)", Contexts: &guildContexts},
@@ -99,7 +100,14 @@ func moneySlashCommand(guildContexts []discordgo.InteractionContextType) *discor
 }
 
 func (b *Bot) registerSlashCommands(session *discordgo.Session, applicationID string) {
-	commands, err := session.ApplicationCommandBulkOverwrite(applicationID, b.guildID, slashCommands())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	entries, err := business.NewRepository(b.database).List(ctx)
+	cancel()
+	if err != nil {
+		// Register anyway: the hint loses its code list, the commands still work.
+		b.logger.Error("load partner codes for slash commands", "error", err)
+	}
+	commands, err := session.ApplicationCommandBulkOverwrite(applicationID, b.guildID, slashCommands(partnerCodesByDirection(entries)))
 	if err != nil {
 		b.logger.Error("register guild slash commands", "guild_id", b.guildID, "error", err)
 		return

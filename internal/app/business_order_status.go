@@ -89,7 +89,7 @@ func (b *Bot) handleOrderUpdate(s *discordgo.Session, i *discordgo.Interaction) 
 	defer tx.Rollback(ctx)
 	d := &orderDraft{OrderID: id}
 	var messageID *string
-	err = tx.QueryRow(ctx, `SELECT o.direction,p.code,o.order_date,o.pickup_date,o.additional_price,o.total_price,o.notes,o.status,o.discord_message_id,o.created_at,o.updated_at,COALESCE(NULLIF(u.display_name,''),u.username,'Unknown'),COALESCE(buyer.discord_user_id,'') FROM business_orders o JOIN business_partners p ON p.id=o.partner_id LEFT JOIN members u ON u.id=o.updated_by_member_id LEFT JOIN members buyer ON buyer.id=o.buyer_member_id WHERE o.id=$1 FOR UPDATE OF o`, id).Scan(&d.Direction, &d.Partner, &d.Date, &d.Pickup, &d.Additional, &d.Total, &d.Notes, &d.Status, &messageID, &d.CreatedAt, &d.UpdatedAt, &d.UpdatedBy, &d.BuyerDiscordID)
+	err = tx.QueryRow(ctx, `SELECT o.direction,p.code,p.name,o.order_date,o.pickup_date,o.additional_price,o.total_price,o.notes,o.status,o.discord_message_id,o.created_at,o.updated_at,COALESCE(NULLIF(u.display_name,''),u.username,'Unknown'),COALESCE(buyer.discord_user_id,'') FROM business_orders o JOIN business_partners p ON p.id=o.partner_id LEFT JOIN members u ON u.id=o.updated_by_member_id LEFT JOIN members buyer ON buyer.id=o.buyer_member_id WHERE o.id=$1 FOR UPDATE OF o`, id).Scan(&d.Direction, &d.Partner, &d.PartnerName, &d.Date, &d.Pickup, &d.Additional, &d.Total, &d.Notes, &d.Status, &messageID, &d.CreatedAt, &d.UpdatedAt, &d.UpdatedBy, &d.BuyerDiscordID)
 	if err != nil {
 		b.logger.Warn("load order for status", "order_id", id, "error", err)
 		reply("Order unavailable.")

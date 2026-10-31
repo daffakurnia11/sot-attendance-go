@@ -26,6 +26,7 @@ type orderDraft struct {
 	BuyerDiscordID                               string
 	AdditionalInput                              string
 	UserID, ChannelID, Direction, Partner, Notes string
+	PartnerName                                  string
 	Date, Pickup                                 time.Time
 	Additional, Total, OrderID                   int64
 	Lines                                        []orderLine
@@ -36,13 +37,36 @@ type orderDraft struct {
 	UpdatedBy                                    string
 }
 
-func orderSlashCommand(contexts []discordgo.InteractionContextType) *discordgo.ApplicationCommand {
-	return businessSlashCommand("order", "Create a sale order", contexts)
+func orderSlashCommand(contexts []discordgo.InteractionContextType, partners map[string][]string) *discordgo.ApplicationCommand {
+	return businessSlashCommand("order", "Create a sale order", contexts, partners)
 }
-func businessSlashCommand(name, description string, contexts []discordgo.InteractionContextType) *discordgo.ApplicationCommand {
-	partnerDescription := "Partner code: BZ, CN, CH, DTM, DVG, DW, GWF, NOCTIS"
-	if name == "purchase" {
-		partnerDescription = "Partner code: BZ, CH, DTM, DVG, DW, GWF, NOCTIS"
+
+// partnerCodesByDirection lists each direction's partner codes, in the
+// catalog's code order, for the slash command hints. The hint is fixed at
+// registration, so a new partner shows after the bot restarts. SOT is left
+// out: member orders pick SOT through the member option, not a partner code.
+func partnerCodesByDirection(entries []business.Entry) map[string][]string {
+	codes := map[string][]string{}
+	for _, e := range entries {
+		if strings.EqualFold(e.PartnerCode, "SOT") {
+			continue
+		}
+		list := codes[e.Direction]
+		if len(list) == 0 || list[len(list)-1] != e.PartnerCode {
+			codes[e.Direction] = append(list, e.PartnerCode)
+		}
+	}
+	return codes
+}
+
+func businessSlashCommand(name, description string, contexts []discordgo.InteractionContextType, partners map[string][]string) *discordgo.ApplicationCommand {
+	partnerDescription := "Partner code"
+	if codes := partners[orderCommandDirection(name)]; len(codes) > 0 {
+		partnerDescription += ": " + strings.Join(codes, ", ")
+	}
+	// Discord rejects option descriptions over 100 characters.
+	if len(partnerDescription) > 100 {
+		partnerDescription = partnerDescription[:97] + "..."
 	}
 	options := []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionString, Name: "partner", Description: partnerDescription, Required: name == "purchase", MaxLength: 50}}
 	if name == "order" {
@@ -149,6 +173,15 @@ func buildOrderDraft(entries []business.Entry, direction, partner, items, date, 
 	return d, nil
 }
 
+// orderPartnerLabel shows "Full Name (CODE)", or the bare code when the name
+// is unknown or adds nothing.
+func orderPartnerLabel(d *orderDraft) string {
+	if d.PartnerName == "" || strings.EqualFold(d.PartnerName, d.Partner) {
+		return d.Partner
+	}
+	return d.PartnerName + " (" + d.Partner + ")"
+}
+
 func orderEmbed(d *orderDraft) *discordgo.MessageEmbed {
 	label := "Order"
 	if d.Direction == "purchase" {
@@ -180,7 +213,7 @@ func orderEmbed(d *orderDraft) *discordgo.MessageEmbed {
 		color = 0xED4245
 	}
 	fields := []*discordgo.MessageEmbedField{
-		{Name: "Partner", Value: d.Partner},
+		{Name: "Partner", Value: orderPartnerLabel(d)},
 		{Name: "Order date", Value: d.Date.Format("02 Jan 2006"), Inline: true},
 		{Name: "Pickup date", Value: d.Pickup.Format("02 Jan 2006"), Inline: true},
 		{Name: "Products", Value: products},
@@ -269,8 +302,16 @@ func (b *Bot) handleOrderStart(s *discordgo.Session, i *discordgo.Interaction) {
 		return
 	}
 
+	partnerName := ""
+	for _, e := range entries {
+		if e.PartnerCode == partner {
+			partnerName = e.PartnerName
+			break
+		}
+	}
+
 	today, _ := time.Parse("2006-01-02", time.Now().In(b.location).Format("2006-01-02"))
-	d := &orderDraft{mu: &sync.Mutex{}, UserID: uid, ChannelID: i.ChannelID, Direction: direction, Partner: partner, BuyerMemberID: buyerMemberID, BuyerDiscordID: buyerDiscord, Date: today, Pickup: defaultOrderPickup(direction, today), Catalog: entries, Expires: time.Now().Add(15 * time.Minute)}
+	d := &orderDraft{mu: &sync.Mutex{}, UserID: uid, ChannelID: i.ChannelID, Direction: direction, Partner: partner, PartnerName: partnerName, BuyerMemberID: buyerMemberID, BuyerDiscordID: buyerDiscord, Date: today, Pickup: defaultOrderPickup(direction, today), Catalog: entries, Expires: time.Now().Add(15 * time.Minute)}
 	b.orderMu.Lock()
 	if b.orderDrafts == nil {
 		b.orderDrafts = map[string]*orderDraft{}

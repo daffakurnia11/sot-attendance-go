@@ -12,7 +12,7 @@ import (
 func TestSlashCommandsMirrorPrefixCommands(t *testing.T) {
 	t.Parallel()
 
-	commands := slashCommands()
+	commands := slashCommands(nil)
 	if len(commands) != 11 {
 		t.Fatalf("slashCommands() count = %d, want 11", len(commands))
 	}

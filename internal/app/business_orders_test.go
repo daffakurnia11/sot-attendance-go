@@ -80,7 +80,7 @@ func TestOrderFormMenusAndSubmit(t *testing.T) {
 	if rows[1].(discordgo.ActionsRow).Components[1].(discordgo.Button).Disabled {
 		t.Fatal("complete draft submit disabled")
 	}
-	commands := orderSlashCommand(nil)
+	commands := orderSlashCommand(nil, nil)
 	if len(commands.Options) != 2 || commands.Options[0].Name != "partner" || commands.Options[0].Required || commands.Options[1].Type != discordgo.ApplicationCommandOptionUser {
 		t.Fatal("order creation requires arguments")
 	}
